@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'api_service.dart';
 
 class AuthService {
   static final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -135,6 +136,64 @@ class AuthService {
         return {'success': false, 'error': 'Google Sign-In cancelled'};
       }
 
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      final userCredential = await _auth.signInWithCredential(credential);
+
+      return {
+        'success': true,
+        'user': userCredential,
+        'isNewUser': userCredential.additionalUserInfo?.isNewUser ?? false,
+        'email': googleUser.email,
+        'displayName': googleUser.displayName,
+        'photoUrl': googleUser.photoUrl,
+      };
+    } on FirebaseAuthException catch (e) {
+      return {'success': false, 'error': 'Firebase error: ${e.message}'};
+    } catch (e) {
+      return {'success': false, 'error': 'Error: $e'};
+    }
+  }
+
+  /// Google Sign-In for LOGIN ONLY - Checks database BEFORE signing in with Firebase
+  /// This prevents unregistered accounts from being created
+  static Future<Map<String, dynamic>> handleGoogleSignInLogin() async {
+    try {
+      try {
+        await _googleSignIn.disconnect();
+      } catch (e) {
+        print('Disconnect warning: $e');
+      }
+
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        return {'success': false, 'error': 'Google Sign-In cancelled'};
+      }
+
+      final email = googleUser.email;
+      print('DEBUG: Google Sign-In email: $email');
+
+      // CHECK DATABASE FIRST - before Firebase creates the account
+      if (email.isNotEmpty) {
+        final checkResult = await ApiService.checkUserExists({"email": email});
+        print('DEBUG: Database check for $email -> $checkResult');
+        
+        if (checkResult['success'] != true || checkResult['exists'] != true) {
+          // User not registered - reject and don't complete Firebase sign-in
+          print('DEBUG: User $email not found in database - rejecting login');
+          return {
+            'success': false,
+            'error': 'Account Not Found',
+            'message': 'This Google account is not registered. Please sign up first.',
+          };
+        }
+      }
+
+      // Database check passed - NOW sign in with Firebase
       final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,

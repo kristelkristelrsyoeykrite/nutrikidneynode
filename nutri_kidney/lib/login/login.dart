@@ -183,27 +183,30 @@ Future<void> _loadRememberedLoginState() async {
     return resp["success"] == true && resp["exists"] == true;
   }
 
-  // Google Sign-In Method (Login) - Uses shared auth service
+  // Google Sign-In Method (Login) - Uses shared auth service with database check
   Future<void> _handleGoogleSignIn() async {
     try {
       setState(() => _isLoading = true);
       
-      final result = await AuthService.handleGoogleSignIn();
+      final result = await AuthService.handleGoogleSignInLogin();
       
       if (!result['success']) {
         setState(() => _isLoading = false);
-        _showErrorDialog('Google Sign-In Failed', result['error'] ?? 'Unknown error');
+        final errorMessage = result['message'] ?? result['error'] ?? 'Unknown error';
+        _showErrorDialog(result['error'] ?? 'Google Sign-In Failed', errorMessage);
         return;
       }
 
       final userCredential = result['user'] as UserCredential;
+      final email = result['email'] as String?;
+
       ApiService.setUserId(userCredential.user!.uid);
 
       // Save Remember Me preference if checked
       await AuthService.saveRememberedSession(
         userCredential.user!.uid,
         _rememberMe,
-        contact: result['email'] as String?,
+        contact: email,
       );
 
       if (mounted) {
