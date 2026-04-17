@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "119513656180",
+    "firebase_url": "https://nutrikidney-base1-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "nutrikidney-base1",
+    "storage_bucket": "nutrikidney-base1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:119513656180:android:1f8e80df2883b2c7091a21",
+        "android_client_info": {
+          "package_name": "com.example.nutri_kidney"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "119513656180-25qv5esobn5r54m2fgdao5mt74opmkv1.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.nutri_kidney",
+            "certificate_hash": "e36eb643827dcf05f5eda3643cb45294d554a34b"
+          }
+        },
+        {
+          "client_id": "119513656180-i05nhjkfcrgnsetmb3vn4bdtbl858283.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBuTtmrP1oOiC8uG578fSgXthnHAuz5IOg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "119513656180-i05nhjkfcrgnsetmb3vn4bdtbl858283.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
