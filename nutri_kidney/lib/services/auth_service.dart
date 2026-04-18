@@ -1,57 +1,112 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:nutri_kidney/services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'api_service.dart';
 
 class AuthService {
   static final FirebaseAuth _auth = FirebaseAuth.instance;
   static final GoogleSignIn _googleSignIn = GoogleSignIn(
-    clientId: '119513656180-i05nhjkfcrgnsetmb3vn4bdtbl858283.apps.googleusercontent.com',
+    clientId:
+        '119513656180-i05nhjkfcrgnsetmb3vn4bdtbl858283.apps.googleusercontent.com',
     scopes: const ['email', 'profile'],
   );
 
-  /// Check if user has a valid "Remember Me" session.
-  /// Call this AFTER Firebase has had time to restore its auth state,
-  /// e.g. inside a FutureBuilder or after awaiting authStateChanges.first.
   static Future<bool> hasRememberedSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final rememberMe = prefs.getBool('rememberMe') ?? false;
       final savedUserId = prefs.getString('userId');
+      final savedContact = prefs.getString('savedContact');
 
       print('--- hasRememberedSession Debug ---');
       print('rememberMe flag: $rememberMe');
       print('savedUserId: $savedUserId');
+      print('savedContact: $savedContact');
 
       if (!rememberMe || savedUserId == null || savedUserId.isEmpty) {
-        print('Signing out, retrieving previous creds');
-        print('Remember Me not set — clearing any Firebase session');
+        print('Remember Me not set - clearing any Firebase session');
         await _auth.signOut();
         await _googleSignIn.signOut();
         return false;
       }
 
-      // Wait for Firebase to restore its auth state (avoids the race condition
-      // where currentUser is null immediately after app launch).
       User? currentUser = _auth.currentUser;
       if (currentUser == null) {
-        print('currentUser null — waiting for authStateChanges...');
-        currentUser = await _auth
-            .authStateChanges()
-            .firstWhere((u) => u != null, orElse: () => null);
+        print('currentUser null - checking authStateChanges...');
+        try {
+          currentUser = await _auth
+              .authStateChanges()
+              .first
+              .timeout(const Duration(seconds: 2), onTimeout: () => null);
+        } catch (_) {
+          currentUser = null;
+        }
       }
 
       print('currentUser after wait: ${currentUser?.uid}');
 
-      if (currentUser == null || currentUser.uid != savedUserId) {
-        print('Signing out, retrieving previous creds');
-        print('UID mismatch or no session — signing out');
+      final profileStatus = await ApiService.getProfileStatus(uid: savedUserId);
+      if (profileStatus['success'] != true ||
+          profileStatus['exists'] != true ||
+          profileStatus['verified'] != true) {
+        print('No verified app profile found for remembered session - signing out');
         await _auth.signOut();
         await _googleSignIn.signOut();
         return false;
       }
 
-      print('Remember Me session valid — auto-login as ${currentUser.email}');
+      final isSavedPhoneContact =
+          savedContact != null &&
+          savedContact.isNotEmpty &&
+          !savedContact.contains('@');
+
+      if (currentUser == null) {
+        if (isSavedPhoneContact) {
+          ApiService.setUserId(savedUserId);
+          print('Remembered phone session valid without Firebase auth session');
+          return true;
+        }
+
+        print('No Firebase session for remembered non-phone login - signing out');
+        await _auth.signOut();
+        await _googleSignIn.signOut();
+        return false;
+      }
+
+      if (currentUser.uid != savedUserId) {
+        print('UID mismatch for remembered session - signing out');
+        await _auth.signOut();
+        await _googleSignIn.signOut();
+        return false;
+      }
+
+      await currentUser.reload();
+      currentUser = _auth.currentUser;
+
+      if (currentUser == null || currentUser.uid != savedUserId) {
+        if (isSavedPhoneContact) {
+          ApiService.setUserId(savedUserId);
+          print('Firebase session expired but remembered phone session is valid');
+          return true;
+        }
+
+        print('Session lost after reload - signing out');
+        await _auth.signOut();
+        await _googleSignIn.signOut();
+        return false;
+      }
+
+      final hasEmail =
+          currentUser.email != null && currentUser.email!.isNotEmpty;
+      if (hasEmail && currentUser.emailVerified != true) {
+        print('Unverified email session detected - signing out');
+        await _auth.signOut();
+        await _googleSignIn.signOut();
+        return false;
+      }
+
+      ApiService.setUserId(savedUserId);
+      print('Remember Me session valid - auto-login as ${currentUser.email}');
       return true;
     } catch (e) {
       print('Error checking remembered session: $e');
@@ -59,8 +114,6 @@ class AuthService {
     }
   }
 
-  /// Get the current "Remember Me" flag value.
-  /// Use this on the login screen to pre-check the toggle.
   static Future<bool> getRememberMeFlag() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -71,9 +124,11 @@ class AuthService {
     }
   }
 
-  /// Call this immediately after a successful login/signup,
-  /// passing the confirmed UID from FirebaseAuth.
-  static Future<void> saveRememberedSession(String userId, bool rememberMe, {String? contact}) async {
+  static Future<void> saveRememberedSession(
+    String userId,
+    bool rememberMe, {
+    String? contact,
+  }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (rememberMe && userId.isNotEmpty) {
@@ -82,20 +137,20 @@ class AuthService {
         if (contact != null && contact.isNotEmpty) {
           await prefs.setString('savedContact', contact);
         }
-        print('Session saved: rememberMe=true, userId=$userId, contact=$contact');
+        print(
+          'Session saved: rememberMe=true, userId=$userId, contact=$contact',
+        );
       } else {
-        // User explicitly chose NOT to be remembered — clear everything
         await prefs.remove('rememberMe');
         await prefs.remove('userId');
         await prefs.remove('savedContact');
-        print('Session NOT saved: rememberMe=false — preferences cleared');
+        print('Session NOT saved: rememberMe=false - preferences cleared');
       }
     } catch (e) {
       print('Error saving session: $e');
     }
   }
 
-  /// Get the saved contact (email or phone) from the last "Remember Me" session.
   static Future<String?> getSavedContact() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -106,23 +161,16 @@ class AuthService {
     }
   }
 
-  /// Call this on explicit logout.
-  /// Only clears the saved userId to invalidate the auto-login session.
-  /// Preserves the rememberMe flag and savedContact for a smoother next login
-  /// (the toggle will be pre-checked and the email/phone will be pre-filled).
   static Future<void> clearRememberedSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('userId'); // Invalidate the session token only
-      // NOTE: 'rememberMe' and 'savedContact' are intentionally kept
-      // so the user can easily log in again without retyping their email/phone.
+      await prefs.remove('userId');
       print('Session cleared (rememberMe preference preserved)');
     } catch (e) {
       print('Error clearing session: $e');
     }
   }
 
-  /// Shared Google Sign-In for both login and registration.
   static Future<Map<String, dynamic>> handleGoogleSignIn() async {
     try {
       try {
@@ -136,7 +184,8 @@ class AuthService {
         return {'success': false, 'error': 'Google Sign-In cancelled'};
       }
 
-      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
@@ -159,72 +208,25 @@ class AuthService {
     }
   }
 
-  /// Google Sign-In for LOGIN ONLY - Checks database BEFORE signing in with Firebase
-  /// This prevents unregistered accounts from being created
-  static Future<Map<String, dynamic>> handleGoogleSignInLogin() async {
+  static User? getCurrentUser() => _auth.currentUser;
+
+  static Future<void> signOut() async {
     try {
-      try {
-        await _googleSignIn.disconnect();
-      } catch (e) {
-        print('Disconnect warning: $e');
-      }
+      final prefs = await SharedPreferences.getInstance();
+      final savedUserId = prefs.getString('userId');
+      final currentUser = _auth.currentUser;
+      final userIdToNotify =
+          currentUser?.uid ?? (savedUserId != null && savedUserId.isNotEmpty ? savedUserId : null);
 
-      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) {
-        return {'success': false, 'error': 'Google Sign-In cancelled'};
-      }
-
-      final email = googleUser.email;
-      print('DEBUG: Google Sign-In email: $email');
-
-      // CHECK DATABASE FIRST - before Firebase creates the account
-      if (email.isNotEmpty) {
-        final checkResult = await ApiService.checkUserExists({"email": email});
-        print('DEBUG: Database check for $email -> $checkResult');
-        
-        if (checkResult['success'] != true || checkResult['exists'] != true) {
-          // User not registered - reject and don't complete Firebase sign-in
-          print('DEBUG: User $email not found in database - rejecting login');
-          return {
-            'success': false,
-            'error': 'Account Not Found',
-            'message': 'This Google account is not registered. Please sign up first.',
-          };
+      if (userIdToNotify != null) {
+        try {
+          await ApiService.signOut(userIdToNotify);
+        } catch (e) {
+          print('Error notifying backend of sign out: $e');
         }
       }
 
-      // Database check passed - NOW sign in with Firebase
-      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
-      final credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth.accessToken,
-        idToken: googleAuth.idToken,
-      );
-
-      final userCredential = await _auth.signInWithCredential(credential);
-
-      return {
-        'success': true,
-        'user': userCredential,
-        'isNewUser': userCredential.additionalUserInfo?.isNewUser ?? false,
-        'email': googleUser.email,
-        'displayName': googleUser.displayName,
-        'photoUrl': googleUser.photoUrl,
-      };
-    } on FirebaseAuthException catch (e) {
-      return {'success': false, 'error': 'Firebase error: ${e.message}'};
-    } catch (e) {
-      return {'success': false, 'error': 'Error: $e'};
-    }
-  }
-
-  /// Get current user (may be null if not signed in).
-  static User? getCurrentUser() => _auth.currentUser;
-
-  /// Sign out and clear the active session.
-  /// The rememberMe preference is preserved for a smoother next login.
-  static Future<void> signOut() async {
-    try {
-      await clearRememberedSession(); // Clears userId only, keeps rememberMe
+      await clearRememberedSession();
       await _auth.signOut();
       await _googleSignIn.signOut();
       print('User signed out and session cleared');

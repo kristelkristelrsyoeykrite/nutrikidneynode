@@ -24,6 +24,11 @@ class _LoginPageState extends State<LoginPage> {
   // Phone login controllers/state
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _phoneOtpController = TextEditingController();
+  final TextEditingController _resetOtpController = TextEditingController();
+  final TextEditingController _resetNewPasswordController =
+      TextEditingController();
+  final TextEditingController _resetConfirmPasswordController =
+      TextEditingController();
   String? _phoneVerificationId;
   bool _showPhoneOtpInput = false;
   String _loginPhoneOtpError = '';
@@ -63,6 +68,9 @@ Future<void> _loadRememberedLoginState() async {
     _passwordController.dispose();
     _phoneController.dispose();
     _phoneOtpController.dispose();
+    _resetOtpController.dispose();
+    _resetNewPasswordController.dispose();
+    _resetConfirmPasswordController.dispose();
     super.dispose();
   }
 
@@ -121,7 +129,7 @@ Future<void> _loadRememberedLoginState() async {
           message.contains('code has expired') ||
           message.contains('session expired') ||
           message.contains('sms code has expired')) {
-        return 'OTP Expired. Please request a new code.';
+        return 'OTP expired. Please request a new code.';
       }
       return error.message ?? 'OTP verification failed. Please try again.';
     }
@@ -183,22 +191,36 @@ Future<void> _loadRememberedLoginState() async {
     return resp["success"] == true && resp["exists"] == true;
   }
 
-  // Google Sign-In Method (Login) - Uses shared auth service with database check
+  // Google Sign-In Method (Login) - Uses shared auth service
   Future<void> _handleGoogleSignIn() async {
     try {
       setState(() => _isLoading = true);
       
-      final result = await AuthService.handleGoogleSignInLogin();
+      final result = await AuthService.handleGoogleSignIn();
       
       if (!result['success']) {
         setState(() => _isLoading = false);
-        final errorMessage = result['message'] ?? result['error'] ?? 'Unknown error';
-        _showErrorDialog(result['error'] ?? 'Google Sign-In Failed', errorMessage);
+        _showErrorDialog('Google Sign-In Failed', result['error'] ?? 'Unknown error');
         return;
       }
 
       final userCredential = result['user'] as UserCredential;
-      final email = result['email'] as String?;
+      final profileStatus = await ApiService.getProfileStatus(
+        uid: userCredential.user?.uid,
+        email: result['email'] as String?,
+      );
+
+      if (profileStatus['success'] != true ||
+          profileStatus['exists'] != true ||
+          profileStatus['verified'] != true) {
+        await AuthService.signOut();
+        setState(() => _isLoading = false);
+        _showErrorDialog(
+          'Google Sign-In Failed',
+          'No registered app account was found for this Google account. Please sign up first.',
+        );
+        return;
+      }
 
       ApiService.setUserId(userCredential.user!.uid);
 
@@ -206,7 +228,7 @@ Future<void> _loadRememberedLoginState() async {
       await AuthService.saveRememberedSession(
         userCredential.user!.uid,
         _rememberMe,
-        contact: email,
+        contact: result['email'] as String?,
       );
 
       if (mounted) {
@@ -244,6 +266,8 @@ Future<void> _loadRememberedLoginState() async {
 
         bool passwordValid = false;
         bool passwordUnsupported = false;
+        bool profileMissing = false;
+        String? verifiedUserId;
         for (final v in _buildPhoneVariants(enteredEmail)) {
           final resp = await ApiService.verifyPhonePassword({
             "phoneNumber": v,
@@ -253,16 +277,28 @@ Future<void> _loadRememberedLoginState() async {
 
           if (resp["success"] == true && resp["valid"] == true) {
             passwordValid = true;
+            final userId = resp["userId"];
+            if (userId is String && userId.isNotEmpty) {
+              verifiedUserId = userId;
+            }
             break;
           }
 
           if (resp["success"] == true && resp["reason"] == "password-not-set") {
             passwordUnsupported = true;
           }
+          if (resp["success"] == true && resp["reason"] == "profile-not-found") {
+            profileMissing = true;
+          }
         }
 
         if (!passwordValid) {
-          if (passwordUnsupported) {
+          if (profileMissing) {
+            _showErrorDialog(
+              'Phone Login Unavailable',
+              'This phone number does not have a completed app account yet. Please finish sign-up first.',
+            );
+          } else if (passwordUnsupported) {
             _showErrorDialog(
               'Phone Login Unavailable',
               'This account does not support password verification yet. Please use OTP or recreate the account.',
@@ -273,28 +309,59 @@ Future<void> _loadRememberedLoginState() async {
           return;
         }
 
-        // Open the phone OTP dialog and auto-send OTP for this normalized variant
-        await _showPhoneSignInDialog(normalizedPhone);
+        if (verifiedUserId == null) {
+          _showErrorDialog(
+            'Login Failed',
+            'Phone login succeeded but no user ID was returned.',
+          );
+          return;
+        }
+
+        ApiService.setUserId(verifiedUserId);
+        await AuthService.saveRememberedSession(
+          verifiedUserId,
+          _rememberMe,
+          contact: normalizedPhone,
+        );
+
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const DashboardPage()),
+          );
+        }
         return;
       }
 
-      // Email/password flow
+      // Email/password flow - authenticate via backend
       if (enteredEmail.isEmpty || enteredPassword.isEmpty) {
         _showErrorDialog('Missing Fields', 'Please enter both email and password');
         return;
       }
 
-      final UserCredential userCredential = await _auth.signInWithEmailAndPassword(
+      // Call backend login endpoint
+      final loginResponse = await ApiService.login(
         email: enteredEmail,
         password: enteredPassword,
       );
 
+      if (loginResponse['success'] != true) {
+        _showErrorDialog('Login Failed', loginResponse['error'] ?? 'Login failed. Please try again.');
+        return;
+      }
+
+      final uid = loginResponse['uid'];
+      if (uid == null) {
+        _showErrorDialog('Login Failed', 'Failed to get user ID');
+        return;
+      }
+
       // Store userId in ApiService
-      ApiService.setUserId(userCredential.user!.uid);
+      ApiService.setUserId(uid);
 
       // Save credentials if "Remember me" is checked
       await AuthService.saveRememberedSession(
-        userCredential.user!.uid,
+        uid,
         _rememberMe,
         contact: enteredEmail,
       );
@@ -305,16 +372,6 @@ Future<void> _loadRememberedLoginState() async {
           MaterialPageRoute(builder: (context) => const DashboardPage()),
         );
       }
-    } on FirebaseAuthException catch (e) {
-      String errorMessage = 'Login failed. Please try again.';
-      if (e.code == 'user-not-found') {
-        errorMessage = 'No account found with this email.';
-      } else if (e.code == 'wrong-password') {
-        errorMessage = 'Incorrect password. Please try again.';
-      } else if (e.code == 'invalid-email') {
-        errorMessage = 'Invalid email address.';
-      }
-      _showErrorDialog('Login Failed', errorMessage);
     } catch (e) {
       _showErrorDialog('Login Failed', e.toString());
     } finally {
@@ -380,7 +437,8 @@ Future<void> _loadRememberedLoginState() async {
         'We sent a password reset link to $enteredContact. Check your inbox and spam folder.',
       );
     } on FirebaseAuthException catch (e) {
-      String errorMessage = e.message ?? 'Unable to send reset email right now.';
+      String errorMessage =
+          e.message ?? 'Unable to send reset email right now.';
 
       if (e.code == 'invalid-email') {
         errorMessage = 'Please enter a valid email address.';
@@ -389,7 +447,8 @@ Future<void> _loadRememberedLoginState() async {
       } else if (e.code == 'missing-email') {
         errorMessage = 'Please enter your email address first.';
       } else if (e.code == 'too-many-requests') {
-        errorMessage = 'Too many attempts. Please wait a bit before trying again.';
+        errorMessage =
+            'Too many attempts. Please wait a bit before trying again.';
       }
 
       if (!mounted) return;
@@ -406,12 +465,9 @@ Future<void> _loadRememberedLoginState() async {
     String phoneNumber,
     String displayValue,
   ) async {
-    final otpController = TextEditingController();
-    final newPasswordController = TextEditingController();
-    final confirmPasswordController = TextEditingController();
-    final otpFocusNode = FocusNode();
-    final newPasswordFocusNode = FocusNode();
-    final confirmPasswordFocusNode = FocusNode();
+    _resetOtpController.clear();
+    _resetNewPasswordController.clear();
+    _resetConfirmPasswordController.clear();
 
     String? verificationId;
     bool otpSent = false;
@@ -428,9 +484,7 @@ Future<void> _loadRememberedLoginState() async {
       isClosingDialog = true;
       dialogOpen = false;
 
-      otpFocusNode.unfocus();
-      newPasswordFocusNode.unfocus();
-      confirmPasswordFocusNode.unfocus();
+      FocusScope.of(dialogContext).unfocus();
 
       try {
         await _auth.signOut();
@@ -524,8 +578,7 @@ Future<void> _loadRememberedLoginState() async {
                     const SizedBox(height: 12),
                     if (!verified) ...[
                       TextField(
-                        controller: otpController,
-                        focusNode: otpFocusNode,
+                        controller: _resetOtpController,
                         keyboardType: TextInputType.number,
                         decoration: InputDecoration(
                           border: OutlineInputBorder(
@@ -538,12 +591,12 @@ Future<void> _loadRememberedLoginState() async {
                       ),
                     ] else ...[
                       TextField(
-                        controller: newPasswordController,
-                        focusNode: newPasswordFocusNode,
+                        controller: _resetNewPasswordController,
                         textInputAction: TextInputAction.next,
                         keyboardType: TextInputType.visiblePassword,
                         obscureText: true,
-                        onSubmitted: (_) => confirmPasswordFocusNode.requestFocus(),
+                        onSubmitted: (_) =>
+                            FocusScope.of(dialogContext).nextFocus(),
                         decoration: InputDecoration(
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
@@ -553,8 +606,7 @@ Future<void> _loadRememberedLoginState() async {
                       ),
                       const SizedBox(height: 12),
                       TextField(
-                        controller: confirmPasswordController,
-                        focusNode: confirmPasswordFocusNode,
+                        controller: _resetConfirmPasswordController,
                         textInputAction: TextInputAction.done,
                         keyboardType: TextInputType.visiblePassword,
                         obscureText: true,
@@ -587,7 +639,7 @@ Future<void> _loadRememberedLoginState() async {
                         ? null
                         : () async {
                           if (!verified) {
-                            final otp = otpController.text.trim();
+                            final otp = _resetOtpController.text.trim();
                             if (otp.isEmpty || verificationId == null) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(content: Text('Enter the OTP')),
@@ -611,15 +663,10 @@ Future<void> _loadRememberedLoginState() async {
                               );
                               verifiedUser = userCred.user;
                               if (!dialogOpen) return;
-                              otpFocusNode.unfocus();
+                              FocusScope.of(dialogContext).unfocus();
                               setStateDialog(() {
                                 verified = true;
                                 isSubmitting = false;
-                              });
-                              WidgetsBinding.instance.addPostFrameCallback((_) {
-                                if (dialogOpen && !isClosingDialog) {
-                                  newPasswordFocusNode.requestFocus();
-                                }
                               });
                             } catch (e) {
                               debugPrint(
@@ -630,13 +677,14 @@ Future<void> _loadRememberedLoginState() async {
                                 isSubmitting = false;
                                 resetOtpError = _otpErrorMessage(e);
                               });
-                              otpController.clear();
+                              _resetOtpController.clear();
                             }
                             return;
                           }
 
-                          final newPassword = newPasswordController.text;
-                          final confirmPassword = confirmPasswordController.text;
+                          final newPassword = _resetNewPasswordController.text;
+                          final confirmPassword =
+                              _resetConfirmPasswordController.text;
 
                           if (!_isPasswordValidForReset(newPassword)) {
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -705,13 +753,6 @@ Future<void> _loadRememberedLoginState() async {
         );
       },
     );
-
-    otpController.dispose();
-    newPasswordController.dispose();
-    confirmPasswordController.dispose();
-    otpFocusNode.dispose();
-    newPasswordFocusNode.dispose();
-    confirmPasswordFocusNode.dispose();
   }
 
   Future<void> _showPhoneSignInDialog([String? initialPhone]) async {

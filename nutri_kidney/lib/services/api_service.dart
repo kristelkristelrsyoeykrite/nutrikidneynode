@@ -1,16 +1,20 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String baseUrl = "http://10.251.113.184:3000";
-  static String? _userId; // Store userId from signup
-  
-  // Store each step's data locally
+  static const String baseUrl = "http://10.223.175.184:3000";
+  static const Map<String, String> _jsonHeaders = {
+    "Content-Type": "application/json",
+  };
+
+  static String? _userId;
+  static String? get userId => _userId;
+
   static Map<String, dynamic> step1Data = {};
   static Map<String, dynamic> step2Data = {};
   static Map<String, dynamic> step3Data = {};
   static Map<String, dynamic> step4Data = {};
-  // Pending signup data collected during registration; actual signup occurs on final submit
   static Map<String, dynamic> signupData = {};
 
   static void setUserId(String userId) {
@@ -19,269 +23,279 @@ class ApiService {
   }
 
   static void setSignupData(Map<String, dynamic> data) {
-    signupData = data;
+    signupData = Map<String, dynamic>.from(data);
     print("DEBUG: Signup data stored: $signupData");
   }
 
-  static Future<void> sendStep1(Map<String, dynamic> data) async {
-    print("Step 1 data collected: $data");
-    step1Data = data;
-    
+  static Future<Map<String, dynamic>> _post(
+    String path, {
+    Map<String, dynamic>? body,
+  }) async {
+    final uri = Uri.parse("$baseUrl$path");
+    final payload = body ?? const <String, dynamic>{};
+    print("DEBUG POST $path payload: $payload");
+
     final response = await http.post(
-      Uri.parse("$baseUrl/api/health/step1"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
+      uri,
+      headers: _jsonHeaders,
+      body: jsonEncode(payload),
     );
 
-    print("Step 1 Response: ${response.body}");
+    print("DEBUG POST $path status: ${response.statusCode}");
+    print("DEBUG POST $path body: ${response.body}");
+
+    if (response.body.isEmpty) {
+      return {
+        "success": response.statusCode >= 200 && response.statusCode < 300,
+      };
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
+
+    return {
+      "success": response.statusCode >= 200 && response.statusCode < 300,
+      "data": decoded,
+    };
   }
+
+  static Future<void> _sendHealthStep(
+    String path,
+    Map<String, dynamic> data,
+    void Function(Map<String, dynamic>) cache,
+  ) async {
+    cache(Map<String, dynamic>.from(data));
+    await _post(path, body: data);
+  }
+
+  static Future<void> sendStep1(Map<String, dynamic> data) async {
+    await _sendHealthStep("/api/health/step1", data, (value) => step1Data = value);
+  }
+
   static Future<void> sendStep2(Map<String, dynamic> data) async {
-  print("Step 2 data collected: $data");
-  step2Data = data;
-  
-  final response = await http.post(
-    Uri.parse("$baseUrl/api/health/step2"),
-    headers: {"Content-Type": "application/json"},
-    body: jsonEncode(data),
-  );
+    await _sendHealthStep("/api/health/step2", data, (value) => step2Data = value);
+  }
 
-  print("Step 2 Response: ${response.body}");
-}
-static Future<void> sendStep3(Map<String, dynamic> data) async {
-  print("Step 3 data collected: $data");
-  step3Data = data;
-  
-  final response = await http.post(
-    Uri.parse("$baseUrl/api/health/step3"),
-    headers: {"Content-Type": "application/json"},
-    body: jsonEncode(data),
-  );
+  static Future<void> sendStep3(Map<String, dynamic> data) async {
+    await _sendHealthStep("/api/health/step3", data, (value) => step3Data = value);
+  }
 
-  print("Step 3 Response: ${response.body}");
-}
+  static Future<void> sendStep4(Map<String, dynamic> data) async {
+    await _sendHealthStep("/api/health/step4", data, (value) => step4Data = value);
+  }
 
-static Future<void> sendStep4(Map<String, dynamic> data) async {
-  print("Step 4 data collected: $data");
-  step4Data = data;
-  
-  final response = await http.post(
-    Uri.parse("$baseUrl/api/health/step4"),
-    headers: {"Content-Type": "application/json"},
-    body: jsonEncode(data),
-  );
-
-  print("Step 4 Response: ${response.body}");
-}
-
-  // FINAL SUBMIT - Send all collected data to database
   static Future<Map<String, dynamic>> submitAll() async {
     if (_userId == null) {
       throw Exception("UserId not set. Please complete signup first.");
     }
 
-    print("DEBUG: Submitting all data for user: $_userId");
-    
-    final allData = {
-      "userId": _userId,
-      "step1": step1Data,
-      "step2": step2Data,
-      "step3": step3Data,
-      "step4": step4Data,
-    };
-
-    print("DEBUG: Final submission data: $allData");
-
-    final response = await http.post(
-      Uri.parse("$baseUrl/api/health/submit-all"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(allData),
+    return _post(
+      "/api/health/submit-all",
+      body: {
+        "userId": _userId,
+        "step1": step1Data,
+        "step2": step2Data,
+        "step3": step3Data,
+        "step4": step4Data,
+      },
     );
+  }
 
-    print("DEBUG: Submit-all response status: ${response.statusCode}");
-    print("DEBUG: Submit-all response body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
+  static Future<Map<String, dynamic>> signup(Map<String, dynamic> data) async {
+    final decoded = await _post("/signup", body: data);
+    final userId = decoded["userId"] ?? decoded["uid"];
+    if (decoded["success"] == true && userId is String && userId.isNotEmpty) {
+      setUserId(userId);
+    }
     return decoded;
   }
-static Future<Map<String, dynamic>> signup(Map<String, dynamic> data) async {
-  print("DEBUG: Calling signup with data: $data");
-  final response = await http.post(
-    Uri.parse("$baseUrl/signup"),
-    headers: {"Content-Type": "application/json"},
-    body: jsonEncode(data),
-  );
 
-  print("DEBUG: Signup response status: ${response.statusCode}");
-  print("DEBUG: Signup response body: ${response.body}");
-
-  final decoded = jsonDecode(response.body);
-  
-  // Store userId after successful signup
-  if (decoded["success"] == true && decoded["userId"] != null) {
-    setUserId(decoded["userId"]);
+  static Future<Map<String, dynamic>> checkUserExists(
+    Map<String, dynamic> data,
+  ) async {
+    return _post("/check-user", body: data);
   }
 
-  return decoded;
+  static Future<Map<String, dynamic>> verifyPhonePassword(
+    Map<String, dynamic> data,
+  ) async {
+    return _post("/verify-phone-password", body: data);
+  }
+
+  static Future<Map<String, dynamic>> resetPassword(
+    Map<String, dynamic> data,
+  ) async {
+    return _post("/reset-password", body: data);
+  }
+
+  static Future<Map<String, dynamic>> verifyEmailDomain(
+    Map<String, dynamic> data,
+  ) async {
+    return _post("/verify-email-domain", body: data);
+  }
+
+  static Future<Map<String, dynamic>> startEmailVerification(
+    Map<String, dynamic> data,
+  ) async {
+    return _post("/send-email-verification", body: data);
+  }
+
+  static Future<Map<String, dynamic>> verifyEmailToken(
+    Map<String, dynamic> data,
+  ) async {
+    return _post("/verify-email-token", body: data);
+  }
+
+  static Future<Map<String, dynamic>> verifyEmailAndCreateProfile(
+    Map<String, dynamic> data,
+  ) async {
+    final decoded = await _post("/verify-email-and-create-user", body: data);
+    final userId = decoded["userId"] ?? decoded["uid"];
+    if (decoded["success"] == true && userId is String && userId.isNotEmpty) {
+      setUserId(userId);
+    }
+    return decoded;
+  }
+
+  static Future<Map<String, dynamic>> createUserAfterEmailVerification(
+    Map<String, dynamic> data,
+  ) async {
+    return verifyEmailAndCreateProfile(data);
+  }
+
+  static Future<Map<String, dynamic>> verifyPhoneAndCreateProfile(
+    Map<String, dynamic> data,
+  ) async {
+    final decoded = await _post("/verify-phone-and-create-user", body: data);
+    final userId = decoded["userId"] ?? decoded["uid"];
+    if (decoded["success"] == true && userId is String && userId.isNotEmpty) {
+      setUserId(userId);
+    }
+    return decoded;
+  }
+
+  static Future<Map<String, dynamic>> saveUserProfile(
+    Map<String, dynamic> data,
+  ) async {
+    return _post("/api/user/profile/save", body: data);
+  }
+
+  static Future<Map<String, dynamic>> deleteUserAccount(String uid) async {
+    return _post("/api/user/cancel-verification", body: {"uid": uid});
+  }
+
+  static Future<Map<String, dynamic>> createUser({
+    required String fullName,
+    String? email,
+    String? phoneNumber,
+    required String password,
+  }) async {
+    return _post(
+      "/api/user/create",
+      body: {
+        "fullName": fullName,
+        "email": email,
+        "phoneNumber": phoneNumber,
+        "password": password,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> sendEmailVerification(String uid) async {
+    return _post("/api/user/send-email-verification", body: {"uid": uid});
+  }
+
+  static Future<Map<String, dynamic>> sendPhoneOtp({
+    required String uid,
+    required String phoneNumber,
+  }) async {
+    return _post(
+      "/api/user/send-phone-otp",
+      body: {
+        "uid": uid,
+        "phoneNumber": phoneNumber,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> completeEmailVerification(
+    String uid,
+  ) async {
+    return _post("/api/user/complete-email-verification", body: {"uid": uid});
+  }
+
+  static Future<Map<String, dynamic>> completePhoneVerification(
+    String uid,
+  ) async {
+    return _post("/api/user/complete-phone-verification", body: {"uid": uid});
+  }
+
+  static Future<Map<String, dynamic>> saveUserProfileAfterVerification({
+    required String uid,
+    required String fullName,
+    String? email,
+    String? phoneNumber,
+    String? password,
+    String status = "verified",
+  }) async {
+    return saveUserProfile({
+      "uid": uid,
+      "fullName": fullName,
+      "email": email,
+      "phoneNumber": phoneNumber,
+      "password": password,
+      "status": status,
+    });
+  }
+
+  static Future<Map<String, dynamic>> login({
+    required String email,
+    required String password,
+  }) async {
+    return _post(
+      "/api/user/login",
+      body: {
+        "email": email,
+        "password": password,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> getProfileStatus({
+    String? uid,
+    String? email,
+    String? phoneNumber,
+  }) async {
+    return _post(
+      "/api/user/profile-status",
+      body: {
+        "uid": uid,
+        "email": email,
+        "phoneNumber": phoneNumber,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> sendPasswordReset(String email) async {
+    return _post("/api/user/send-password-reset", body: {"email": email});
+  }
+
+  static Future<Map<String, dynamic>> resetPasswordWithCode({
+    required String oobCode,
+    required String newPassword,
+  }) async {
+    return _post(
+      "/api/user/reset-password",
+      body: {
+        "oobCode": oobCode,
+        "newPassword": newPassword,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> signOut(String uid) async {
+    return _post("/api/user/sign-out", body: {"uid": uid});
+  }
 }
-
-  static Future<Map<String, dynamic>> checkUserExists(Map<String, dynamic> data) async {
-    print("DEBUG: Checking if user exists with: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/check-user"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: check-user status: ${response.statusCode}");
-    print("DEBUG: check-user body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    return decoded;
-  }
-
-  static Future<Map<String, dynamic>> verifyPhonePassword(Map<String, dynamic> data) async {
-    print("DEBUG: Verifying phone password with: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/verify-phone-password"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: verify-phone-password status: ${response.statusCode}");
-    print("DEBUG: verify-phone-password body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    return decoded;
-  }
-
-  static Future<Map<String, dynamic>> resetPassword(Map<String, dynamic> data) async {
-    print("DEBUG: Resetting password with: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/reset-password"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: reset-password status: ${response.statusCode}");
-    print("DEBUG: reset-password body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    return decoded;
-  }
-
-  static Future<Map<String, dynamic>> verifyEmailDomain(Map<String, dynamic> data) async {
-    print("DEBUG: Verifying email domain with: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/verify-email-domain"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: verify-email-domain status: ${response.statusCode}");
-    print("DEBUG: verify-email-domain body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    return decoded;
-  }
-
-  static Future<Map<String, dynamic>> verifyEmailAndCreateProfile(Map<String, dynamic> data) async {
-    print("DEBUG: Calling verify-email-and-create-user with data: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/verify-email-and-create-user"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: verify-email-and-create-user status: ${response.statusCode}");
-    print("DEBUG: verify-email-and-create-user body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    
-    // Store userId after successful verification
-    if (decoded["success"] == true && decoded["userId"] != null) {
-      setUserId(decoded["userId"]);
-    }
-
-    return decoded;
-  }
-
-  static Future<Map<String, dynamic>> verifyPhoneAndCreateProfile(Map<String, dynamic> data) async {
-    print("DEBUG: Calling verify-phone-and-create-user with data: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/verify-phone-and-create-user"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: verify-phone-and-create-user status: ${response.statusCode}");
-    print("DEBUG: verify-phone-and-create-user body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    
-    // Store userId after successful verification
-    if (decoded["success"] == true && decoded["userId"] != null) {
-      setUserId(decoded["userId"]);
-    }
-
-    return decoded;
-  }
-
-  static Future<Map<String, dynamic>> sendEmailVerification(Map<String, dynamic> data) async {
-    print("DEBUG: Calling send-email-verification with data: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/send-email-verification"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: send-email-verification status: ${response.statusCode}");
-    print("DEBUG: send-email-verification body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    return decoded;
-  }
-
-  static Future<Map<String, dynamic>> verifyEmailToken(Map<String, dynamic> data) async {
-    print("DEBUG: Calling verify-email-and-create-user with data: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/verify-email-and-create-user"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: verify-email-and-create-user status: ${response.statusCode}");
-    print("DEBUG: verify-email-and-create-user body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    
-    // Store userId after successful verification
-    if (decoded["success"] == true && decoded["userId"] != null) {
-      setUserId(decoded["userId"]);
-    }
-
-    return decoded;
-  }
-
-  // New method for post-verification email user creation
-  static Future<Map<String, dynamic>> createUserAfterEmailVerification(Map<String, dynamic> data) async {
-    print("DEBUG: Creating user after email verification with data: $data");
-    final response = await http.post(
-      Uri.parse("$baseUrl/verify-email-and-create-user"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode(data),
-    );
-
-    print("DEBUG: Email user creation status: ${response.statusCode}");
-    print("DEBUG: Email user creation body: ${response.body}");
-
-    final decoded = jsonDecode(response.body);
-    
-    // Store userId after successful creation
-    if (decoded["success"] == true && decoded["userId"] != null) {
-      setUserId(decoded["userId"]);
-    }
-
-    return decoded;
-  }
-}
-

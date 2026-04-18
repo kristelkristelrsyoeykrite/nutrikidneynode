@@ -1,9 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:nutri_kidney/services/api_service.dart';
 import 'package:nutri_kidney/services/auth_service.dart';
+import 'package:nutri_kidney/utils/app_logger.dart';
+import 'package:nutri_kidney/models/user_status.dart';
 import 'health_profile1.dart';
+import 'otp_verification_dialog.dart';
+import 'account_success_screen.dart';
 import '../main/dashboard.dart';
 
 class RegisterPage extends StatefulWidget {
@@ -581,9 +587,16 @@ class _RegisterPageState extends State<RegisterPage> {
   }
 
   void _proceedWithSignup() async {
-    // Save signup data locally; actual signup will occur after Step 4
+    // NEW FLOW: All Firebase operations go through backend
+    AppLogger.info(
+      'Starting signup process for user: ${_nameController.text.trim()}',
+      tag: LogTag.signup,
+    );
+
     try {
+      final fullName = _nameController.text.trim();
       final contact = _emailController.text.trim();
+      final password = _passwordController.text;
       final bool contactIsEmail = _isEmailFormat(contact);
 
       String? emailToSend;
@@ -592,31 +605,444 @@ class _RegisterPageState extends State<RegisterPage> {
       if (contactIsEmail) {
         emailToSend = contact;
       } else {
-        // normalize phone using selected country code
         phoneToSend = _normalizePhone(contact);
       }
 
+      // Save signup data locally for later use
       final signupPayload = {
-        "fullName": _nameController.text.trim(),
+        "fullName": fullName,
         "email": emailToSend,
-        "password": _passwordController.text,
+        "password": password,
         "phoneNumber": phoneToSend,
       };
-
-      // Directly save the signup payload and proceed without checking
-      // whether a user already exists. The flow will handle duplicates later.
       ApiService.setSignupData(signupPayload);
 
+      String? userId;
+
+      if (contactIsEmail) {
+        AppLogger.info(
+          'Creating email user via backend: $emailToSend',
+          tag: LogTag.signup,
+        );
+
+        final createResponse = await ApiService.createUser(
+          fullName: fullName,
+          email: emailToSend,
+          phoneNumber: phoneToSend,
+          password: password,
+        );
+
+        if (createResponse['success'] != true) {
+          throw Exception(createResponse['error'] ?? 'Failed to create user');
+        }
+
+        userId = createResponse['uid'];
+        if (userId == null) {
+          throw Exception('Failed to get user ID after creation');
+        }
+
+        ApiService.setUserId(userId);
+        ApiService.signupData['uid'] = userId;
+
+        AppLogger.success(
+          'Email user created via backend: $userId',
+          tag: LogTag.signup,
+        );
+      }
+
+      // Step 2: Send verification based on contact type
+      if (contactIsEmail) {
+        AppLogger.info(
+          'Sending email verification request to backend for: $emailToSend',
+          tag: LogTag.signup,
+        );
+        
+        try {
+          await _sendFirebaseEmailVerification(
+            email: emailToSend!,
+            password: password,
+          );
+        } catch (e) {
+          AppLogger.error(
+            'Error sending Firebase email verification',
+            tag: LogTag.signup,
+            error: e,
+          );
+          rethrow;
+        }
+
+        // Show email-link verification dialog
+        if (mounted) {
+          bool? verified;
+          try {
+            verified = await _showEmailVerificationDialog(
+              userId: userId!,
+              email: emailToSend!,
+            );
+          } catch (e) {
+            AppLogger.error(
+              'Error showing email verification dialog',
+              tag: LogTag.signup,
+              error: e,
+            );
+            verified = false;
+          }
+
+          if (verified != true && mounted) {
+            AppLogger.warning(
+              'User cancelled email verification - requesting deletion for user: $userId',
+              tag: LogTag.signup,
+            );
+            
+            try {
+              await ApiService.deleteUserAccount(userId!);
+              AppLogger.info(
+                'User deletion requested from backend: $userId',
+                tag: LogTag.signup,
+              );
+            } catch (e) {
+              AppLogger.error(
+                'Error requesting user deletion from backend',
+                tag: LogTag.signup,
+                error: e,
+              );
+            }
+            
+            return;
+          }
+        }
+      } else {
+        // Phone verification happens before account creation.
+        String? verificationId;
+        final verificationIdCompleter = Completer<String>();
+        await _auth.verifyPhoneNumber(
+          phoneNumber: phoneToSend!,
+          timeout: const Duration(seconds: 60),
+          verificationCompleted: (PhoneAuthCredential credential) async {
+            AppLogger.success(
+              'Phone verification auto-completed via Firebase',
+              tag: LogTag.signup,
+            );
+          },
+          verificationFailed: (FirebaseAuthException e) {
+            AppLogger.error(
+              'Phone verification failed',
+              tag: LogTag.signup,
+              error: e,
+            );
+            if (mounted) {
+              _showErrorDialog('Phone Verification Failed', e.message ?? 'Unknown error');
+            }
+            if (!verificationIdCompleter.isCompleted) {
+              verificationIdCompleter.completeError(
+                Exception(e.message ?? 'Phone verification failed'),
+              );
+            }
+          },
+          codeSent: (String verificationIdFromFirebase, int? resendToken) {
+            verificationId = verificationIdFromFirebase;
+            AppLogger.info(
+              'OTP sent to phone via Firebase: $phoneToSend',
+              tag: LogTag.signup,
+            );
+            if (!verificationIdCompleter.isCompleted) {
+              verificationIdCompleter.complete(verificationIdFromFirebase);
+            }
+          },
+          codeAutoRetrievalTimeout: (String verificationId) {
+            AppLogger.warning(
+              'OTP auto-retrieval timeout',
+              tag: LogTag.signup,
+            );
+          },
+        );
+
+        verificationId ??= await verificationIdCompleter.future;
+
+        // Show OTP dialog for phone verification
+        if (mounted) {
+          bool? verified;
+          try {
+            verified = await showDialog<bool>(
+              context: context,
+              barrierDismissible: false,
+              builder: (context) => OTPVerificationDialog(
+                verificationId: verificationId!,
+                contact: phoneToSend!,
+                isPhoneVerification: true,
+                onOtpSubmit: (otp) async {
+                  try {
+                    final PhoneAuthCredential credential = PhoneAuthProvider.credential(
+                      verificationId: verificationId!,
+                      smsCode: otp,
+                    );
+                    final userCredential = await _auth.signInWithCredential(
+                      credential,
+                    );
+                    final verifiedUid = userCredential.user?.uid;
+                    if (verifiedUid == null || verifiedUid.isEmpty) {
+                      throw Exception('Failed to get verified phone user ID');
+                    }
+
+                    ApiService.setUserId(verifiedUid);
+                    ApiService.signupData['uid'] = verifiedUid;
+
+                    final createPhoneResponse =
+                        await ApiService.verifyPhoneAndCreateProfile(
+                      ApiService.signupData,
+                    );
+                    if (createPhoneResponse['success'] != true) {
+                      throw Exception(
+                        createPhoneResponse['error'] ??
+                            'Failed to create phone account',
+                      );
+                    }
+
+                    userId = createPhoneResponse['userId'] ??
+                        createPhoneResponse['uid'] ??
+                        verifiedUid;
+                    
+                    AppLogger.success(
+                      'Phone verification completed and account created',
+                      tag: LogTag.signup,
+                    );
+                  } catch (e) {
+                    AppLogger.error(
+                      'OTP verification failed',
+                      tag: LogTag.signup,
+                      error: e,
+                    );
+                    rethrow;
+                  }
+                },
+              ),
+            );
+          } catch (e) {
+            AppLogger.error(
+              'Error showing phone verification dialog',
+              tag: LogTag.signup,
+              error: e,
+            );
+            verified = false;
+          }
+
+          if (verified != true && mounted) {
+            AppLogger.warning(
+              'User cancelled phone verification - requesting deletion for user: $userId',
+              tag: LogTag.signup,
+            );
+            
+            try {
+              if (ApiService.userId == null || ApiService.userId!.isEmpty) {
+                return;
+              }
+              await ApiService.deleteUserAccount(ApiService.userId!);
+              AppLogger.info(
+                'User deletion requested from backend: ${ApiService.userId}',
+                tag: LogTag.signup,
+              );
+            } catch (e) {
+              AppLogger.error(
+                'Error requesting user deletion from backend',
+                tag: LogTag.signup,
+                error: e,
+              );
+            }
+            
+            return;
+          }
+        }
+      }
+
+      // Step 3: Save user profile via backend with VERIFIED status
+      AppLogger.info(
+        'Saving verified user profile via backend: $userId',
+        tag: LogTag.signup,
+      );
+
+      try {
+        if (userId == null || userId!.isEmpty) {
+          throw Exception('User ID is missing after verification');
+        }
+        final String verifiedUserId = userId!;
+        await ApiService.saveUserProfileAfterVerification(
+          uid: verifiedUserId,
+          fullName: fullName,
+          email: emailToSend,
+          phoneNumber: phoneToSend,
+          password: password,
+          status: UserStatus.verified.toShortString(),
+        );
+      } catch (e) {
+        AppLogger.error(
+          'Error saving user profile via backend',
+          tag: LogTag.signup,
+          error: e,
+        );
+      }
+
+      // Step 4: Navigate to Account Success Screen
       if (mounted) {
-        Navigator.push(
+        AppLogger.success(
+          'Signup completed - navigating to account success screen',
+          tag: LogTag.signup,
+        );
+        Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (context) => const HealthProfile1Page(),
+            builder: (context) => AccountSuccessScreen(
+              userName: fullName,
+            ),
           ),
         );
       }
+    } on FirebaseAuthException catch (e) {
+      AppLogger.error(
+        'Firebase auth error during signup',
+        tag: LogTag.signup,
+        error: e,
+      );
+      if (mounted) {
+        String message = 'An error occurred';
+        if (e.code == 'invalid-verification-code') {
+          message = 'Invalid verification code. Please try again.';
+        } else if (e.code == 'session-expired') {
+          message = 'Verification session expired. Please try again.';
+        }
+        _showErrorDialog('Verification Error', message);
+      }
     } catch (e) {
-      _showErrorDialog("Error saving signup data", e.toString());
+      AppLogger.error(
+        'Unexpected error during signup',
+        tag: LogTag.signup,
+        error: e,
+      );
+      if (mounted) {
+        _showErrorDialog('Signup Error', e.toString());
+      }
+    }
+  }
+
+  Future<bool> _showEmailVerificationDialog({
+    required String userId,
+    required String email,
+  }) async {
+    while (mounted) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: const Text(
+              'Verify Your Email',
+              style: TextStyle(
+                color: Color(0xFF37474F),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'We sent a verification link to $email.',
+                  style: const TextStyle(
+                    color: Color(0xFF37474F),
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Open the email and click the verification link first. Only then tap "I Verified My Email".',
+                  style: TextStyle(
+                    color: Color(0xFF78909C),
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('I Verified My Email'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (confirmed != true) {
+        return false;
+      }
+
+      try {
+        final response = await ApiService.completeEmailVerification(userId);
+        if (response['success'] == true) {
+          AppLogger.success(
+            'Email verification confirmed by backend',
+            tag: LogTag.signup,
+          );
+          return true;
+        }
+
+        if (mounted) {
+          _showErrorDialog(
+            'Email Not Verified Yet',
+            response['error'] ??
+                'Please click the verification link in your email first.',
+          );
+        }
+      } catch (e) {
+        AppLogger.error(
+          'Error completing email verification',
+          tag: LogTag.signup,
+          error: e,
+        );
+        if (mounted) {
+          _showErrorDialog(
+            'Email Not Verified Yet',
+            'Please click the verification link in your email first.',
+          );
+        }
+      }
+    }
+
+    return false;
+  }
+
+  Future<void> _sendFirebaseEmailVerification({
+    required String email,
+    required String password,
+  }) async {
+    UserCredential? credential;
+
+    try {
+      credential = await _auth.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+    } on FirebaseAuthException catch (e) {
+      throw Exception(e.message ?? 'Unable to sign in for email verification.');
+    }
+
+    final user = credential.user;
+    if (user == null) {
+      throw Exception('Unable to access the created Firebase user.');
+    }
+
+    try {
+      await user.sendEmailVerification();
+    } on FirebaseAuthException catch (e) {
+      throw Exception(e.message ?? 'Unable to send verification email.');
+    } finally {
+      await _auth.signOut();
     }
   }
 
@@ -765,8 +1191,11 @@ class _RegisterPageState extends State<RegisterPage> {
   }
 
 Future<void> _signupUser() async {
+  AppLogger.info('Starting signup validation', tag: LogTag.signup);
+
   // Validation 1: Check if name is empty
   if (_nameController.text.trim().isEmpty) {
+    AppLogger.warning('Signup rejected: Empty name', tag: LogTag.signup);
     _showErrorDialog("Please enter your full name");
     return;
   }
@@ -774,6 +1203,7 @@ Future<void> _signupUser() async {
   // Validation 2: Check contact (email or phone)
   final contact = _emailController.text.trim();
   if (contact.isEmpty) {
+    AppLogger.warning('Signup rejected: Empty contact', tag: LogTag.signup);
     _showErrorDialog("Please enter an email address or phone number");
     return;
   }
@@ -781,6 +1211,7 @@ Future<void> _signupUser() async {
   final bool contactIsEmail = _isEmailFormat(contact);
   final bool contactIsPhone = _isPhoneFormat(contact);
   if (!contactIsEmail && !contactIsPhone) {
+    AppLogger.warning('Signup rejected: Invalid contact format', tag: LogTag.signup);
     _showErrorDialog("Please enter a valid email address or phone number");
     return;
   }
@@ -788,10 +1219,12 @@ Future<void> _signupUser() async {
   // Validation 3: Check if password is empty and valid
   final password = _passwordController.text;
   if (password.isEmpty) {
+    AppLogger.warning('Signup rejected: Empty password', tag: LogTag.signup);
     _showErrorDialog("Please enter a password");
     return;
   }
   if (!_isPasswordValid(password)) {
+    AppLogger.warning('Signup rejected: Weak password', tag: LogTag.signup);
     _showErrorDialog("Must be at least 8 characters, include a number & special character");
     return;
   }
@@ -799,18 +1232,23 @@ Future<void> _signupUser() async {
   // Validation 4: Check if passwords match
   final confirmPassword = _confirmPasswordController.text;
   if (password != confirmPassword) {
+    AppLogger.warning('Signup rejected: Passwords do not match', tag: LogTag.signup);
     _showErrorDialog("Passwords do not match");
     return;
   }
 
   // Validation 5: Check if privacy agreed
   if (!_hasAgreedToPrivacy) {
+    AppLogger.warning('Signup rejected: Privacy not agreed', tag: LogTag.signup);
     _showErrorDialog("Please agree to the privacy policy");
     return;
   }
 
+  AppLogger.info('All validations passed, proceeding with signup', tag: LogTag.signup);
+
   // All validations passed.
   if (contactIsPhone) {
+    AppLogger.info('Phone-based signup detected, proceeding', tag: LogTag.signup);
     // For phone-based signups we do NOT verify here. Save signup data and
     // proceed to the health profile flow; final verification will occur on Proceed.
     _proceedWithSignup();

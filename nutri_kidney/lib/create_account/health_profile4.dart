@@ -860,11 +860,16 @@ Future<void> _handleFinishRegistration() async {
       throw Exception("Signup data missing. Please complete registration first.");
     }
 
-    // If signupData contains a phoneNumber, verify it first (send OTP now)
-    final phone = ApiService.signupData["phoneNumber"] as String?;
-    if (phone != null && phone.trim().isNotEmpty) {
-      // Phone-based flow
-      _showLoadingDialog("Verifying phone number...");
+    final existingUserId =
+        ApiService.userId ?? ApiService.signupData["uid"] as String?;
+    if (existingUserId != null && existingUserId.trim().isNotEmpty) {
+      print("Existing user already created earlier: $existingUserId");
+    } else {
+      // If signupData contains a phoneNumber, verify it first (send OTP now)
+      final phone = ApiService.signupData["phoneNumber"] as String?;
+      if (phone != null && phone.trim().isNotEmpty) {
+        // Phone-based flow
+        _showLoadingDialog("Verifying phone number...");
       
       // Show OTP dialog for verification
       final ok = await _showVerifyDialogAndSignIn(phone);
@@ -887,20 +892,14 @@ Future<void> _handleFinishRegistration() async {
         Navigator.pop(context); // Close loading dialog
         throw e;
       }
-    } else {
-      // EMAIL-BASED SIGNUP FLOW
-      _showLoadingDialog("Validating your information...");
-      try {
-        // Step 1: Validate with backend
-        final signupResponse = await ApiService.signup(ApiService.signupData);
-        if (signupResponse["success"] != true) {
-          throw Exception(signupResponse["error"] ?? "Signup validation failed");
-        }
-
-        final signupData = ApiService.signupData;
-        final signupEmail = signupData["email"] as String?;
-        final signupPassword = signupData["password"] as String?;
-        final signupFullName = signupData["fullName"] as String?;
+      } else {
+        // EMAIL-BASED SIGNUP FLOW
+        _showLoadingDialog("Preparing email verification...");
+        try {
+          final signupData = ApiService.signupData;
+          final signupEmail = signupData["email"] as String?;
+          final signupPassword = signupData["password"] as String?;
+          final signupFullName = signupData["fullName"] as String?;
 
         if (signupEmail != null && signupEmail.isNotEmpty && signupPassword != null && signupPassword.isNotEmpty) {
           // Step 1.5: Validate email format
@@ -929,32 +928,11 @@ Future<void> _handleFinishRegistration() async {
             throw Exception('Could not verify email domain: $e');
           }
 
-          // Step 1.75: Check if email already exists in the system
-          _updateLoadingDialog("Checking email availability...");
-          try {
-            final checkEmailResp = await ApiService.checkUserExists({"email": signupEmail});
-            if (checkEmailResp["success"] == true && checkEmailResp["exists"] == true) {
-              Navigator.pop(context); // Close loading dialog
-              throw Exception('This email is already registered. Please use a different email or log in to your account.');
-            }
-            if (checkEmailResp["success"] != true) {
-              Navigator.pop(context); // Close loading dialog
-              throw Exception('Unable to verify email availability. Please try again later.');
-            }
-          } catch (e) {
-            Navigator.pop(context); // Close loading dialog
-            if (e.toString().contains('already registered') || e.toString().contains('already exists')) {
-              rethrow;
-            }
-            print('Email existence check error: $e');
-            throw Exception('Could not verify email: $e');
-          }
-
           // Step 2: Notify backend that client will handle email verification
           print("Starting client-side email verification...");
           _updateLoadingDialog("Sending verification email...");
           try {
-            final sendVerifyResponse = await ApiService.sendEmailVerification({
+            final sendVerifyResponse = await ApiService.startEmailVerification({
               "email": signupEmail,
               "fullName": signupFullName,
             });
@@ -1026,7 +1004,7 @@ Future<void> _handleFinishRegistration() async {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'A verification link has been sent to your email. Click the link in your email to verify your account.',
+                        'A verification link has been sent to your email. Click the link in your email to verify your account. If you do not receive the email, please check that your email address was entered correctly.',
                         style: TextStyle(fontSize: 14),
                       ),
                       const SizedBox(height: 16),
@@ -1120,7 +1098,7 @@ Future<void> _handleFinishRegistration() async {
                 });
 
                 // Now create the user + profile
-                final createUserResponse = await ApiService.verifyEmailToken({
+                final createUserResponse = await ApiService.createUserAfterEmailVerification({
                   "email": signupEmail,
                   "password": signupPassword,
                   "fullName": signupFullName,
@@ -1157,9 +1135,10 @@ Future<void> _handleFinishRegistration() async {
             throw Exception('Email verification failed: $e');
           }
         }
-      } catch (e) {
-        Navigator.pop(context); // Close loading dialog
-        throw e;
+        } catch (e) {
+          Navigator.pop(context); // Close loading dialog
+          throw e;
+        }
       }
     }
 
