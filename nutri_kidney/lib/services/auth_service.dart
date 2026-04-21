@@ -48,8 +48,9 @@ class AuthService {
       final profileStatus = await ApiService.getProfileStatus(uid: savedUserId);
       if (profileStatus['success'] != true ||
           profileStatus['exists'] != true ||
-          profileStatus['verified'] != true) {
-        print('No verified app profile found for remembered session - signing out');
+          profileStatus['verified'] != true ||
+          profileStatus['profileComplete'] != true) {
+        print('No completed app profile found for remembered session - signing out');
         await _auth.signOut();
         await _googleSignIn.signOut();
         return false;
@@ -203,6 +204,34 @@ class AuthService {
       };
     } on FirebaseAuthException catch (e) {
       return {'success': false, 'error': 'Firebase error: ${e.message}'};
+    } catch (e) {
+      return {'success': false, 'error': 'Error: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getGoogleProfileForRegistration() async {
+    try {
+      try {
+        await _googleSignIn.disconnect();
+      } catch (e) {
+        print('Disconnect warning: $e');
+      }
+
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        return {'success': false, 'error': 'Google Sign-In cancelled'};
+      }
+
+      final result = {
+        'success': true,
+        'email': googleUser.email,
+        'displayName': googleUser.displayName,
+        'photoUrl': googleUser.photoUrl,
+      };
+
+      await _googleSignIn.signOut();
+
+      return result;
     } catch (e) {
       return {'success': false, 'error': 'Error: $e'};
     }

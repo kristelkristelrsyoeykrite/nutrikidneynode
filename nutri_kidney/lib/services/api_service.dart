@@ -1,9 +1,10 @@
 import 'dart:convert';
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String baseUrl = "http://10.223.175.184:3000";
+  static const String baseUrl = "http://10.231.54.184:3000";
   static const Map<String, String> _jsonHeaders = {
     "Content-Type": "application/json",
   };
@@ -16,6 +17,7 @@ class ApiService {
   static Map<String, dynamic> step3Data = {};
   static Map<String, dynamic> step4Data = {};
   static Map<String, dynamic> signupData = {};
+  static String? userRole;
 
   static void setUserId(String userId) {
     _userId = userId;
@@ -25,6 +27,19 @@ class ApiService {
   static void setSignupData(Map<String, dynamic> data) {
     signupData = Map<String, dynamic>.from(data);
     print("DEBUG: Signup data stored: $signupData");
+  }
+
+  static void setUserRole(String? role) {
+    userRole = role;
+    print("DEBUG: User role stored: $userRole");
+  }
+
+  static void clearProfileSetupData() {
+    step1Data = {};
+    step2Data = {};
+    step3Data = {};
+    step4Data = {};
+    print("DEBUG: Profile setup data cleared");
   }
 
   static Future<Map<String, dynamic>> _post(
@@ -99,6 +114,138 @@ class ApiService {
         "step2": step2Data,
         "step3": step3Data,
         "step4": step4Data,
+        "userRole": userRole,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> getDashboardSummary() async {
+    final currentUserId = _userId ?? FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null || currentUserId.isEmpty) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    setUserId(currentUserId);
+    return _post(
+      "/api/health/dashboard-summary",
+      body: {
+        "userId": currentUserId,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> getHealthSummary() async {
+    final currentUserId = _userId ?? FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null || currentUserId.isEmpty) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    setUserId(currentUserId);
+    return _post(
+      "/api/health/health-summary",
+      body: {
+        "userId": currentUserId,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> saveMeasurement({
+    required String metricType,
+    required String value,
+    String? date,
+    bool recalculateNutritionTargets = false,
+  }) async {
+    if (_userId == null) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    return _post(
+      "/api/health/save-measurement",
+      body: {
+        "userId": _userId,
+        "metricType": metricType,
+        "value": value,
+        "date": date,
+        "recalculateNutritionTargets": recalculateNutritionTargets,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> saveLabResult({
+    required String metricType,
+    required String value,
+    required String resultDate,
+    String? labResultId,
+  }) async {
+    final currentUserId = _userId ?? FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null || currentUserId.isEmpty) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    setUserId(currentUserId);
+    return _post(
+      "/api/health/save-lab-result",
+      body: {
+        "userId": currentUserId,
+        "labResultId": labResultId,
+        "metricType": metricType,
+        "value": value,
+        "resultDate": resultDate,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> updateProfile(
+    Map<String, dynamic> data,
+  ) async {
+    final currentUserId = _userId ?? FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null || currentUserId.isEmpty) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    setUserId(currentUserId);
+    data['userId'] = currentUserId;
+    return _post("/api/health/update-profile", body: data);
+  }
+
+  static Future<Map<String, dynamic>> saveMedication(Map<String, dynamic> data) async {
+    final currentUserId = _userId ?? FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null || currentUserId.isEmpty) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    setUserId(currentUserId);
+    data['userId'] = currentUserId;
+    return _post("/api/health/save-medication", body: data);
+  }
+
+  static Future<Map<String, dynamic>> updateMedication(
+    String medicationId,
+    Map<String, dynamic> data,
+  ) async {
+    final currentUserId = _userId ?? FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null || currentUserId.isEmpty) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    setUserId(currentUserId);
+    data['userId'] = currentUserId;
+    data['medicationId'] = medicationId;
+    return _post("/api/health/update-medication", body: data);
+  }
+
+  static Future<Map<String, dynamic>> deleteMedication(String medicationId) async {
+    final currentUserId = _userId ?? FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null || currentUserId.isEmpty) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    setUserId(currentUserId);
+    return _post(
+      "/api/health/delete-medication",
+      body: {
+        "userId": currentUserId,
+        "medicationId": medicationId,
       },
     );
   }
@@ -238,6 +385,7 @@ class ApiService {
     String? email,
     String? phoneNumber,
     String? password,
+    String? userRole,
     String status = "verified",
   }) async {
     return saveUserProfile({
@@ -246,6 +394,7 @@ class ApiService {
       "email": email,
       "phoneNumber": phoneNumber,
       "password": password,
+      "userRole": userRole,
       "status": status,
     });
   }

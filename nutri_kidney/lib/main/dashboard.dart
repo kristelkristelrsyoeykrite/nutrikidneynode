@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:nutri_kidney/services/api_service.dart';
 import 'food_log.dart';
 import 'analytics.dart';
 import 'health_metrics.dart';
@@ -13,79 +14,271 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   int _currentIndex = 0;
+  bool _isLoadingDashboard = true;
+  String? _dashboardError;
+  Map<String, dynamic> _user = {};
+  Map<String, dynamic> _nutritionTargets = {};
+  Map<String, dynamic> _medicalProfile = {};
+  Map<String, dynamic> _phase2DecisionSupport = {};
+  Map<String, dynamic> _labResults = {};
+  Map<String, dynamic> _anthropometrics = {};
+  Map<String, dynamic>? _intakeData;
+  Map<String, dynamic>? _medicationData;
+  List<Map<String, dynamic>> _medications = [];
 
-  // --- Rewards Pop-up Logic ---
-  void _showRewardsPopup() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          insetPadding: const EdgeInsets.all(20),
-          child: Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('🔥', style: TextStyle(fontSize: 48)),
-                const SizedBox(height: 16),
-                const Text(
-                  '7 Day Streak!',
-                  style: TextStyle(
-                    color: Color(0xFF37474F),
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  "You're doing amazing! Keep logging your meals and health metrics daily to unlock more exclusive badges and rewards.",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Color(0xFF78909C),
-                    fontSize: 14,
-                    height: 1.4,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00C874),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      elevation: 0,
-                    ),
-                    child: const Text(
-                      'Awesome!',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+  static const double _defaultSodiumTargetMg = 1500;
+  static const double _defaultPotassiumTargetMg = 2000;
+
+  bool get _hasHydrationLogged => false;
+  int get _medicationTotalCount {
+    return _medications.length > 0
+        ? _medications.length
+        : (_numberFrom(_medicationData?["count"]) ?? 0).toInt();
+  }
+
+  bool get _hasMedicationData => _medicationTotalCount > 0;
+  bool get _hasNutritionData => _intakeData != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDashboardSummary();
+  }
+
+  Future<void> _loadDashboardSummary() async {
+    try {
+      final response = await ApiService.getDashboardSummary();
+
+      if (!mounted) return;
+
+      if (response["success"] != true) {
+        throw Exception(response["error"] ?? "Failed to load dashboard");
+      }
+
+      setState(() {
+        _user = _asStringMap(response["user"]);
+        _nutritionTargets = _asStringMap(response["nutritionTargets"]);
+        _medicalProfile = _asStringMap(response["medicalProfile"]);
+        _phase2DecisionSupport =
+            _asStringMap(response["phase2DecisionSupport"]);
+        _labResults = _asStringMap(response["labResults"]);
+        _anthropometrics = _asStringMap(response["anthropometrics"]);
+        _intakeData = _nullableStringMap(response["intakeData"]);
+        _medicationData = _nullableStringMap(response["medicationData"]);
+        _medications = _asStringMapList(response["medications"]);
+        _isLoadingDashboard = false;
+        _dashboardError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _isLoadingDashboard = false;
+        _dashboardError = e.toString();
+      });
+    }
+  }
+
+  Map<String, dynamic> _asStringMap(dynamic value) {
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map) {
+      return value.map((key, value) => MapEntry(key.toString(), value));
+    }
+    return {};
+  }
+
+  Map<String, dynamic>? _nullableStringMap(dynamic value) {
+    final map = _asStringMap(value);
+    return map.isEmpty ? null : map;
+  }
+
+  List<Map<String, dynamic>> _asStringMapList(dynamic value) {
+    if (value is! List) return [];
+    return value.map(_asStringMap).where((map) => map.isNotEmpty).toList();
+  }
+
+  double? _numberFrom(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value == null) return null;
+    return double.tryParse(value.toString());
+  }
+
+  String _formatNumber(double value, {int decimals = 0}) {
+    final rounded = value.toStringAsFixed(decimals);
+    return rounded.endsWith('.0')
+        ? rounded.substring(0, rounded.length - 2)
+        : rounded;
+  }
+
+  String _optionalText(dynamic value) {
+    return value?.toString().trim() ?? '';
+  }
+
+  String _medicationName(Map<String, dynamic> medication) {
+    final name = _optionalText(
+      medication["name"] ??
+          medication["medicationName"] ??
+          medication["medication_name"],
     );
+    return name.isEmpty ? "Medication" : name;
+  }
+
+  List<String> _medicationTimes(Map<String, dynamic> medication) {
+    final scheduledTimes = medication["scheduled_times"];
+    if (scheduledTimes is List && scheduledTimes.isNotEmpty) {
+      return scheduledTimes
+          .map((time) => time.toString().trim())
+          .where((time) => time.isNotEmpty)
+          .toList();
+    }
+
+    final startTime = _optionalText(medication["start_time"]);
+    if (RegExp(r"^\d{1,2}:\d{2}$").hasMatch(startTime)) {
+      return [startTime];
+    }
+
+    return [];
+  }
+
+  DateTime? _dateTimeForMedicationTime(String time) {
+    final parts = time.split(':');
+    if (parts.length != 2) return null;
+
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    if (hour == null || minute == null) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+    final now = DateTime.now();
+    var scheduled = DateTime(now.year, now.month, now.day, hour, minute);
+    if (scheduled.isBefore(now)) {
+      scheduled = scheduled.add(const Duration(days: 1));
+    }
+    return scheduled;
+  }
+
+  Map<String, dynamic>? get _nextMedicationReminder {
+    Map<String, dynamic>? nextReminder;
+    DateTime? nextTime;
+
+    for (final medication in _medications) {
+      for (final time in _medicationTimes(medication)) {
+        final scheduled = _dateTimeForMedicationTime(time);
+        if (scheduled == null) continue;
+        if (nextTime == null || scheduled.isBefore(nextTime)) {
+          nextTime = scheduled;
+          nextReminder = {
+            "name": _medicationName(medication),
+            "time": scheduled,
+          };
+        }
+      }
+    }
+
+    return nextReminder;
+  }
+
+  String _formatClockTime(DateTime dateTime) {
+    final hour12 = dateTime.hour == 0
+        ? 12
+        : dateTime.hour > 12
+            ? dateTime.hour - 12
+            : dateTime.hour;
+    final minute = dateTime.minute.toString().padLeft(2, '0');
+    final period = dateTime.hour >= 12 ? 'PM' : 'AM';
+    return '$hour12:$minute $period';
+  }
+
+  String _relativeReminderText(DateTime dateTime) {
+    final now = DateTime.now();
+    final difference = dateTime.difference(now);
+    if (difference.inDays >= 1) return 'Tomorrow';
+    if (difference.inHours >= 1) return 'In ${difference.inHours} hours';
+    final minutes = difference.inMinutes <= 0 ? 1 : difference.inMinutes;
+    return 'In $minutes minutes';
+  }
+
+  String get _childName {
+    return (_user["childFullName"] ??
+            _user["child_name"] ??
+            _nutritionTargets["child_name"] ??
+            "there")
+        .toString();
+  }
+
+  String get _childInitials {
+    final parts = _childName
+        .trim()
+        .split(RegExp(r"\s+"))
+        .where((part) => part.isNotEmpty)
+        .toList();
+
+    if (parts.isEmpty || _childName == "there") return "NK";
+    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+    return "${parts.first[0]}${parts.last[0]}".toUpperCase();
+  }
+
+  double get _sodiumTargetMg {
+    return _numberFrom(
+          _nutritionTargets["sodium_target_mg"] ??
+              _nutritionTargets["sodiumTargetMg"],
+        ) ??
+        _defaultSodiumTargetMg;
+  }
+
+  double get _potassiumTargetMg {
+    return _numberFrom(
+          _nutritionTargets["potassium_target_mg"] ??
+              _nutritionTargets["potassiumTargetMg"],
+        ) ??
+        _defaultPotassiumTargetMg;
+  }
+
+  double get _proteinTargetG {
+    return _numberFrom(
+          _nutritionTargets["protein_target_g"] ??
+              _nutritionTargets["proteinTargetG"],
+        ) ??
+        0;
+  }
+
+  double get _phosphorusTargetMg {
+    return _numberFrom(
+          _nutritionTargets["phosphate_target_mg"] ??
+              _nutritionTargets["phosphateTargetMg"] ??
+              _nutritionTargets["phosphorus_target_mg"] ??
+              _nutritionTargets["phosphorusTargetMg"],
+        ) ??
+        0;
+  }
+
+  bool get _hasFluidRestriction {
+    final status = (_medicalProfile["fluidRestrictionStatus"] ??
+            _medicalProfile["fluid_restriction_status"])
+        ?.toString()
+        .trim()
+        .toLowerCase();
+    return status == "yes";
+  }
+
+  double? get _fluidLimitMl {
+    return _numberFrom(
+      _medicalProfile["fluidLimitMl"] ?? _medicalProfile["fluid_limit_ml"],
+    );
+  }
+
+  double? get _fluidTargetLiters {
+    final limitMl = _fluidLimitMl;
+    if (!_hasFluidRestriction || limitMl == null) return null;
+    return limitMl / 1000;
   }
 
   // --- NEW: Notifications Pop-up Logic ---
   void _showNotificationsPanel() {
+    final nextReminder = _nextMedicationReminder;
+    final nextReminderTime = nextReminder?["time"] as DateTime?;
+    final nextReminderName = nextReminder?["name"]?.toString() ?? "Medication";
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -136,28 +329,22 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
               const SizedBox(height: 24),
               // Notification Items
-              _buildNotificationItem(
-                icon: Icons.warning_amber_rounded,
-                color: Colors.orange,
-                title: 'Phosphorus Alert',
-                message:
-                    "You've exceeded your daily limit. Consider reducing dairy.",
-                time: '10m ago',
-              ),
-              _buildNotificationItem(
-                icon: Icons.medication_outlined,
-                color: const Color(0xFF9E86FF),
-                title: 'Medication Reminder',
-                message: 'It is time to take your Calcium Supplement.',
-                time: '1h ago',
-              ),
-              _buildNotificationItem(
-                icon: Icons.workspace_premium,
-                color: const Color(0xFF00C874),
-                title: 'Goal Reached',
-                message: '7 Day Streak achieved! Keep up the great work.',
-                time: '2h ago',
-              ),
+              if (nextReminderTime != null)
+                _buildNotificationItem(
+                  icon: Icons.medication_outlined,
+                  color: const Color(0xFF9E86FF),
+                  title: '$nextReminderName reminder',
+                  message: 'Scheduled at ${_formatClockTime(nextReminderTime)}.',
+                  time: _relativeReminderText(nextReminderTime),
+                )
+              else
+                _buildNotificationItem(
+                  icon: Icons.medication_outlined,
+                  color: const Color(0xFF9E86FF),
+                  title: 'No medication reminders',
+                  message: 'Add medication details to enable reminders.',
+                  time: 'Today',
+                ),
             ],
           ),
         );
@@ -170,11 +357,19 @@ class _DashboardPageState extends State<DashboardPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBFB),
       body: SafeArea(
-        child: SingleChildScrollView(
+        child: _isLoadingDashboard
+            ? const Center(
+                child: CircularProgressIndicator(color: Color(0xFF00C874)),
+              )
+            : SingleChildScrollView(
           padding: const EdgeInsets.all(20.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (_dashboardError != null) ...[
+                _buildDashboardErrorCard(),
+                const SizedBox(height: 16),
+              ],
               _buildHeader(),
               const SizedBox(height: 24),
               _buildStreakCard(),
@@ -270,6 +465,26 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   // --- 1. Header Area ---
+  Widget _buildDashboardErrorCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8E1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFE082)),
+      ),
+      child: Text(
+        "Dashboard data could not be loaded: $_dashboardError",
+        style: const TextStyle(
+          color: Color(0xFF78909C),
+          fontSize: 12,
+          height: 1.4,
+        ),
+      ),
+    );
+  }
+
   Widget _buildHeader() {
     return Row(
       children: [
@@ -287,10 +502,10 @@ class _DashboardPageState extends State<DashboardPage> {
               color: Color(0xFFD5F5E3),
               shape: BoxShape.circle,
             ),
-            child: const Center(
+            child: Center(
               child: Text(
-                'SM',
-                style: TextStyle(
+                _childInitials,
+                style: const TextStyle(
                   color: Color(0xFF009688),
                   fontWeight: FontWeight.bold,
                   fontSize: 18,
@@ -303,14 +518,14 @@ class _DashboardPageState extends State<DashboardPage> {
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text(
+            children: [
+              const Text(
                 'Good morning,',
                 style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13),
               ),
               Text(
-                'Sarah Mitchell',
-                style: TextStyle(
+                _childName,
+                style: const TextStyle(
                   color: Color(0xFF37474F),
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
@@ -322,35 +537,17 @@ class _DashboardPageState extends State<DashboardPage> {
         // --- UPDATED: Clickable Notifications Icon ---
         GestureDetector(
           onTap: _showNotificationsPanel,
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              const Icon(
-                Icons.notifications_none,
-                color: Color(0xFF37474F),
-                size: 28,
-              ),
-              Positioned(
-                right: 2,
-                top: 2,
-                child: Container(
-                  width: 10,
-                  height: 10,
-                  decoration: BoxDecoration(
-                    color: Colors.red,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                ),
-              ),
-            ],
+          child: const Icon(
+            Icons.notifications_none,
+            color: Color(0xFF37474F),
+            size: 28,
           ),
         ),
       ],
     );
   }
 
-  // --- 2. Daily Streak Card ---
+  // --- 2. Daily Logging Card ---
   Widget _buildStreakCard() {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -378,7 +575,7 @@ class _DashboardPageState extends State<DashboardPage> {
               shape: BoxShape.circle,
             ),
             child: const Icon(
-              Icons.workspace_premium,
+              Icons.insights_outlined,
               color: Colors.white,
               size: 28,
             ),
@@ -389,7 +586,7 @@ class _DashboardPageState extends State<DashboardPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Daily Streak',
+                  'Daily Progress',
                   style: TextStyle(
                     color: Colors.white70,
                     fontSize: 12,
@@ -400,22 +597,25 @@ class _DashboardPageState extends State<DashboardPage> {
                 Row(
                   children: const [
                     Text(
-                      '7 Days',
+                      'No logs yet',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 24,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    SizedBox(width: 8),
-                    Text('🔥', style: TextStyle(fontSize: 20)),
                   ],
                 ),
               ],
             ),
           ),
           ElevatedButton(
-            onPressed: _showRewardsPopup,
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const FoodLogPage()),
+              );
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.white,
               foregroundColor: const Color(0xFF00C874),
@@ -426,7 +626,7 @@ class _DashboardPageState extends State<DashboardPage> {
               elevation: 0,
             ),
             child: const Text(
-              'View Rewards',
+              'Log Food',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
             ),
           ),
@@ -437,6 +637,16 @@ class _DashboardPageState extends State<DashboardPage> {
 
   // --- 3. Metrics Row ---
   Widget _buildMetricsRow() {
+    final medicationTotal = _medicationTotalCount;
+    final medicationTaken = _medications
+        .where(
+          (medication) =>
+              _optionalText(medication["status"]).toLowerCase() == "taken",
+        )
+        .length;
+    final nextReminder = _nextMedicationReminder;
+    final nextReminderTime = nextReminder?["time"] as DateTime?;
+
     return Row(
       children: [
         Expanded(
@@ -444,10 +654,15 @@ class _DashboardPageState extends State<DashboardPage> {
             title: 'Hydration',
             icon: Icons.water_drop_outlined,
             iconColor: const Color(0xFF42A5F5),
-            mainValue: '1.2L',
-            subValue: 'of 1.5L goal',
+            mainValue: _fluidTargetLiters == null
+                ? 'No fluid restriction set'
+                : '0 L',
+            subValue: _fluidTargetLiters == null
+                ? 'Hydration logging not started'
+                : 'of ${_formatLiters(_fluidTargetLiters!)} goal',
+            hintText: _hasHydrationLogged ? null : 'No hydration logged yet',
             progressColor: const Color(0xFF42A5F5),
-            progressValue: 0.8,
+            progressValue: 0,
           ),
         ),
         const SizedBox(width: 16),
@@ -456,14 +671,26 @@ class _DashboardPageState extends State<DashboardPage> {
             title: 'Medication',
             icon: Icons.medication_outlined,
             iconColor: const Color(0xFFAB47BC),
-            mainValue: '2/3',
-            subValue: 'taken today',
+            mainValue:
+                _hasMedicationData ? '$medicationTaken/$medicationTotal' : 'Not set',
+            subValue: nextReminderTime == null
+                ? 'No medication logged yet'
+                : 'Next: ${_formatClockTime(nextReminderTime)}',
+            hintText: _hasMedicationData ? null : 'No medication logged yet',
             progressColor: const Color(0xFFAB47BC),
-            progressValue: 0.66,
+            progressValue:
+                medicationTotal == 0 ? 0 : medicationTaken / medicationTotal,
           ),
         ),
       ],
     );
+  }
+
+  String _formatLiters(double value) {
+    final text = value.toStringAsFixed(
+      value.truncateToDouble() == value ? 0 : 1,
+    );
+    return '$text L';
   }
 
   Widget _buildSmallMetricCard({
@@ -474,6 +701,7 @@ class _DashboardPageState extends State<DashboardPage> {
     required String subValue,
     required Color progressColor,
     required double progressValue,
+    String? hintText,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -513,6 +741,17 @@ class _DashboardPageState extends State<DashboardPage> {
             subValue,
             style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 11),
           ),
+          if (hintText != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              hintText,
+              style: const TextStyle(
+                color: Color(0xFFB0BEC5),
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
@@ -558,7 +797,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: const Text(
-                  'On Track ✓',
+                  'No data',
                   style: TextStyle(
                     color: Color(0xFF009688),
                     fontSize: 10,
@@ -571,32 +810,42 @@ class _DashboardPageState extends State<DashboardPage> {
           const SizedBox(height: 24),
           _buildNutritionBar(
             label: "Sodium",
-            valueText: "1,200 / 1,500 mg",
-            progress: 0.8,
+            valueText: "0 / ${_formatNumber(_sodiumTargetMg)} mg",
+            progress: 0,
             color: const Color(0xFF00C874),
           ),
           const SizedBox(height: 16),
           _buildNutritionBar(
             label: "Potassium",
-            valueText: "1,800 / 2,000 mg",
-            progress: 0.9,
+            valueText: "0 / ${_formatNumber(_potassiumTargetMg)} mg",
+            progress: 0,
             color: const Color(0xFFFFCA28),
           ),
           const SizedBox(height: 16),
           _buildNutritionBar(
             label: "Protein",
-            valueText: "45 / 50 g",
-            progress: 0.9,
+            valueText: "0 / ${_formatNumber(_proteinTargetG, decimals: 1)} g",
+            progress: 0,
             color: const Color(0xFFEF5350),
           ),
           const SizedBox(height: 16),
           _buildNutritionBar(
             label: "Phosphorus",
-            valueText: "950 / 800 mg",
-            progress: 1.0,
+            valueText: "0 / ${_formatNumber(_phosphorusTargetMg)} mg",
+            progress: 0,
             color: const Color(0xFFFF7043),
-            isAlert: true,
           ),
+          if (!_hasNutritionData) ...[
+            const SizedBox(height: 18),
+            const Text(
+              "No nutrition data logged yet. Targets are based on your child's profile.",
+              style: TextStyle(
+                color: Color(0xFF78909C),
+                fontSize: 12,
+                height: 1.4,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -658,6 +907,52 @@ class _DashboardPageState extends State<DashboardPage> {
 
   // --- 5. Alert Card ---
   Widget _buildAlertCard() {
+    if (!_hasNutritionData) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5FAF8),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE0F2ED)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(
+              Icons.info_outline,
+              color: Color(0xFF00A86B),
+              size: 24,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Text(
+                    'No nutrition data yet.',
+                    style: TextStyle(
+                      color: Color(0xFF37474F),
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'Log your meals to see insights and recommendations.',
+                    style: TextStyle(
+                      color: Color(0xFF78909C),
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -675,7 +970,7 @@ class _DashboardPageState extends State<DashboardPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: const [
                 Text(
-                  'Phosphorus Alert',
+                  'No nutrition data yet.',
                   style: TextStyle(
                     color: Color(0xFF37474F),
                     fontSize: 14,
@@ -684,7 +979,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  "You've exceeded your daily phosphorus limit. Consider reducing dairy and processed foods.",
+                  'Log your meals to see insights and recommendations.',
                   style: TextStyle(
                     color: Color(0xFF78909C),
                     fontSize: 12,
@@ -797,6 +1092,10 @@ class _DashboardPageState extends State<DashboardPage> {
 
   // --- 7. Upcoming Card ---
   Widget _buildUpcomingCard() {
+    final nextReminder = _nextMedicationReminder;
+    final nextReminderName = nextReminder?["name"]?.toString() ?? "Medication";
+    final nextReminderTime = nextReminder?["time"] as DateTime?;
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -816,20 +1115,27 @@ class _DashboardPageState extends State<DashboardPage> {
             ),
           ),
           const SizedBox(height: 20),
-          _buildUpcomingItem(
-            icon: Icons.medication_outlined,
-            iconColor: const Color(0xFF9E86FF),
-            bgColor: const Color(0xFFF3E5F5),
-            title: 'Evening Medication',
-            subtitle: '6:00PM-In 2hours',
-          ),
-          const SizedBox(height: 20),
+          if (nextReminderTime != null) ...[
+            _buildUpcomingItem(
+              icon: Icons.medication_outlined,
+              iconColor: const Color(0xFF9E86FF),
+              bgColor: const Color(0xFFF3E5F5),
+              title: '$nextReminderName reminder',
+              subtitle:
+                  '${_formatClockTime(nextReminderTime)} - ${_relativeReminderText(nextReminderTime)}',
+            ),
+            const SizedBox(height: 20),
+          ],
           _buildUpcomingItem(
             icon: Icons.event_available_outlined,
             iconColor: const Color(0xFF009688),
             bgColor: const Color(0xFFE0F2F1),
-            title: 'Follow-up Appointment',
-            subtitle: 'Tomorrow at 10:00 AM',
+            title: nextReminderTime == null
+                ? 'No upcoming items set'
+                : 'No appointments set',
+            subtitle: nextReminderTime == null
+                ? 'Medication reminders and appointments will appear here.'
+                : 'Appointments will appear here.',
           ),
         ],
       ),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../create_account/profile_setup_intro.dart';
 import '../create_account/register.dart';
 import '../main/dashboard.dart';
 import '../services/api_service.dart';
@@ -191,6 +192,27 @@ Future<void> _loadRememberedLoginState() async {
     return resp["success"] == true && resp["exists"] == true;
   }
 
+  Future<void> _restartProfileSetup({
+    required String uid,
+    String? contact,
+  }) async {
+    ApiService.setUserId(uid);
+    ApiService.clearProfileSetupData();
+    await AuthService.saveRememberedSession(uid, false, contact: contact);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Please complete your health profile setup.'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const ProfileSetupIntroScreen()),
+    );
+  }
+
   // Google Sign-In Method (Login) - Uses shared auth service
   Future<void> _handleGoogleSignIn() async {
     try {
@@ -223,6 +245,15 @@ Future<void> _loadRememberedLoginState() async {
       }
 
       ApiService.setUserId(userCredential.user!.uid);
+
+      if (profileStatus['profileComplete'] != true) {
+        setState(() => _isLoading = false);
+        await _restartProfileSetup(
+          uid: userCredential.user!.uid,
+          contact: result['email'] as String?,
+        );
+        return;
+      }
 
       // Save Remember Me preference if checked
       await AuthService.saveRememberedSession(
@@ -318,6 +349,21 @@ Future<void> _loadRememberedLoginState() async {
         }
 
         ApiService.setUserId(verifiedUserId);
+
+        final profileStatus = await ApiService.getProfileStatus(
+          uid: verifiedUserId,
+          phoneNumber: normalizedPhone,
+        );
+        if (profileStatus['success'] == true &&
+            profileStatus['verified'] == true &&
+            profileStatus['profileComplete'] != true) {
+          await _restartProfileSetup(
+            uid: verifiedUserId,
+            contact: normalizedPhone,
+          );
+          return;
+        }
+
         await AuthService.saveRememberedSession(
           verifiedUserId,
           _rememberMe,
@@ -351,13 +397,21 @@ Future<void> _loadRememberedLoginState() async {
       }
 
       final uid = loginResponse['uid'];
-      if (uid == null) {
+      if (uid is! String || uid.isEmpty) {
         _showErrorDialog('Login Failed', 'Failed to get user ID');
         return;
       }
 
       // Store userId in ApiService
       ApiService.setUserId(uid);
+
+      if (loginResponse['profileComplete'] != true) {
+        await _restartProfileSetup(
+          uid: uid,
+          contact: enteredEmail,
+        );
+        return;
+      }
 
       // Save credentials if "Remember me" is checked
       await AuthService.saveRememberedSession(

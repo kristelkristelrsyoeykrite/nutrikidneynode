@@ -13,13 +13,16 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
   // Controllers
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _dobController = TextEditingController();
+  final TextEditingController _ageController = TextEditingController();
   final TextEditingController _heightController = TextEditingController();
   final TextEditingController _weightController = TextEditingController();
+  final TextEditingController _bmiController = TextEditingController();
   final TextEditingController _diagnosisDateController =
       TextEditingController();
 
-  String? _selectedGender;
+  String? _selectedSex;
   String? _kidneyDiseaseType;
+  String? _appetiteStatus;
 
   String? _dryWeight;
   String? _muac;
@@ -30,24 +33,66 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
   DateTime? _diagnosisDate;
 
   @override
+  void initState() {
+    super.initState();
+    for (final controller in [
+      _nameController,
+      _ageController,
+      _heightController,
+      _weightController,
+      _bmiController,
+    ]) {
+      controller.addListener(() {
+        setState(() {});
+      });
+    }
+    _heightController.addListener(_updateBmi);
+    _weightController.addListener(_updateBmi);
+  }
+
+  @override
   void dispose() {
     _nameController.dispose();
     _dobController.dispose();
+    _ageController.dispose();
     _heightController.dispose();
     _weightController.dispose();
+    _bmiController.dispose();
     _diagnosisDateController.dispose();
     super.dispose();
+  }
+
+  void _updateBmi() {
+    final heightCm = double.tryParse(_heightController.text.trim());
+    final weightKg = double.tryParse(_weightController.text.trim());
+
+    if (heightCm == null || weightKg == null || heightCm <= 0) {
+      if (_bmiController.text.isNotEmpty) {
+        _bmiController.clear();
+      }
+      return;
+    }
+
+    final heightMeters = heightCm / 100;
+    final bmi = weightKg / (heightMeters * heightMeters);
+    final bmiText = bmi.toStringAsFixed(1);
+    if (_bmiController.text != bmiText) {
+      _bmiController.text = bmiText;
+    }
   }
 
   // FORM VALIDATION
   bool get _isFormValid {
     return _nameController.text.trim().isNotEmpty &&
         _dob != null &&
-        _selectedGender != null &&
+        _ageController.text.trim().isNotEmpty &&
+        _selectedSex != null &&
         _heightController.text.trim().isNotEmpty &&
         _weightController.text.trim().isNotEmpty &&
+        _bmiController.text.trim().isNotEmpty &&
         _diagnosisDate != null &&
-        _kidneyDiseaseType != null;
+        _kidneyDiseaseType != null &&
+        _appetiteStatus != null;
   }
 
   // FORMAT DATE FOR UI ONLY
@@ -185,7 +230,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     const SizedBox(height: 16),
 
-                    // DOB + GENDER
+                    // DOB + SEX
                     Row(
                       children: [
                         Expanded(
@@ -197,8 +242,17 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                           ),
                         ),
                         const SizedBox(width: 16),
-                        Expanded(child: _buildGender()),
+                        Expanded(child: _buildSex()),
                       ],
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    _buildTextField(
+                      label: "Age (years)",
+                      hint: "Enter age in years",
+                      controller: _ageController,
+                      keyboardType: TextInputType.number,
                     ),
 
                     const SizedBox(height: 16),
@@ -228,6 +282,16 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     const SizedBox(height: 16),
 
+                    _buildTextField(
+                      label: "BMI (kg/m2)",
+                      hint: "Auto-calculated from height and weight",
+                      controller: _bmiController,
+                      keyboardType: TextInputType.number,
+                      readOnly: true,
+                    ),
+
+                    const SizedBox(height: 16),
+
                     // DRY WEIGHT
                     _buildDropdown(
                       "Dry Weight (if Applicable)",
@@ -244,6 +308,16 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       _muac,
                       ["< 11.5 cm", "11.5 - 12.5 cm", "> 12.5 cm"],
                       (val) => setState(() => _muac = val),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // APPETITE STATUS (NEW)
+                    _buildDropdown(
+                      "Appetite Status",
+                      _appetiteStatus,
+                      ["Very Good", "Good", "Fair", "Poor", "Very Poor"],
+                      (val) => setState(() => _appetiteStatus = val),
                     ),
 
                     const SizedBox(height: 16),
@@ -273,11 +347,11 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     const SizedBox(height: 16),
 
-                    // CKD STAGE
+                    // CKD STAGE (updated with "Not sure" option)
                     _buildDropdown(
                       "CKD Stage",
                       _ckdStage,
-                      ["Stage 1", "Stage 2", "Stage 3", "Stage 4", "Stage 5"],
+                      ["Stage 1", "Stage 2", "Stage 3", "Stage 4", "Stage 5", "Stage 5D", "Not sure"],
                       (val) => setState(() => _ckdStage = val),
                     ),
 
@@ -293,14 +367,21 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                                 final data = {
                                   "name": _nameController.text,
                                   "dob": _dob!.toIso8601String(),
-                                  "gender": _selectedGender,
+                                  "ageYears": int.parse(_ageController.text),
+                                  "age_years": int.parse(_ageController.text),
+                                  "sex": _selectedSex,
+                                  "gender": _selectedSex,
                                   "height": double.parse(_heightController.text),
+                                  "height_cm": double.parse(_heightController.text),
                                   "weight": double.parse(_weightController.text),
+                                  "weight_kg": double.parse(_weightController.text),
+                                  "bmi": double.parse(_bmiController.text),
                                   "diagnosisDate":
                                       _diagnosisDate!.toIso8601String(),
                                   "kidneyType": _kidneyDiseaseType,
                                   "dryWeight": _dryWeight,
                                   "muac": _muac,
+                                  "appetiteStatus": _appetiteStatus,
                                   "ckdStage": _ckdStage,
                                 };
 
@@ -368,6 +449,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     required String hint,
     required TextEditingController controller,
     TextInputType keyboardType = TextInputType.text,
+    bool readOnly = false,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -382,6 +464,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
           child: TextField(
             controller: controller,
             keyboardType: keyboardType,
+            readOnly: readOnly,
             decoration: InputDecoration(
               hintText: hint,
               border: InputBorder.none,
@@ -459,22 +542,22 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     );
   }
 
-  Widget _buildGender() {
+  Widget _buildSex() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text("Gender"),
+        const Text("Sex"),
         RadioListTile(
           title: const Text("Male"),
           value: "Male",
-          groupValue: _selectedGender,
-          onChanged: (val) => setState(() => _selectedGender = val.toString()),
+          groupValue: _selectedSex,
+          onChanged: (val) => setState(() => _selectedSex = val.toString()),
         ),
         RadioListTile(
           title: const Text("Female"),
           value: "Female",
-          groupValue: _selectedGender,
-          onChanged: (val) => setState(() => _selectedGender = val.toString()),
+          groupValue: _selectedSex,
+          onChanged: (val) => setState(() => _selectedSex = val.toString()),
         ),
       ],
     );

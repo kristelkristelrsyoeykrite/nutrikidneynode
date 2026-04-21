@@ -28,10 +28,13 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _hasAgreedToPrivacy = false;
   late TapGestureRecognizer _privacyTapRecognizer;
 
+  // Role selection (NEW)
+  String? _selectedRole;
+
   // Phone verification state
   String? _verificationId;
   bool _showPhoneInput = false;
-  bool _showOtpInput = false;
+  bool _showOtpInput =   false;
   bool _isPhoneVerified = false;
   String _otpErrorMessage = '';
   // Country code selection for phone entry (default to +63)
@@ -61,6 +64,8 @@ class _RegisterPageState extends State<RegisterPage> {
       _nameController.text = (prefill['fullName'] ?? '').toString();
       _emailController.text = contact;
     }
+
+    _selectedRole = ApiService.userRole;
 
     // Listeners rebuild the UI whenever a user types
     _nameController.addListener(() {
@@ -325,6 +330,51 @@ class _RegisterPageState extends State<RegisterPage> {
                           style: TextStyle(color: Colors.red, fontSize: 11),
                         ),
                       ),
+
+                    const SizedBox(height: 24),
+
+                    // ROLE SELECTION (NEW)
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        "I am a...",
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF37474F),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        value: _selectedRole,
+                        hint: const Text("Select your role"),
+                        items: const [
+                          DropdownMenuItem(value: "parent_caregiver", child: Text("Parent/Caregiver")),
+                          DropdownMenuItem(value: "adolescent", child: Text("Adolescent (13-18)")),
+                        ]
+                            .map<DropdownMenuItem<String>>((DropdownMenuItem<String> value) {
+                          return value;
+                        }).toList(),
+                        onChanged: (String? newValue) {
+                          setState(() {
+                            _selectedRole = newValue;
+                          });
+                          if (newValue != null) {
+                            ApiService.setUserRole(newValue);
+                          }
+                        },
+                        underline: Container(),
+                      ),
+                    ),
 
                     const SizedBox(height: 32),
 
@@ -614,6 +664,7 @@ class _RegisterPageState extends State<RegisterPage> {
         "email": emailToSend,
         "password": password,
         "phoneNumber": phoneToSend,
+        "userRole": _selectedRole,
       };
       ApiService.setSignupData(signupPayload);
 
@@ -871,6 +922,7 @@ class _RegisterPageState extends State<RegisterPage> {
           email: emailToSend,
           phoneNumber: phoneToSend,
           password: password,
+          userRole: _selectedRole,
           status: UserStatus.verified.toShortString(),
         );
       } catch (e) {
@@ -1154,14 +1206,13 @@ class _RegisterPageState extends State<RegisterPage> {
   // Google Sign-In for Registration
   Future<void> _handleGoogleSignInRegister() async {
     try {
-      final result = await AuthService.handleGoogleSignIn();
+      final result = await AuthService.getGoogleProfileForRegistration();
       
       if (!result['success']) {
         _showErrorDialog('Google Sign-In Failed', result['error'] ?? 'Unknown error');
         return;
       }
 
-      final userCredential = result['user'] as UserCredential;
       final email = result['email'] as String?;
       final displayName = result['displayName'] as String?;
 
@@ -1169,6 +1220,7 @@ class _RegisterPageState extends State<RegisterPage> {
       ApiService.setSignupData({
         'fullName': displayName ?? '',
         'email': email ?? '',
+        'userRole': _selectedRole,
       });
 
       // Populate form fields

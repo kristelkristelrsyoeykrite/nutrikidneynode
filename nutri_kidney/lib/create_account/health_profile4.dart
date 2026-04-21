@@ -12,15 +12,23 @@ class HealthProfile4Page extends StatefulWidget {
 }
 
 class _HealthProfile4PageState extends State<HealthProfile4Page> {
-  // --- Controllers for numeric input fields ---x`
+  // --- Controllers for numeric input fields ---
   final TextEditingController _creatinineController = TextEditingController();
   final TextEditingController _potassiumController = TextEditingController();
   final TextEditingController _phosphorusController = TextEditingController();
   final TextEditingController _sodiumController = TextEditingController();
   final TextEditingController _resultDateController = TextEditingController();
 
+  // Additional optional lab fields (NEW)
+  final TextEditingController _ureaController = TextEditingController();
+  final TextEditingController _albumController = TextEditingController();
+  final TextEditingController _hemoglobinController = TextEditingController();
+  bool _expandAdditionalLabs = false;
+
   // --- State for dropdown selections ---
   String? _calciumLevel;
+  String? _phosphorusStatus;
+  String? _sodiumStatus;
 
   // --- Variables to store popup data ---
   String? _uploadedPrescriptionPath;
@@ -31,6 +39,8 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
   String? _verifyId;
   bool _verifyShowOtp = false;
   String _otpErrorMessage = '';
+  bool _isFinishingRegistration = false;
+  bool _registrationCompleted = false;
 
   @override
   void initState() {
@@ -230,6 +240,9 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
     _phosphorusController.dispose();
     _sodiumController.dispose();
     _resultDateController.dispose();
+    _ureaController.dispose();
+    _albumController.dispose();
+    _hemoglobinController.dispose();
     _verifyPhoneController.dispose();
     _verifyOtpController.dispose();
     super.dispose();
@@ -428,9 +441,80 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
   }
 
   // --- POPUP: Finish Completion Dialog ---
-  void _showFinishDialog() {
+  Map<String, dynamic>? _asStringMap(dynamic value) {
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map) {
+      return value.map((key, value) => MapEntry(key.toString(), value));
+    }
+    return null;
+  }
+
+  String? _summaryTextFrom(dynamic value) {
+    final map = _asStringMap(value);
+    if (map == null) return null;
+
+    final summary = (map['summary_text'] ?? map['summaryText'])?.toString().trim();
+    if (summary != null && summary.isNotEmpty) return summary;
+
+    final recommendations = map['recommendations'] ?? map['insights'];
+    if (recommendations is List && recommendations.isNotEmpty) {
+      return recommendations
+          .map((note) => '- ${note.toString()}')
+          .join('\n');
+    }
+
+    return null;
+  }
+
+  Widget _buildSummaryCard({
+    required String title,
+    required String text,
+    required Color backgroundColor,
+    required Color borderColor,
+  }) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: Color(0xFF37474F),
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Color(0xFF37474F),
+              fontSize: 12,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showFinishDialog([
+    Map<String, dynamic>? baselineTargets,
+    Map<String, dynamic>? phase2DecisionSupport,
+  ]) {
+    final summaryText = _summaryTextFrom(baselineTargets);
+    final phase2Text = _summaryTextFrom(phase2DecisionSupport);
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return Dialog(
           shape: RoundedRectangleBorder(
@@ -438,6 +522,9 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
           ),
           insetPadding: const EdgeInsets.all(20),
           child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.82,
+            ),
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
               color: Colors.white,
@@ -467,13 +554,36 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                   ),
                   textAlign: TextAlign.center,
                 ),
+                if ((summaryText != null && summaryText.isNotEmpty) ||
+                    (phase2Text != null && phase2Text.isNotEmpty)) ...[
+                  const SizedBox(height: 16),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: [
+                          if (summaryText != null && summaryText.isNotEmpty)
+                            _buildSummaryCard(
+                              title: 'Baseline Nutrition Targets',
+                              text: summaryText,
+                              backgroundColor: const Color(0xFFF5FAF8),
+                              borderColor: const Color(0xFFE0F2ED),
+                            ),
+                          if (phase2Text != null && phase2Text.isNotEmpty)
+                            _buildSummaryCard(
+                              title: 'Decision Support Notes',
+                              text: phase2Text,
+                              backgroundColor: const Color(0xFFFFFAF0),
+                              borderColor: const Color(0xFFFFECB3),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 24),
-                // Continue Button
+                // OK Button
                 ElevatedButton(
                   onPressed: () {
-                    // Close the dialog
-                    Navigator.pop(context);
-                    // Navigate to Dashboard and clear the back history
                     Navigator.pushAndRemoveUntil(
                       context,
                       MaterialPageRoute(
@@ -496,7 +606,7 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                     ),
                   ),
                   child: const Text(
-                    'Continue',
+                    'OK',
                     style: TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
@@ -619,6 +729,25 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
 
                     // --- Form Fields ---
 
+                    // Optional note (NEW)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: const Text(
+                        "Optional but recommended for personalized guidance.",
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF555555),
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
                     // 2x2 grid for numeric inputs
                     GridView.count(
                       crossAxisCount: 2,
@@ -627,7 +756,7 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                       crossAxisSpacing: 16,
                       mainAxisSpacing: 16,
                       childAspectRatio:
-                          2.5, // Controls the height of the fields
+                          2.15, // Keeps label + input from clipping.
                       children: [
                         _buildTextField(
                           label: "Serum Creatinine (mg/dL)",
@@ -677,6 +806,32 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                     ),
                     const SizedBox(height: 16),
 
+                    _buildDropdownField(
+                      label: "Phosphorus Status",
+                      hint: "Select phosphorus status",
+                      value: _phosphorusStatus,
+                      items: const ["normal", "high", "low"],
+                      onChanged: (val) {
+                        setState(() {
+                          _phosphorusStatus = val;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
+                    _buildDropdownField(
+                      label: "Sodium Status",
+                      hint: "Select sodium status",
+                      value: _sodiumStatus,
+                      items: const ["normal", "high", "low"],
+                      onChanged: (val) {
+                        setState(() {
+                          _sodiumStatus = val;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
                     // Result Date Picker (Functioning as DatePicker but styled like Dropdown)
                     _buildDatePickerField(
                       label: "Result Date",
@@ -685,7 +840,72 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                     ),
                     const SizedBox(height: 16),
 
-                    // --- Prescription Upload Section ---
+                    // --- Additional Labs Section (Expandable) ---
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _expandAdditionalLabs = !_expandAdditionalLabs;
+                        });
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              "Additional Laboratory Values",
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF37474F),
+                              ),
+                            ),
+                            Icon(
+                              _expandAdditionalLabs
+                                  ? Icons.expand_less
+                                  : Icons.expand_more,
+                              color: Colors.grey.shade600,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (_expandAdditionalLabs)
+                      Column(
+                        children: [
+                          const SizedBox(height: 12),
+                          _buildTextField(
+                            label: "Urea/BUN (mg/dL)",
+                            hint: "Optional",
+                            controller: _ureaController,
+                            keyboardType: TextInputType.number,
+                          ),
+                          const SizedBox(height: 12),
+                          _buildTextField(
+                            label: "Albumin (g/dL)",
+                            hint: "Optional",
+                            controller: _albumController,
+                            keyboardType: TextInputType.number,
+                          ),
+                          const SizedBox(height: 12),
+                          _buildTextField(
+                            label: "Hemoglobin (g/dL)",
+                            hint: "Optional",
+                            controller: _hemoglobinController,
+                            keyboardType: TextInputType.number,
+                          ),
+                        ],
+                      ),
+
+                    const SizedBox(height: 24),
                     _buildLabel("Prescription"),
                     const SizedBox(height: 8),
                     // Tappable container for prescription upload
@@ -784,6 +1004,10 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                             height: 50,
                             child: ElevatedButton(
                               onPressed: () {
+                                if (_hasStep4LabDataWithoutDate()) {
+                                  _showMissingLabDateMessage();
+                                  return;
+                                }
                                 _showProceedDialog(); // Show confirmation dialog
                               },
                               style: ElevatedButton.styleFrom(
@@ -854,14 +1078,25 @@ void _showLoadingDialog(String message) {
 }
 
 Future<void> _handleFinishRegistration() async {
-  try {
-    // Ensure signup data exists
-    if (ApiService.signupData.isEmpty) {
-      throw Exception("Signup data missing. Please complete registration first.");
-    }
+  if (_isFinishingRegistration || _registrationCompleted) return;
 
+  if (_hasStep4LabDataWithoutDate()) {
+    _showMissingLabDateMessage();
+    return;
+  }
+
+  setState(() {
+    _isFinishingRegistration = true;
+  });
+
+  try {
     final existingUserId =
         ApiService.userId ?? ApiService.signupData["uid"] as String?;
+    if ((existingUserId == null || existingUserId.trim().isEmpty) &&
+        ApiService.signupData.isEmpty) {
+      throw Exception("Signup data missing. Please log in again.");
+    }
+
     if (existingUserId != null && existingUserId.trim().isNotEmpty) {
       print("Existing user already created earlier: $existingUserId");
     } else {
@@ -1151,7 +1386,9 @@ Future<void> _handleFinishRegistration() async {
           "potassium": _potassiumController.text,
           "phosphorus": _phosphorusController.text,
           "sodium": _sodiumController.text,
+          "sodium_status": _sodiumStatus,
           "calcium": _calciumLevel,
+          "phosphorus_status": _phosphorusStatus,
           "resultDate": _resultDateController.text,
         });
         Navigator.pop(context); // Close loading dialog
@@ -1168,7 +1405,13 @@ Future<void> _handleFinishRegistration() async {
       Navigator.pop(context); // Close loading dialog
 
       if (submitResponse["success"] == true) {
-        _showFinishDialog(); // ✅ SHOW FINAL SUCCESS DIALOG
+        _registrationCompleted = true;
+        final targets = submitResponse["baselineTargets"];
+        final phase2 = submitResponse["phase2DecisionSupport"];
+        _showFinishDialog(
+          _asStringMap(targets),
+          _asStringMap(phase2),
+        ); // SHOW FINAL SUCCESS DIALOG
       } else {
         throw Exception(submitResponse["error"] ?? "Failed to save data");
       }
@@ -1178,6 +1421,11 @@ Future<void> _handleFinishRegistration() async {
     }
 
   } catch (e) {
+    if (mounted) {
+      setState(() {
+        _isFinishingRegistration = false;
+      });
+    }
     print("Registration Error: $e");
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1274,10 +1522,33 @@ void _showProceedDialog() {
     return _creatinineController.text.trim().isEmpty &&
         _potassiumController.text.trim().isEmpty &&
         _phosphorusController.text.trim().isEmpty &&
+        (_phosphorusStatus == null || _phosphorusStatus!.trim().isEmpty) &&
         _sodiumController.text.trim().isEmpty &&
+        (_sodiumStatus == null || _sodiumStatus!.trim().isEmpty) &&
         (_calciumLevel == null || _calciumLevel!.trim().isEmpty) &&
         _resultDateController.text.trim().isEmpty &&
         _uploadedPrescriptionPath == null;
+  }
+
+  bool _hasStep4LabDataWithoutDate() {
+    final hasLabData = _creatinineController.text.trim().isNotEmpty ||
+        _potassiumController.text.trim().isNotEmpty ||
+        _phosphorusController.text.trim().isNotEmpty ||
+        (_phosphorusStatus != null && _phosphorusStatus!.trim().isNotEmpty) ||
+        _sodiumController.text.trim().isNotEmpty ||
+        (_sodiumStatus != null && _sodiumStatus!.trim().isNotEmpty) ||
+        (_calciumLevel != null && _calciumLevel!.trim().isNotEmpty) ||
+        _uploadedPrescriptionPath != null;
+
+    return hasLabData && _resultDateController.text.trim().isEmpty;
+  }
+
+  void _showMissingLabDateMessage() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Lab result date is required.'),
+      ),
+    );
   }
 
   // --- Email Validation Helper ---

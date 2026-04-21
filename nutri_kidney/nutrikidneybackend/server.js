@@ -91,15 +91,13 @@ function verifyPassword(password, salt, expectedHash) {
 
 async function isCompletedVerifiedUser(uid) {
   if (!uid) return false;
-  let authUser = null;
-  try {
-    authUser = await auth.getUser(uid);
-  } catch (_) {}
-
   const userDoc = await db.collection("users").doc(uid).get();
-  const profile = userDoc.exists ? userDoc.data() || {} : {};
+  if (!userDoc.exists) {
+    return false;
+  }
 
-  return isUserVerified({ authUser, profile });
+  const profile = userDoc.data() || {};
+  return isProfileVerified(profile);
 }
 
 function isProfileVerified(profile = {}) {
@@ -489,11 +487,16 @@ app.post("/api/user/profile-status", async (req, res) => {
     const profile = userDoc.exists ? userDoc.data() || {} : {};
     const authUser = await auth.getUser(resolvedUid).catch(() => null);
     const verified = isUserVerified({ authUser, profile });
+    const profileComplete = Boolean(
+      profile.baselineNutritionTargetId && profile.medicalProfileId,
+    );
 
     return res.status(200).json({
       success: true,
       exists: userDoc.exists,
       verified,
+      profileComplete,
+      needsProfileSetup: verified && !profileComplete,
       uid: resolvedUid,
       profile,
     });
@@ -731,7 +734,7 @@ app.post("/verify-email-token", async (req, res) => {
 app.post("/verify-email-and-create-user", async (req, res) => {
   console.log("VERIFY_EMAIL_AND_CREATE_USER received:", req.body);
 
-  const { email, phoneNumber, password, fullName } = req.body;
+  const { email, phoneNumber, password, fullName, userRole } = req.body;
 
   try {
     if (!email || !fullName) {
@@ -787,6 +790,9 @@ app.post("/verify-email-and-create-user", async (req, res) => {
         "phone number",
       );
     }
+    if (userRole) {
+      profile.role = userRole;
+    }
 
     await db.collection("users").doc(user.uid).set(profile, { merge: true });
     await savePasswordSecret(user.uid, password);
@@ -818,7 +824,7 @@ app.post("/verify-phone-and-create-user", async (req, res) => {
   console.log("VERIFY_PHONE_AND_CREATE_USER received:", req.body);
   console.log("VERIFY_PHONE_AND_CREATE_USER UID:", req.body.uid);
   
-  const { email, phoneNumber, password, fullName, uid } = req.body;
+  const { email, phoneNumber, password, fullName, uid, userRole } = req.body;
 
   try {
     if (!phoneNumber || !password || !fullName) {
@@ -887,6 +893,7 @@ app.post("/verify-phone-and-create-user", async (req, res) => {
     };
     if (email) profile.email = email;
     if (phoneNumber) profile.phoneNumber = normalizedPhone;
+    if (userRole) profile.role = userRole;
 
     await db.collection("users").doc(user.uid).set(profile, { merge: true });
     await savePasswordSecret(user.uid, password);
@@ -1277,7 +1284,7 @@ app.post("/api/user/complete-phone-verification", async (req, res) => {
 app.post("/api/user/profile/save", async (req, res) => {
   console.log("SAVE_USER_PROFILE received for UID:", req.body.uid);
 
-  const { uid, fullName, email, phoneNumber, status } = req.body;
+  const { uid, fullName, email, phoneNumber, status, userRole } = req.body;
 
   try {
     if (!uid) {
@@ -1299,6 +1306,9 @@ app.post("/api/user/profile/save", async (req, res) => {
       phoneVerified: verificationState.phoneVerified,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
+    if (userRole) {
+      profileData.role = userRole;
+    }
 
     // Ensure createdAt is preserved if user already exists
     const existingDoc = await db.collection("users").doc(uid).get();
@@ -1366,10 +1376,7 @@ app.post("/api/user/login", async (req, res) => {
     }
 
     const { passwordSalt, passwordHash } = userSecret.data();
-    const crypto = require('crypto');
-    const providedHash = crypto.scryptSync(password, Buffer.from(passwordSalt, 'hex'), 64).toString('hex');
-    
-    if (providedHash !== passwordHash) {
+    if (!passwordSalt || !passwordHash || !verifyPassword(password, passwordSalt, passwordHash)) {
       return res.status(401).json({
         success: false,
         error: "Invalid email or password",
@@ -1380,6 +1387,9 @@ app.post("/api/user/login", async (req, res) => {
     const profile = profileSnap.exists ? profileSnap.data() || {} : {};
     const isDbVerified =
       profile.status === "verified" || profile.emailVerified === true;
+    const profileComplete = Boolean(
+      profile.baselineNutritionTargetId && profile.medicalProfileId,
+    );
 
     if (user.email && !isDbVerified && user.emailVerified !== true) {
       return res.status(403).json({
@@ -1400,6 +1410,8 @@ app.post("/api/user/login", async (req, res) => {
       uid: user.uid,
       email: user.email,
       displayName: user.displayName,
+      profileComplete,
+      needsProfileSetup: !profileComplete,
     });
   } catch (error) {
     console.error("LOGIN ERROR:", error.code || error.message);

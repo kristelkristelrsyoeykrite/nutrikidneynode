@@ -14,31 +14,39 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
   String? _dietPattern;
   String? _activityLevel;
   String? _measurementSystem;
+  String? _processedFoodIntake;
+  String? _mealPattern;
+  String? _fluidRestrictionStatus;
+  String? _hasHypertension;
 
-  // Controller for the text field
-  final TextEditingController _fluidController = TextEditingController();
+  // Controllers for numeric and text fields
+  final TextEditingController _fluidLimitController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _fluidController.addListener(() {
+    _fluidLimitController.addListener(() {
       setState(() {});
     });
   }
 
   @override
   void dispose() {
-    _fluidController.dispose();
+    _fluidLimitController.dispose();
     super.dispose();
   }
 
   // --- Validation Logic ---
-  // Fluid restriction says "if any", so we will make it optional.
-  // The dropdowns, however, should be filled to continue.
   bool get _isFormValid {
     return _dietPattern != null &&
         _activityLevel != null &&
-        _measurementSystem != null;
+        _measurementSystem != null &&
+        _processedFoodIntake != null &&
+        _mealPattern != null &&
+        _fluidRestrictionStatus != null &&
+        _hasHypertension != null &&
+        (_fluidRestrictionStatus != "yes" ||
+            _fluidLimitController.text.trim().isNotEmpty);
   }
 
   @override
@@ -148,15 +156,22 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
 
                     // --- Form Fields ---
 
-                    // Usual Diet Pattern
+                    // Usual Diet Pattern (expanded with 13 options)
                     _buildDropdownField(
                       label: "Usual Diet Pattern",
                       hint: "Select Pattern",
                       value: _dietPattern,
                       items: [
-                        "Standard/No Restrictions",
-                        "Low Sodium",
-                        "Renal Diet",
+                        "Regular diet",
+                        "Renal diet",
+                        "High protein",
+                        "Low protein",
+                        "Low salt / Low fat",
+                        "Low fat",
+                        "Low salt",
+                        "Low potassium",
+                        "Low phosphorus",
+                        "Low purine",
                         "Vegetarian",
                         "Vegan",
                         "Other",
@@ -169,11 +184,59 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
                     ),
                     const SizedBox(height: 16),
 
-                    // Fluid Restriction
+                    _buildDropdownField(
+                      label: "Fluid Restriction Status",
+                      hint: "Select Status",
+                      value: _fluidRestrictionStatus,
+                      items: const ["yes", "no", "not sure"],
+                      onChanged: (val) {
+                        setState(() {
+                          _fluidRestrictionStatus = val;
+                          if (val != "yes") {
+                            _fluidLimitController.clear();
+                          }
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
+                    _buildHypertensionDropdown(),
+                    const SizedBox(height: 16),
+
+                    // Daily Fluid Limit (numeric input in mL)
                     _buildTextField(
-                      label: "Fluid Restriction (if any)",
-                      hint: "e.g., 1.5L/day or None",
-                      controller: _fluidController,
+                      label: "Daily Fluid Limit (mL)",
+                      hint: "e.g., 800 or 1200",
+                      controller: _fluidLimitController,
+                      keyboardType: TextInputType.number,
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Processed Food Intake (NEW)
+                    _buildDropdownField(
+                      label: "Processed Food Intake",
+                      hint: "Select Frequency",
+                      value: _processedFoodIntake,
+                      items: ["Often", "Sometimes", "Rarely"],
+                      onChanged: (val) {
+                        setState(() {
+                          _processedFoodIntake = val;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Meal Pattern (NEW)
+                    _buildDropdownField(
+                      label: "Meal Pattern",
+                      hint: "Select Pattern",
+                      value: _mealPattern,
+                      items: ["Regular (3 meals)", "3 meals + snacks", "Irregular"],
+                      onChanged: (val) {
+                        setState(() {
+                          _mealPattern = val;
+                        });
+                      },
                     ),
                     const SizedBox(height: 16),
 
@@ -247,8 +310,16 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
                                 ? () async {
                                     await ApiService.sendStep3({
                                       "dietPattern": _dietPattern,
-                                      "fluidRestriction": _fluidController.text,
+                                      "fluidRestrictionStatus": _fluidRestrictionStatus,
+                                      "fluid_restriction_status": _fluidRestrictionStatus,
+                                      "fluidLimitMl": _fluidLimitController.text.isNotEmpty ? int.parse(_fluidLimitController.text) : null,
+                                      "fluid_limit_ml": _fluidLimitController.text.isNotEmpty ? int.parse(_fluidLimitController.text) : null,
+                                      "processedFoodIntake": _processedFoodIntake,
+                                      "hasHypertension": _hasHypertension,
+                                      "has_hypertension": _hasHypertension,
+                                      "mealPattern": _mealPattern,
                                       "physicalActivityLevel": _activityLevel,
+                                      "physical_activity_level": _activityLevel,
                                       "preferredMeasurement": _measurementSystem,
                                     });
 
@@ -379,6 +450,65 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
               onChanged: onChanged,
               items: items.map<DropdownMenuItem<String>>((String item) {
                 return DropdownMenuItem<String>(value: item, child: Text(item));
+              }).toList(),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHypertensionDropdown() {
+    const optionLabels = {
+      "yes": "Yes",
+      "no": "No",
+      "not_sure": "Not sure",
+    };
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildLabel("Does the child have high blood pressure (hypertension)?"),
+        const Text(
+          "Select the option based on the child's current medical condition or recent clinical advice. This helps the system assess whether sodium-related dietary guidance may be needed.",
+          style: TextStyle(
+            color: Color(0xFF78909C),
+            fontSize: 11,
+            height: 1.3,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          height: 45,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              isExpanded: true,
+              value: _hasHypertension,
+              hint: Text(
+                "Select option",
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+              ),
+              icon: Icon(
+                Icons.keyboard_arrow_down,
+                color: Colors.grey.shade400,
+              ),
+              style: const TextStyle(color: Color(0xFF37474F), fontSize: 13),
+              onChanged: (val) {
+                setState(() {
+                  _hasHypertension = val;
+                });
+              },
+              items: optionLabels.entries.map<DropdownMenuItem<String>>((entry) {
+                return DropdownMenuItem<String>(
+                  value: entry.key,
+                  child: Text(entry.value),
+                );
               }).toList(),
             ),
           ),
