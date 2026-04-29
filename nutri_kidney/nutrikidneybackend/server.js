@@ -261,6 +261,50 @@ function buildDeviceTokenRecord(token, profile = {}, platform) {
   };
 }
 
+async function removeDeviceTokenFromOtherUsers(token, activeUid) {
+  const snapshot = await db.collection("users").get();
+  const batch = db.batch();
+  let updateCount = 0;
+
+  snapshot.forEach((doc) => {
+    if (doc.id === activeUid) return;
+
+    const profile = doc.data() || {};
+    const deviceTokens =
+      profile.deviceTokens && typeof profile.deviceTokens === "object"
+        ? profile.deviceTokens
+        : {};
+    let changed = false;
+    const nextDeviceTokens = {};
+
+    Object.entries(deviceTokens).forEach(([key, value]) => {
+      if (key === token || value?.token === token) {
+        changed = true;
+        return;
+      }
+      nextDeviceTokens[key] = value;
+    });
+
+    if (changed) {
+      batch.set(
+        doc.ref,
+        {
+          deviceTokens: nextDeviceTokens,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+      updateCount += 1;
+    }
+  });
+
+  if (updateCount > 0) {
+    await batch.commit();
+  }
+
+  return updateCount;
+}
+
 function deviceTokenEntries(profile = {}) {
   const raw = profile.deviceTokens;
   if (!raw || typeof raw !== "object") return [];
@@ -2399,6 +2443,10 @@ app.post("/api/user/device-token/register", async (req, res) => {
     }
 
     const profile = userDoc.data() || {};
+    const removedFromOtherUsers = await removeDeviceTokenFromOtherUsers(
+      normalizedToken,
+      uid,
+    );
     await userRef.set(
       {
         deviceTokens: buildDeviceTokenRecord(normalizedToken, profile, platform),
@@ -2410,6 +2458,7 @@ app.post("/api/user/device-token/register", async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Device token registered",
+      removedFromOtherUsers,
     });
   } catch (error) {
     console.error("REGISTER_DEVICE_TOKEN ERROR:", error.code || error.message);

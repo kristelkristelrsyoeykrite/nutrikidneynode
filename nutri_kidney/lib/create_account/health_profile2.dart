@@ -1226,7 +1226,7 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                     const SizedBox(height: 4),
                     const Center(
                       child: Text(
-                        'Information about current treatment and medications',
+                        'Information about current treatment and allergies',
                         style: TextStyle(
                           fontSize: 11,
                           color: Color(0xFFB0BEC5),
@@ -1263,33 +1263,6 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                           _treatmentFrequency = val;
                         });
                       },
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Current Medications (Large Box)
-                    _buildLabel("Current Medications"),
-                    _buildMedicationList(),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: _showAddMedicationOptions,
-                      icon: _isScanningPrescription
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.add),
-                      label: Text(
-                        _isScanningPrescription
-                            ? "Scanning..."
-                            : "Add Medication",
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(double.infinity, 45),
-                        side: const BorderSide(color: Color(0xFF4DB6AC)),
-                        foregroundColor: const Color(0xFF4DB6AC),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
                     ),
                     const SizedBox(height: 16),
 
@@ -1333,40 +1306,10 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                             child: ElevatedButton(
                               onPressed: _isFormValid
                                 ? () async {
-                                    for (final medication in _medications) {
-                                      if (medication['medicationId'] != null) {
-                                        continue;
-                                      }
-
-                                      final response =
-                                          await ApiService.saveMedication(
-                                        medication,
-                                      );
-                                      if (response["success"] != true) {
-                                        if (!mounted) return;
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              "Unable to save medication: ${response["error"] ?? "Please try again."}",
-                                            ),
-                                          ),
-                                        );
-                                        return;
-                                      }
-
-                                      medication['medicationId'] =
-                                          response['medicationId'];
-                                    }
-
-                                    final medicationSummaries =
-                                        _medications.map(_medicationSummary).toList();
                                     await ApiService.sendStep2({
                                       "isOnDialysis": _dialysisType != null && _dialysisType != "None",
                                       "dialysisType": _dialysisType,
                                       "treatmentFrequency": _treatmentFrequency,
-                                      "medications": _medications,
-                                      "medicationsSummary": medicationSummaries.join('; '),
                                       "allergies": _selectedAllergyPayload(),
                                     });
 

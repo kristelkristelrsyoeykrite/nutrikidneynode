@@ -42,6 +42,13 @@ class _RegisterPageState extends State<RegisterPage> {
     return role;
   }
 
+  String _roleLabel(String? role) {
+    final normalized = _normalizedRole(role);
+    if (normalized == 'adolescent') return 'adolescent';
+    if (normalized == 'caregiver') return 'caregiver';
+    return 'not selected';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -112,6 +119,7 @@ class _RegisterPageState extends State<RegisterPage> {
         _isEmailFormat(email) &&
         _isPasswordValid(password) &&
         password == confirmPassword &&
+        _normalizedRole(_selectedRole) != null &&
         _hasAgreedToPrivacy;
   }
 
@@ -821,9 +829,21 @@ Future<void> _signupUser() async {
   }
 
   // Validation 5: Check if privacy agreed
+  if (_normalizedRole(_selectedRole) == null) {
+    AppLogger.warning('Signup rejected: Role not selected', tag: LogTag.signup);
+    _showErrorDialog("Please select your role");
+    return;
+  }
+
   if (!_hasAgreedToPrivacy) {
     AppLogger.warning('Signup rejected: Privacy not agreed', tag: LogTag.signup);
     _showErrorDialog("Please agree to the privacy policy");
+    return;
+  }
+
+  final confirmed = await _confirmRegistrationCredentials();
+  if (confirmed != true) {
+    AppLogger.info('Signup confirmation cancelled for review', tag: LogTag.signup);
     return;
   }
 
@@ -832,6 +852,54 @@ Future<void> _signupUser() async {
   // Email-based signup: proceed to signup without phone verification
   _proceedWithSignup();
 }
+
+  Future<bool?> _confirmRegistrationCredentials() {
+    final fullName = _nameController.text.trim();
+    final email = _emailController.text.trim();
+    final role = _roleLabel(_selectedRole);
+
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Text('Are you sure these credentials are correct?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Please review your registration details before continuing.',
+                style: TextStyle(color: Color(0xFF78909C), fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              Text('Name: $fullName'),
+              const SizedBox(height: 8),
+              Text('Email: $email'),
+              const SizedBox(height: 8),
+              Text('role: $role'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4DB6AC),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Continue'),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   // --- Privacy Dialog ---
   void _showPrivacyDialog() {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:nutri_kidney/login/login.dart';
+import 'package:nutri_kidney/services/auth_service.dart';
 import 'package:nutri_kidney/utils/app_logger.dart';
 import 'health_profile1.dart';
 
@@ -43,6 +44,19 @@ class _PrivacyConsentScreenState extends State<PrivacyConsentScreen> {
     );
   }
 
+  Future<void> _leaveSetup() async {
+    AppLogger.warning(
+      'User left profile setup consent before completing setup',
+      tag: LogTag.onboarding,
+    );
+    await AuthService.signOut();
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const LoginPage()),
+      (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     AppLogger.info(
@@ -50,18 +64,20 @@ class _PrivacyConsentScreenState extends State<PrivacyConsentScreen> {
       tag: LogTag.onboarding,
     );
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        _leaveSetup();
+      },
+      child: Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
         leading: GestureDetector(
           onTap: () {
-            AppLogger.warning(
-              'User went back from privacy consent screen',
-              tag: LogTag.onboarding,
-            );
-            Navigator.of(context).pop();
+            _leaveSetup();
           },
           child: const Icon(
             Icons.arrow_back,
@@ -225,18 +241,7 @@ class _PrivacyConsentScreenState extends State<PrivacyConsentScreen> {
               width: double.infinity,
               height: 50,
               child: OutlinedButton(
-                onPressed: () {
-                  AppLogger.warning(
-                    'User declined privacy consent',
-                    tag: LogTag.onboarding,
-                  );
-                  Navigator.of(context).pushAndRemoveUntil(
-                    MaterialPageRoute(
-                      builder: (context) => const LoginPage(),
-                    ),
-                    (route) => false,
-                  );
-                },
+                onPressed: _leaveSetup,
                 style: OutlinedButton.styleFrom(
                   side: const BorderSide(color: Color(0xFFE0E0E0)),
                   shape: RoundedRectangleBorder(
@@ -256,6 +261,7 @@ class _PrivacyConsentScreenState extends State<PrivacyConsentScreen> {
             const SizedBox(height: 24),
           ],
         ),
+      ),
       ),
     );
   }

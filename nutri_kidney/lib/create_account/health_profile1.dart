@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
+import '../login/login.dart';
 import 'health_profile2.dart';
 
 class HealthProfile1Page extends StatefulWidget {
@@ -79,6 +81,22 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     return true;
   }
 
+  String? get _ageHelperText {
+    if (!_isAdolescentRole) return null;
+    final text = _ageController.text.trim();
+    if (text.isEmpty) {
+      return 'If you selected Adolescent, the age must be 13 or above.';
+    }
+    final age = int.tryParse(text);
+    if (age == null || age < 13) {
+      return 'If you selected Adolescent, the age must be 13 or above.';
+    }
+    if (age > 18) {
+      return 'Adolescent accounts must be 18 years old or below.';
+    }
+    return null;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -144,6 +162,15 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
         _appetiteStatus != null;
   }
 
+  Future<void> _leaveSetup() async {
+    await AuthService.signOut();
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const LoginPage()),
+      (route) => false,
+    );
+  }
+
   // FORMAT DATE FOR UI ONLY
   String _formatDate(DateTime date) {
     return "${date.month.toString().padLeft(2, '0')}/"
@@ -195,10 +222,15 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      resizeToAvoidBottomInset: false,
-      body: SizedBox.expand(
+    return WillPopScope(
+      onWillPop: () async {
+        await _leaveSetup();
+        return false;
+      },
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        resizeToAvoidBottomInset: false,
+        body: SizedBox.expand(
         child: Stack(
           children: [
             // BACKGROUND (UNCHANGED)
@@ -308,10 +340,11 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                     _buildTextField(
                       label: "Age (years)",
                       hint: _isAdolescentRole
-                          ? "Adolescent age must be 13-18"
+                          ? "Adolescent age must be 13 or above"
                           : "Enter age in years",
                       controller: _ageController,
                       keyboardType: TextInputType.number,
+                      helperText: _ageHelperText,
                     ),
 
                     const SizedBox(height: 16),
@@ -428,7 +461,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                                     SnackBar(
                                       content: Text(
                                         _isAdolescentRole
-                                            ? 'Adolescent accounts must be between 13 and 18 years old.'
+                                            ? 'If you selected Adolescent, the age must be 13 or above.'
                                             : 'Enter a valid age before continuing.',
                                       ),
                                     ),
@@ -440,7 +473,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
                                       content: Text(
-                                        'The date of birth must match an adolescent age between 13 and 18.',
+                                        'The date of birth must match an adolescent age of 13 or above.',
                                       ),
                                     ),
                                   );
@@ -509,7 +542,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       width: double.infinity,
                       height: 50,
                       child: TextButton(
-                        onPressed: () => Navigator.pop(context),
+                        onPressed: _leaveSetup,
                         child: const Text("Back"),
                       ),
                     ),
@@ -520,6 +553,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
               ),
             ),
           ],
+        ),
         ),
       ),
     );
@@ -533,6 +567,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     required TextEditingController controller,
     TextInputType keyboardType = TextInputType.text,
     bool readOnly = false,
+    String? helperText,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -555,6 +590,17 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
             ),
           ),
         ),
+        if (helperText != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            helperText,
+            style: const TextStyle(
+              color: Color(0xFFD32F2F),
+              fontSize: 12,
+              height: 1.3,
+            ),
+          ),
+        ],
       ],
     );
   }

@@ -44,6 +44,10 @@ class PushNotificationService {
         'title=${message.notification?.title ?? message.data['title']}, '
         'data=${message.data}',
       );
+      if (!_isForCurrentUser(message)) {
+        debugPrint('[Push] Ignoring foreground notification for inactive user');
+        return;
+      }
       // Display foreground notification
       await _displayForegroundNotification(message);
     });
@@ -104,6 +108,11 @@ class PushNotificationService {
   static Future<void> _displayForegroundNotification(
     RemoteMessage message,
   ) async {
+    if (!_isForCurrentUser(message)) {
+      debugPrint('[Push] Skipping display for inactive user');
+      return;
+    }
+
     final title = message.notification?.title ?? message.data['title'] ?? 'Notification';
     final body = message.notification?.body ?? message.data['body'] ?? '';
 
@@ -237,6 +246,17 @@ class PushNotificationService {
     if (Platform.isWindows) return 'windows';
     if (Platform.isLinux) return 'linux';
     return 'unknown';
+  }
+
+  static bool _isForCurrentUser(RemoteMessage message) {
+    final messageUserId = message.data['userId']?.toString();
+    final currentUserId = ApiService.userId;
+    if (messageUserId == null || messageUserId.isEmpty) {
+      return currentUserId != null && currentUserId.isNotEmpty;
+    }
+    return currentUserId != null &&
+        currentUserId.isNotEmpty &&
+        messageUserId == currentUserId;
   }
 
   static String _tokenPreview(String? token) {

@@ -509,7 +509,7 @@ class MedicationScanProgressOverlay extends StatelessWidget {
                 ),
                 SizedBox(height: 8),
                 Text(
-                  'We are extracting medication details from the image. This can take a few seconds.',
+                  'We are extracting medication details from the image. If the scanning service is starting up, please wait at least 15 seconds.',
                   style: TextStyle(
                     color: Color(0xFF78909C),
                     fontSize: 13,

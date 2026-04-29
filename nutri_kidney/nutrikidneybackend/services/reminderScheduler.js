@@ -164,9 +164,13 @@ async function sendReminderToDevices(userId, reminderData) {
     const user = userDoc.data();
     const deviceTokens = user.deviceTokens || {};
 
-    const validTokens = Object.values(deviceTokens)
-      .filter((entry) => entry && entry.token)
-      .map((entry) => entry.token);
+    const validTokens = [
+      ...new Set(
+        Object.values(deviceTokens)
+          .filter((entry) => entry && entry.token)
+          .map((entry) => entry.token),
+      ),
+    ];
 
     if (validTokens.length === 0) {
       console.log(`No device tokens for user ${userId}`);

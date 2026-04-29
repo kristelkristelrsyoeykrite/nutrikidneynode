@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:nutri_kidney/login/login.dart';
+import 'package:nutri_kidney/services/auth_service.dart';
 import 'package:nutri_kidney/utils/app_logger.dart';
 import 'privacy_consent_screen.dart';
 
@@ -19,6 +21,19 @@ class ProfileSetupIntroScreen extends StatelessWidget {
     );
   }
 
+  Future<void> _leaveSetup(BuildContext context) async {
+    AppLogger.warning(
+      'User left profile setup intro before completing setup',
+      tag: LogTag.onboarding,
+    );
+    await AuthService.signOut();
+    if (!context.mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const LoginPage()),
+      (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     AppLogger.info(
@@ -26,10 +41,16 @@ class ProfileSetupIntroScreen extends StatelessWidget {
       tag: LogTag.onboarding,
     );
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF3FAF7),
-      resizeToAvoidBottomInset: false,
-      body: SizedBox.expand(
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        _leaveSetup(context);
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF3FAF7),
+        resizeToAvoidBottomInset: false,
+        body: SizedBox.expand(
         child: Stack(
           children: [
             // Background Graphics
@@ -144,6 +165,7 @@ class ProfileSetupIntroScreen extends StatelessWidget {
               ),
             ),
           ],
+        ),
         ),
       ),
     );

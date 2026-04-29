@@ -793,7 +793,33 @@ class _FoodLogPageState extends State<FoodLogPage> {
       context: context,
       barrierDismissible: false,
       builder: (_) => const Center(
-        child: CircularProgressIndicator(color: Color(0xFF00C874)),
+        child: Card(
+          margin: EdgeInsets.symmetric(horizontal: 28),
+          child: Padding(
+            padding: EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: Color(0xFF00C874)),
+                SizedBox(height: 16),
+                Text(
+                  'Scanning food image...',
+                  style: TextStyle(
+                    color: Color(0xFF37474F),
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'If the scanning service is starting up, please wait at least 15 seconds.',
+                  style: TextStyle(color: Color(0xFF78909C), fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
 

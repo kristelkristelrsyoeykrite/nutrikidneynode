@@ -25,6 +25,11 @@ class ApiService {
     print("DEBUG: UserId stored: $_userId");
   }
 
+  static void clearUserId() {
+    _userId = null;
+    print("DEBUG: UserId cleared");
+  }
+
   static void setSignupData(Map<String, dynamic> data) {
     signupData = Map<String, dynamic>.from(data);
     print("DEBUG: Signup data stored: $signupData");

@@ -443,6 +443,13 @@ function registerProfileRoutes(router, deps) {
         step3?.processed_food_intake ?? step3?.processedFoodIntake;
       const mealPattern = step3?.meal_pattern ?? step3?.mealPattern;
       const allergies = normalizeAllergiesInput(step2?.allergies);
+      const setupMedications = Array.isArray(step4?.medications)
+        ? step4.medications
+        : Array.isArray(step2?.medications)
+          ? step2.medications
+          : [];
+      const setupMedicationsSummary =
+        step4?.medicationsSummary ?? step2?.medicationsSummary;
       const caregiverSettings = sanitizeCaregiverSettings(
         step1?.caregiverSettings,
         {},
@@ -570,11 +577,11 @@ function registerProfileRoutes(router, deps) {
         medicalProfilePayload.has_hypertension = hasHypertension;
       }
       medicalProfilePayload.allergies = allergies;
-      if (Array.isArray(step2?.medications)) {
-        medicalProfilePayload.medications = step2.medications;
+      if (setupMedications.length > 0) {
+        medicalProfilePayload.medications = setupMedications;
       }
-      if (step2?.medicationsSummary) {
-        medicalProfilePayload.medicationsSummary = step2.medicationsSummary;
+      if (setupMedicationsSummary) {
+        medicalProfilePayload.medicationsSummary = setupMedicationsSummary;
       }
 
       const medicalProfileDoc = await db
@@ -585,8 +592,8 @@ function registerProfileRoutes(router, deps) {
       console.log("Medical Profile created:", medicalProfileId);
 
       const medicationIds = [];
-      if (Array.isArray(step2?.medications) && step2.medications.length > 0) {
-        for (const medication of step2.medications) {
+      if (setupMedications.length > 0) {
+        for (const medication of setupMedications) {
           if (medication.medicationId) {
             await db
               .collection("medications")
@@ -662,25 +669,39 @@ function registerProfileRoutes(router, deps) {
 
       console.log("Anthropometric data created:", anthropometricDoc.id);
 
-      const labResultPayload = {
-        userId,
-        medicalProfileId,
-        testName: "Blood Test",
-        date: step4?.resultDate ?? null,
-        creatinine: parseFloat(step4?.creatinine) || null,
-        potassium: parseFloat(step4?.potassium) || null,
-        phosphorus: parseFloat(step4?.phosphorus) || null,
-        phosphorus_status:
-          step4?.phosphorus_status ?? step4?.phosphorusStatus ?? null,
-        sodium: parseFloat(step4?.sodium) || null,
-        sodium_status: step4?.sodium_status ?? step4?.sodiumStatus ?? null,
-        calcium: parseFloat(step4?.calcium) || null,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      };
+      const hasLabResultData = Boolean(
+        step4?.resultDate ||
+          step4?.creatinine ||
+          step4?.potassium ||
+          step4?.phosphorus ||
+          step4?.phosphorus_status ||
+          step4?.phosphorusStatus ||
+          step4?.sodium ||
+          step4?.sodium_status ||
+          step4?.sodiumStatus ||
+          step4?.calcium,
+      );
+      let labResultDoc = null;
+      if (hasLabResultData) {
+        const labResultPayload = {
+          userId,
+          medicalProfileId,
+          testName: "Blood Test",
+          date: step4?.resultDate ?? null,
+          creatinine: parseFloat(step4?.creatinine) || null,
+          potassium: parseFloat(step4?.potassium) || null,
+          phosphorus: parseFloat(step4?.phosphorus) || null,
+          phosphorus_status:
+            step4?.phosphorus_status ?? step4?.phosphorusStatus ?? null,
+          sodium: parseFloat(step4?.sodium) || null,
+          sodium_status: step4?.sodium_status ?? step4?.sodiumStatus ?? null,
+          calcium: parseFloat(step4?.calcium) || null,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
 
-      const labResultDoc = await db.collection("labResults").add(labResultPayload);
-
-      console.log("Lab Result created:", labResultDoc.id);
+        labResultDoc = await db.collection("labResults").add(labResultPayload);
+        console.log("Lab Result created:", labResultDoc.id);
+      }
 
       const baselineTargets = generateProfileTargets({
         child_name: step1?.name,
@@ -744,7 +765,7 @@ function registerProfileRoutes(router, deps) {
         .add({
           userId,
           medicalProfileId,
-          labResultId: labResultDoc.id,
+          labResultId: labResultDoc?.id || null,
           source: "phase2_decision_support",
           generatedAt: admin.firestore.FieldValue.serverTimestamp(),
           ...phase2DecisionSupport,
@@ -759,7 +780,7 @@ function registerProfileRoutes(router, deps) {
         medicalProfileId,
         baselineNutritionTargetId: nutritionTargetDoc.id,
         phase2DecisionSupportId: phase2DecisionSupportDoc.id,
-        labResultId: labResultDoc.id,
+        labResultId: labResultDoc?.id || null,
         medicationIds,
       });
 

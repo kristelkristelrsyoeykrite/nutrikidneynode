@@ -3,6 +3,7 @@ import 'package:nutri_kidney/services/api_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:nutri_kidney/services/auth_service.dart';
 import '../main/dashboard.dart';
+import '../main/medication_scan_flow.dart';
 
 class HealthProfile4Page extends StatefulWidget {
   const HealthProfile4Page({super.key});
@@ -30,8 +31,9 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
   String? _phosphorusStatus;
   String? _sodiumStatus;
 
-  // --- Variables to store popup data ---
-  String? _uploadedPrescriptionPath;
+  // --- Medication setup ---
+  final List<Map<String, dynamic>> _medications = [];
+  bool _isScanningPrescription = false;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   bool _isFinishingRegistration = false;
   bool _registrationCompleted = false;
@@ -103,157 +105,280 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
     }
   }
 
-  // --- POPUP: Prescription Upload Dialog ---
-  void _showUploadPrescriptionDialog() {
-    showDialog(
+  Future<void> _showAddMedicationOptions() {
+    return MedicationScanFlow.showAddMedicationOptions(
       context: context,
-      builder: (BuildContext context) {
+      isScanning: _isScanningPrescription,
+      onScanPrescription: _scanPrescriptionForMedications,
+      onManualEntry: () => _showAddMedicationDialog(),
+    );
+  }
+
+  Future<void> _scanPrescriptionForMedications() {
+    return MedicationScanFlow.scanPrescriptionForMedications(
+      context: context,
+      onScanningChanged: (isScanning) {
+        if (mounted) {
+          setState(() => _isScanningPrescription = isScanning);
+        }
+      },
+      onMedicationSelected: (seedMedication) async {
+        if (mounted) {
+          _showAddMedicationDialog(seedMedication: seedMedication);
+        }
+      },
+    );
+  }
+
+  void _showAddMedicationDialog({Map<String, dynamic>? seedMedication}) {
+    final nameController = TextEditingController(
+      text: seedMedication?['name']?.toString() ??
+          seedMedication?['medicineName']?.toString() ??
+          seedMedication?['medicationName']?.toString() ??
+          seedMedication?['medication_name']?.toString() ??
+          '',
+    );
+    final dosageController = TextEditingController(
+      text: seedMedication?['dosage']?.toString() ?? '',
+    );
+    final instructionsController = TextEditingController(
+      text: seedMedication?['instructions']?.toString() ?? '',
+    );
+    TimeOfDay selectedTime = const TimeOfDay(hour: 8, minute: 0);
+    String frequencyType = 'times_per_day';
+    int frequencyValue = 1;
+
+    List<String> generateScheduledTimes() {
+      final interval = frequencyType == 'times_per_day'
+          ? (24 ~/ frequencyValue)
+          : frequencyValue;
+      final count = frequencyType == 'times_per_day'
+          ? frequencyValue
+          : (24 ~/ frequencyValue);
+      return List.generate(count, (index) {
+        final hour = (selectedTime.hour + (index * interval)) % 24;
+        return '${hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
+      });
+    }
+
+    String formatTime(String time24h) {
+      final parts = time24h.split(':');
+      final hour = int.parse(parts[0]);
+      final minute = int.parse(parts[1]);
+      final period = hour >= 12 ? 'PM' : 'AM';
+      final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+      return '$displayHour:${minute.toString().padLeft(2, '0')} $period';
+    }
+
+    String frequencyLabel() {
+      if (frequencyType != 'times_per_day') return 'Every $frequencyValue hours';
+      switch (frequencyValue) {
+        case 1:
+          return 'Once daily';
+        case 2:
+          return '2x daily';
+        case 3:
+          return '3x daily';
+        case 4:
+          return '4x daily';
+        default:
+          return '$frequencyValue times daily';
+      }
+    }
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
         return StatefulBuilder(
-          builder: (context, setStateDialog) {
+          builder: (context, setDialogState) {
+            final currentSchedule = generateScheduledTimes();
             return Dialog(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
               ),
               insetPadding: const EdgeInsets.all(20),
+              backgroundColor: Colors.white,
               child: Container(
                 padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text.rich(
-                      TextSpan(
-                        text: 'Upload ',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF37474F),
-                        ),
+                width: double.infinity,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          TextSpan(
-                            text:
-                                'handwritten or computerized\nprescription here',
+                          const Text(
+                            'Add Medication',
                             style: TextStyle(
-                              color: Color(0xFF9E86FF), // Purple color
+                              fontSize: 20,
                               fontWeight: FontWeight.bold,
+                              color: Color(0xFF37474F),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(dialogContext),
+                            icon: const Icon(Icons.close),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      _buildTextField(
+                        label: 'Medication Name',
+                        hint: 'e.g. Calcium',
+                        controller: nameController,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildTextField(
+                        label: 'Dosage',
+                        hint: 'e.g. 500mg',
+                        controller: dosageController,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildLabel('Start Time'),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final picked = await showTimePicker(
+                            context: dialogContext,
+                            initialTime: selectedTime,
+                          );
+                          if (picked != null && context.mounted) {
+                            setDialogState(() => selectedTime = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.access_time),
+                        label: Text(selectedTime.format(context)),
+                      ),
+                      const SizedBox(height: 16),
+                      _buildLabel('Frequency'),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        value: frequencyType,
+                        decoration: _inputDecoration('Frequency type'),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'times_per_day',
+                            child: Text('Times per day'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'every_x_hours',
+                            child: Text('Every X hours'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setDialogState(() {
+                            frequencyType = value;
+                            frequencyValue = 1;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<int>(
+                        value: frequencyValue,
+                        decoration: _inputDecoration(
+                          frequencyType == 'times_per_day'
+                              ? 'Times per day'
+                              : 'Every X hours',
+                        ),
+                        items: (frequencyType == 'times_per_day'
+                                ? const [1, 2, 3, 4]
+                                : const [4, 6, 8, 12])
+                            .map(
+                              (value) => DropdownMenuItem(
+                                value: value,
+                                child: Text(value.toString()),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() => frequencyValue = value);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        '${frequencyLabel()} at ${currentSchedule.map(formatTime).join(', ')}',
+                        style: const TextStyle(
+                          color: Color(0xFF78909C),
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      _buildTextField(
+                        label: 'Instructions',
+                        hint: 'e.g. Take with food',
+                        controller: instructionsController,
+                      ),
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextButton(
+                              onPressed: () => Navigator.pop(dialogContext),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: () {
+                                final name = nameController.text.trim();
+                                if (name.isEmpty) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Please enter medication name',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
+                                final schedule = generateScheduledTimes();
+                                final medication = {
+                                  'name': name,
+                                  'medicationName': name,
+                                  'medication_name': name,
+                                  'dosage': dosageController.text.trim(),
+                                  'frequency': frequencyLabel(),
+                                  'frequency_type': frequencyType,
+                                  'frequency_value': frequencyValue,
+                                  'time': schedule.join(', '),
+                                  'display_times':
+                                      schedule.map(formatTime).join(', '),
+                                  'scheduled_times': schedule,
+                                  'instructions':
+                                      instructionsController.text.trim(),
+                                  if (seedMedication?['form'] != null)
+                                    'form': seedMedication?['form'],
+                                  if (seedMedication?['duration'] != null)
+                                    'duration': seedMedication?['duration'],
+                                  if (seedMedication?['rxcui'] != null)
+                                    'rxcui': seedMedication?['rxcui'],
+                                  if (seedMedication?['rawOcrText'] != null)
+                                    'rawOcrText':
+                                        seedMedication?['rawOcrText'],
+                                  'source':
+                                      seedMedication?['source'] ??
+                                      'manual_entry',
+                                };
+                                setState(() => _medications.add(medication));
+                                Navigator.pop(dialogContext);
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF00C874),
+                                foregroundColor: Colors.white,
+                              ),
+                              child: const Text('Add Medication'),
                             ),
                           ),
                         ],
                       ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      '(recommended computerized)',
-                      style: TextStyle(fontSize: 14, color: Color(0xFF78909C)),
-                    ),
-                    const Text(
-                      'Our secure AI scans your prescription to save you time',
-                      style: TextStyle(fontSize: 11, color: Color(0xFFB0BEC5)),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Icons grid
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        // Open Camera tappable area
-                        GestureDetector(
-                          onTap: () {
-                            Navigator.pop(context);
-                            setState(() {
-                              _uploadedPrescriptionPath =
-                                  "path/to/camera_photo.jpg";
-                            });
-                          },
-                          child: _buildTappableIconColumn(
-                            Icons.camera_alt,
-                            "Open Camera",
-                          ),
-                        ),
-                        // Find in files tappable area
-                        GestureDetector(
-                          onTap: () {
-                            Navigator.pop(context);
-                            setState(() {
-                              _uploadedPrescriptionPath =
-                                  "path/to/picked_file.pdf";
-                            });
-                          },
-                          child: _buildTappableIconColumn(
-                            Icons.folder_open,
-                            "Find in files",
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Buttons row
-                    Row(
-                      children: [
-                        // Upload button
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: _uploadedPrescriptionPath == null
-                                ? null // Disabled if nothing selected
-                                : () {
-                                    Navigator.pop(context);
-                                    // Integrate actual upload here
-                                  },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(
-                                0xFF00C874,
-                              ), // upload_confirm green
-                              disabledBackgroundColor: Colors.grey.shade400,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            child: const Text(
-                              'Upload File',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        // Cancel Button
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: () {
-                              Navigator.pop(context); // Close Popup
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(
-                                0xFFEEEEEE,
-                              ), // Light grey
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            child: const Text(
-                              'Cancel',
-                              style: TextStyle(
-                                color: Color(0xFF37474F),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
@@ -729,63 +854,30 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                       ),
 
                     const SizedBox(height: 24),
-                    _buildLabel("Prescription"),
+                    _buildLabel("Current Medications"),
+                    _buildMedicationList(),
                     const SizedBox(height: 8),
-                    // Tappable container for prescription upload
-                    GestureDetector(
-                      onTap: () {
-                        _showUploadPrescriptionDialog(); // Open 1st Popup
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.grey.shade300),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: const BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Color(
-                                  0xFFAAAAAA,
-                                ), // Grey camera background
-                              ),
-                              child: const Icon(
-                                Icons.camera_alt,
-                                color: Colors.white,
-                                size: 20,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                _uploadedPrescriptionPath == null
-                                    ? "Upload Medicine Prescription (Handwritten or Digital)"
-                                    : "Prescription uploaded successfully!", // change text when uploaded
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Color(0xFF37474F),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            // Small indicator for upload status
-                            Icon(
-                              _uploadedPrescriptionPath == null
-                                  ? Icons.upload_file
-                                  : Icons.check_circle_outline,
-                              color: _uploadedPrescriptionPath == null
-                                  ? const Color(0xFF78909C)
-                                  : const Color(0xFF00C874),
-                              size: 18,
-                            ),
-                          ],
+                    OutlinedButton.icon(
+                      onPressed:
+                          _isScanningPrescription ? null : _showAddMedicationOptions,
+                      icon: _isScanningPrescription
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.add),
+                      label: Text(
+                        _isScanningPrescription
+                            ? "Scanning..."
+                            : "Add Medication",
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 45),
+                        side: const BorderSide(color: Color(0xFF4DB6AC)),
+                        foregroundColor: const Color(0xFF4DB6AC),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
                       ),
                     ),
@@ -861,6 +953,8 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                 ),
               ),
             ),
+            if (_isScanningPrescription)
+              const MedicationScanProgressOverlay(),
           ],
         ),
       ),
@@ -1177,7 +1271,31 @@ Future<void> _handleFinishRegistration() async {
       }
     }
 
-    // SEND STEP 4 DATA only if fields were provided
+    if (_medications.isNotEmpty) {
+      _showLoadingDialog("Saving medications...");
+      try {
+        for (final medication in _medications) {
+          if (medication['medicationId'] != null) continue;
+
+          final response = await ApiService.saveMedication(medication);
+          if (response["success"] != true) {
+            throw Exception(
+              response["error"] ?? "Unable to save medication.",
+            );
+          }
+          medication['id'] = response['medicationId'];
+          medication['medicationId'] = response['medicationId'];
+        }
+        Navigator.pop(context); // Close loading dialog
+      } catch (e) {
+        Navigator.pop(context); // Close loading dialog
+        throw Exception('Failed to save medications: $e');
+      }
+    }
+
+    final medicationSummaries = _medications.map(_medicationSummary).toList();
+
+    // SEND STEP 4 DATA only if fields or medications were provided
     if (!_isStep4Empty()) {
       _showLoadingDialog("Saving lab results...");
       try {
@@ -1190,6 +1308,8 @@ Future<void> _handleFinishRegistration() async {
           "calcium": _calciumLevel,
           "phosphorus_status": _phosphorusStatus,
           "resultDate": _resultDateController.text,
+          "medications": _medications,
+          "medicationsSummary": medicationSummaries.join('; '),
         });
         Navigator.pop(context); // Close loading dialog
       } catch (e) {
@@ -1318,6 +1438,95 @@ void _showProceedDialog() {
   );
 }
 
+  String _medicationSummary(Map<String, dynamic> medication) {
+    final name =
+        (medication['medication_name'] ?? medication['name'] ?? 'Medication')
+            .toString();
+    final dosage = medication['dosage']?.toString().trim() ?? '';
+    final frequency =
+        (medication['display_freq'] ?? medication['frequency'] ?? '')
+            .toString()
+            .trim();
+    final times =
+        (medication['display_times'] ?? medication['time'] ?? '')
+            .toString()
+            .trim();
+    return [
+      name,
+      if (dosage.isNotEmpty) dosage,
+      if (frequency.isNotEmpty) frequency,
+      if (times.isNotEmpty) times,
+    ].join(' - ');
+  }
+
+  Widget _buildMedicationList() {
+    if (_medications.isEmpty) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: const Text(
+          "No medications added yet.",
+          style: TextStyle(color: Color(0xFF78909C), fontSize: 12),
+        ),
+      );
+    }
+
+    return Column(
+      children: _medications.map((medication) {
+        final name =
+            (medication['medication_name'] ?? medication['name'] ?? 'Medication')
+                .toString();
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.medication_outlined, color: Color(0xFF4DB6AC)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        color: Color(0xFF37474F),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      _medicationSummary(medication),
+                      style: const TextStyle(
+                        color: Color(0xFF78909C),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: () => setState(() => _medications.remove(medication)),
+                icon: const Icon(Icons.delete_outline, color: Color(0xFFE57373)),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+
   bool _isStep4Empty() {
     return _creatinineController.text.trim().isEmpty &&
         _potassiumController.text.trim().isEmpty &&
@@ -1327,7 +1536,7 @@ void _showProceedDialog() {
         (_sodiumStatus == null || _sodiumStatus!.trim().isEmpty) &&
         (_calciumLevel == null || _calciumLevel!.trim().isEmpty) &&
         _resultDateController.text.trim().isEmpty &&
-        _uploadedPrescriptionPath == null;
+        _medications.isEmpty;
   }
 
   bool _hasStep4LabDataWithoutDate() {
@@ -1337,8 +1546,7 @@ void _showProceedDialog() {
         (_phosphorusStatus != null && _phosphorusStatus!.trim().isNotEmpty) ||
         _sodiumController.text.trim().isNotEmpty ||
         (_sodiumStatus != null && _sodiumStatus!.trim().isNotEmpty) ||
-        (_calciumLevel != null && _calciumLevel!.trim().isNotEmpty) ||
-        _uploadedPrescriptionPath != null;
+        (_calciumLevel != null && _calciumLevel!.trim().isNotEmpty);
 
     return hasLabData && _resultDateController.text.trim().isEmpty;
   }
@@ -1373,6 +1581,27 @@ void _showProceedDialog() {
           fontSize: 11,
         ),
       ),
+    );
+  }
+
+  InputDecoration _inputDecoration(String label) {
+    return InputDecoration(
+      labelText: label,
+      filled: true,
+      fillColor: Colors.white,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: BorderSide(color: Colors.grey.shade300),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: BorderSide(color: Colors.grey.shade300),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: Color(0xFF4DB6AC)),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
     );
   }
 

@@ -243,6 +243,7 @@ class AuthService {
       await clearRememberedSession();
       await _auth.signOut();
       await _googleSignIn.signOut();
+      ApiService.clearUserId();
       print('User signed out and session cleared');
     } catch (e) {
       print('Error signing out: $e');
