@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:nutri_kidney/login/login.dart';
 import 'package:nutri_kidney/utils/app_logger.dart';
 import 'health_profile1.dart';
 
@@ -130,7 +131,7 @@ class _PrivacyConsentScreenState extends State<PrivacyConsentScreen> {
                 'You can update or delete your information anytime',
                 'We never sell or share your data without permission',
                 'You can access all information we have about you',
-                'Compliant with Data Privacy Act of 2012 and HIPAA standards',
+                'Compliant with Data Privacy Act of 2012',
               ],
             ),
             const SizedBox(height: 32),
@@ -229,8 +230,12 @@ class _PrivacyConsentScreenState extends State<PrivacyConsentScreen> {
                     'User declined privacy consent',
                     tag: LogTag.onboarding,
                   );
-                  // Go back to previous screen
-                  Navigator.of(context).pop();
+                  Navigator.of(context).pushAndRemoveUntil(
+                    MaterialPageRoute(
+                      builder: (context) => const LoginPage(),
+                    ),
+                    (route) => false,
+                  );
                 },
                 style: OutlinedButton.styleFrom(
                   side: const BorderSide(color: Color(0xFFE0E0E0)),

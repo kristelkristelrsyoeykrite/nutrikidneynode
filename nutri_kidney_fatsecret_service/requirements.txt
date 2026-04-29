@@ -1,0 +1,9 @@
+fatsecret
+python-dotenv
+requests
+Pillow
+pydantic
+fastapi
+uvicorn
+google-cloud-vision
+spacy

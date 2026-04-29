@@ -4,6 +4,10 @@ import 'dashboard.dart';
 import 'food_log.dart';
 import 'analytics.dart';
 import 'health_metrics.dart';
+import 'profile/account_management_page.dart';
+import 'profile/edit_profile_page.dart';
+import 'profile/notification_settings_page.dart';
+import 'profile/privacy_security_page.dart';
 import '../login/login.dart';
 import '../../services/auth_service.dart';
 import '../../services/api_service.dart';
@@ -19,12 +23,103 @@ class _ProfilePageState extends State<ProfilePage> {
   int _currentIndex = 4; // 4 corresponds to 'Profile' in the bottom nav
 
   // State variables for the toggles
-  bool _medicationReminders = true;
+  bool _medicationReminders = false;
   bool _hydrationAlerts = false;
+  bool _breakfastReminders = false;
+  bool _lunchReminders = false;
+  bool _snackReminders = false;
+  bool _dinnerReminders = false;
+  bool _allowDataExport = false;
   bool _isLoadingProfile = true;
+  bool _isSavingReminderSettings = false;
+  Map<String, dynamic> _viewer = {};
   Map<String, dynamic> _user = {};
   Map<String, dynamic> _medicalProfile = {};
   Map<String, dynamic> _anthropometrics = {};
+  String? _profileOwnerId;
+  Map<String, dynamic> _caregiverDashboardState = {};
+  List<Map<String, dynamic>> _medications = [];
+  Set<String> _unlockedAwardIds = {};
+
+  Map<String, dynamic> get _caregiverSettings {
+    final settings = _user["caregiverSettings"];
+    if (settings is Map) {
+      return Map<String, dynamic>.from(settings);
+    }
+    return {};
+  }
+
+  Map<String, dynamic> get _viewerSecuritySettings {
+    final viewerSettings = _viewer["securitySettings"];
+    if (viewerSettings is Map) {
+      return Map<String, dynamic>.from(viewerSettings);
+    }
+    final userSettings = _user["securitySettings"];
+    if (userSettings is Map) {
+      return Map<String, dynamic>.from(userSettings);
+    }
+    return {};
+  }
+
+  Map<String, dynamic> get _reminderSettings {
+    final settings = _user["reminderSettings"];
+    if (settings is Map) {
+      return Map<String, dynamic>.from(settings);
+    }
+    return {};
+  }
+
+  Map<String, dynamic> get _mealReminderSettings {
+    final settings = _reminderSettings["mealReminders"];
+    if (settings is Map) {
+      return Map<String, dynamic>.from(settings);
+    }
+    return {};
+  }
+
+  bool get _isAdolescentRole =>
+      _textValue(_user, ["role", "userRole"]).toLowerCase() == "adolescent";
+
+  bool get _isCaregiverViewer {
+    final role = _textValue(_viewer, ["role", "userRole"]).toLowerCase();
+    return role == "caregiver" || role == "parent_caregiver";
+  }
+
+  bool get _caregiverLinked => _caregiverSettings["caregiverLinked"] == true;
+
+  bool get _linkedChildAccountActive =>
+      _caregiverDashboardState["linkedChildAccount"] == true;
+
+  bool get _canManageReminderSettings {
+    if (_isCaregiverViewer) return _linkedChildAccountActive;
+    if (_isAdolescentRole && _caregiverLinked) return false;
+    return true;
+  }
+
+  bool get _canOpenEditProfile {
+    if (_isAdolescentRole && _caregiverLinked) return false;
+    if (_isCaregiverViewer) return _linkedChildAccountActive;
+    return true;
+  }
+
+  String get _reminderSettingsLockReason {
+    if (_isCaregiverViewer && !_linkedChildAccountActive) {
+      return 'Link an adolescent account first to manage reminders.';
+    }
+    if (_isAdolescentRole && _caregiverLinked) {
+      return 'Reminder settings are managed by the linked caregiver.';
+    }
+    return 'Reminder settings are unavailable right now.';
+  }
+
+  String get _caregiverLinkStatus {
+    final rawStatus = _caregiverSettings["linkStatus"]?.toString();
+    final status = rawStatus?.trim() ?? "";
+    if (status.isEmpty) {
+      return _caregiverLinked ? "linked" : "none";
+    }
+    return status;
+  }
 
   @override
   void initState() {
@@ -35,12 +130,40 @@ class _ProfilePageState extends State<ProfilePage> {
   Future<void> _loadProfile() async {
     try {
       final response = await ApiService.getHealthSummary();
+      Map<String, dynamic> gamificationStatus = {};
+      if (response["success"] == true) {
+        try {
+          final gamificationResponse = await ApiService.getGamificationSummary();
+          final gamification = _asStringMap(gamificationResponse["gamification"]);
+          gamificationStatus = _asStringMap(gamification["status"]);
+        } catch (_) {
+          gamificationStatus = {};
+        }
+      }
       if (!mounted) return;
       if (response["success"] == true) {
         setState(() {
+          _viewer = _asStringMap(response["viewer"]);
           _user = _asStringMap(response["user"]);
           _medicalProfile = _asStringMap(response["medicalProfile"]);
           _anthropometrics = _asStringMap(response["anthropometrics"]);
+          _profileOwnerId = response["profileOwnerId"]?.toString();
+          _caregiverDashboardState = _asStringMap(
+            response["caregiverDashboardState"],
+          );
+          _medications = _asStringMapList(response["medications"]);
+          _medicationReminders =
+              _reminderSettings["medicationReminders"] == true;
+          _hydrationAlerts = _reminderSettings["hydrationAlerts"] == true;
+          _breakfastReminders = _mealReminderSettings["breakfast"] == true;
+          _lunchReminders = _mealReminderSettings["lunch"] == true;
+          _snackReminders = _mealReminderSettings["snack"] == true;
+          _dinnerReminders = _mealReminderSettings["dinner"] == true;
+          _allowDataExport = _user["allowDataExport"] == true;
+          final unlockedAwards = gamificationStatus["unlockedAwards"];
+          _unlockedAwardIds = unlockedAwards is List
+              ? unlockedAwards.map((award) => award.toString()).toSet()
+              : {};
           _isLoadingProfile = false;
         });
       } else {
@@ -59,6 +182,28 @@ class _ProfilePageState extends State<ProfilePage> {
     return {};
   }
 
+  List<Map<String, dynamic>> _asStringMapList(dynamic value) {
+    if (value is! List) return [];
+    return value
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+      .toList();
+  }
+
+  bool _hasAward(String awardId) => _unlockedAwardIds.contains(awardId);
+
+  Widget _achievementIcon({
+    required IconData icon,
+    required Color color,
+    required bool isLocked,
+  }) {
+    return Icon(
+      isLocked ? Icons.lock_outline : icon,
+      color: isLocked ? const Color(0xFFB0BEC5) : color,
+      size: 40,
+    );
+  }
+
   String _textValue(Map<String, dynamic> source, List<String> keys) {
     for (final key in keys) {
       final value = source[key];
@@ -74,6 +219,48 @@ class _ProfilePageState extends State<ProfilePage> {
     return name.isEmpty ? "Child Profile" : name;
   }
 
+  String get _viewerRoleLabel {
+    final role = _textValue(_viewer, ["role", "userRole"]).toLowerCase();
+    if (role == "caregiver" || role == "parent_caregiver") {
+      return "Caregiver";
+    }
+    if (role == "adolescent") {
+      return "Adolescent";
+    }
+    return "User";
+  }
+
+  String get _viewerEmail {
+    return _textValue(_viewer, ["email"]).isNotEmpty
+        ? _textValue(_viewer, ["email"])
+        : _textValue(_user, ["email"]);
+  }
+
+  String get _viewerPhone {
+    return _textValue(_viewer, ["phoneNumber"]).isNotEmpty
+        ? _textValue(_viewer, ["phoneNumber"])
+        : _textValue(_user, ["phoneNumber"]);
+  }
+
+  String get _linkedProfileEmail {
+    return _textValue(_user, ["email"]);
+  }
+
+  String get _linkedProfileRoleLabel {
+    final role = _textValue(_user, ["role", "userRole"]).toLowerCase();
+    if (role == "caregiver" || role == "parent_caregiver") {
+      return "Caregiver";
+    }
+    if (role == "adolescent") {
+      return "Adolescent";
+    }
+    return "User";
+  }
+
+  String get _verificationContact {
+    return _viewerEmail;
+  }
+
   String get _childInitials {
     final parts = _childName
         .split(RegExp(r"\s+"))
@@ -87,13 +274,156 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _openEditProfile() async {
+    if (!_canOpenEditProfile) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _isAdolescentRole && _caregiverLinked
+                ? 'Profile editing is managed by the linked caregiver.'
+                : 'Link an adolescent account first to edit this profile.',
+          ),
+        ),
+      );
+      return;
+    }
+
     final updated = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (context) => EditProfilePage(
+          viewer: _viewer,
           user: _user,
           medicalProfile: _medicalProfile,
           anthropometrics: _anthropometrics,
+          profileOwnerId: _profileOwnerId,
+        ),
+      ),
+    );
+
+    if (updated == true) {
+      _loadProfile();
+    }
+  }
+
+  Future<void> _saveReminderSettings({
+    required bool medicationReminders,
+    required bool hydrationAlerts,
+    required bool breakfastReminder,
+    required bool lunchReminder,
+    required bool snackReminder,
+    required bool dinnerReminder,
+  }) async {
+    final previousMedication = _medicationReminders;
+    final previousHydration = _hydrationAlerts;
+    final previousBreakfast = _breakfastReminders;
+    final previousLunch = _lunchReminders;
+    final previousSnack = _snackReminders;
+    final previousDinner = _dinnerReminders;
+
+    setState(() {
+      _medicationReminders = medicationReminders;
+      _hydrationAlerts = hydrationAlerts;
+      _breakfastReminders = breakfastReminder;
+      _lunchReminders = lunchReminder;
+      _snackReminders = snackReminder;
+      _dinnerReminders = dinnerReminder;
+      _isSavingReminderSettings = true;
+    });
+
+    try {
+      final response = await ApiService.updateReminderSettings(
+        profileUserId: _profileOwnerId,
+        medicationReminders: medicationReminders,
+        hydrationAlerts: hydrationAlerts,
+        breakfastReminder: breakfastReminder,
+        lunchReminder: lunchReminder,
+        snackReminder: snackReminder,
+        dinnerReminder: dinnerReminder,
+      );
+
+      if (!mounted) return;
+      if (response["success"] != true) {
+        throw Exception(
+          response["error"]?.toString() ??
+              'Unable to update reminder settings.',
+        );
+      }
+      final savedSettings = response["reminderSettings"];
+      if (savedSettings is Map) {
+        _user["reminderSettings"] = Map<String, dynamic>.from(savedSettings);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _medicationReminders = previousMedication;
+        _hydrationAlerts = previousHydration;
+        _breakfastReminders = previousBreakfast;
+        _lunchReminders = previousLunch;
+        _snackReminders = previousSnack;
+        _dinnerReminders = previousDinner;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to update reminders: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isSavingReminderSettings = false);
+      }
+    }
+  }
+
+  void _showReminderSettingsLockedMessage() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(_reminderSettingsLockReason)),
+    );
+  }
+
+  Future<void> _openAccountManagement() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AccountManagementPage(
+          email: _viewerEmail,
+          roleLabel: _viewerRoleLabel,
+          verificationContact: _verificationContact,
+          linkedProfileEmail: _linkedProfileEmail,
+          linkedProfileRoleLabel: _linkedProfileRoleLabel,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openPrivacySecurity() async {
+    final updated = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PrivacySecurityPage(
+          initialMfaEnabled: _viewerSecuritySettings["mfaEnabled"] == true,
+          accountLabel: _viewerEmail.isNotEmpty ? _viewerEmail : _viewerPhone,
+        ),
+      ),
+    );
+
+    if (updated == true) {
+      _loadProfile();
+    }
+  }
+
+  Future<void> _openNotificationSettings() async {
+    final updated = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => NotificationSettingsPage(
+          profileUserId: _profileOwnerId,
+          canManageReminderSettings: _canManageReminderSettings,
+          reminderSettingsLockReason: _reminderSettingsLockReason,
+          initialMedicationReminders: _medicationReminders,
+          initialHydrationAlerts: _hydrationAlerts,
+          initialBreakfastReminders: _breakfastReminders,
+          initialLunchReminders: _lunchReminders,
+          initialSnackReminders: _snackReminders,
+          initialDinnerReminders: _dinnerReminders,
+          medications: _medications,
         ),
       ),
     );
@@ -146,62 +476,55 @@ class _ProfilePageState extends State<ProfilePage> {
                   mainAxisSpacing: 16,
                   childAspectRatio: 1.0,
                   children: [
-                    // Unlocked Achievements
                     _buildAchievementCard(
                       title: '7 Day Streak',
-                      subtitle: 'Logged food daily',
-                      iconWidget: const Icon(
-                        Icons.local_fire_department,
-                        color: Color(0xFFFF8A65),
-                        size: 40,
+                      subtitle: 'Logged meals and hydration daily',
+                      iconWidget: _achievementIcon(
+                        icon: Icons.local_fire_department,
+                        color: const Color(0xFFFF8A65),
+                        isLocked: !_hasAward('seven_day_streak'),
                       ),
+                      isLocked: !_hasAward('seven_day_streak'),
+                    ),
+                    _buildAchievementCard(
+                      title: '14 Day Streak',
+                      subtitle: 'Logged meals and hydration for 14 days',
+                      iconWidget: _achievementIcon(
+                        icon: Icons.local_fire_department,
+                        color: const Color(0xFFE53935),
+                        isLocked: !_hasAward('fourteen_day_streak'),
+                      ),
+                      isLocked: !_hasAward('fourteen_day_streak'),
                     ),
                     _buildAchievementCard(
                       title: 'Rainbow Eater',
                       subtitle: 'Ate 5 different colored foods',
-                      iconWidget: const Text(
-                        '🌈',
-                        style: TextStyle(fontSize: 32),
+                      iconWidget: _achievementIcon(
+                        icon: Icons.palette_outlined,
+                        color: const Color(0xFF7E57C2),
+                        isLocked: !_hasAward('rainbow_eater'),
                       ),
+                      isLocked: !_hasAward('rainbow_eater'),
                     ),
                     _buildAchievementCard(
                       title: 'Hydration Hero',
                       subtitle: 'Met water goal 10 times',
-                      iconWidget: const Icon(
-                        Icons.water_drop,
-                        color: Color(0xFF64B5F6),
-                        size: 40,
+                      iconWidget: _achievementIcon(
+                        icon: Icons.water_drop,
+                        color: const Color(0xFF64B5F6),
+                        isLocked: !_hasAward('hydration_hero'),
                       ),
+                      isLocked: !_hasAward('hydration_hero'),
                     ),
                     _buildAchievementCard(
-                      title: 'Perfect Week',
-                      subtitle: 'All nutrients in range',
-                      iconWidget: const Icon(
-                        Icons.star_rounded,
-                        color: Color(0xFFFFD54F),
-                        size: 40,
+                      title: 'Balanced Week',
+                      subtitle: 'Within app nutrition ranges for 7 days',
+                      iconWidget: _achievementIcon(
+                        icon: Icons.star_rounded,
+                        color: const Color(0xFFFFD54F),
+                        isLocked: !_hasAward('balanced_week'),
                       ),
-                    ),
-                    // Locked Achievements (For realism in the "View All" page)
-                    _buildAchievementCard(
-                      title: '14 Day Streak',
-                      subtitle: 'Keep going!',
-                      iconWidget: const Icon(
-                        Icons.lock_outline,
-                        color: Color(0xFFB0BEC5),
-                        size: 40,
-                      ),
-                      isLocked: true,
-                    ),
-                    _buildAchievementCard(
-                      title: 'Lab Master',
-                      subtitle: 'Log 5 lab results',
-                      iconWidget: const Icon(
-                        Icons.lock_outline,
-                        color: Color(0xFFB0BEC5),
-                        size: 40,
-                      ),
-                      isLocked: true,
+                      isLocked: !_hasAward('balanced_week'),
                     ),
                   ],
                 ),
@@ -304,48 +627,52 @@ class _ProfilePageState extends State<ProfilePage> {
               _buildSettingTile(
                 Icons.notifications_none,
                 'Notifications',
-                onTap: () => _showFeatureDialog('Notifications'),
-              ),
-              _buildSettingTile(
-                Icons.notifications_active_outlined,
-                'Medication Reminders',
-                trailing: CupertinoSwitch(
-                  value: _medicationReminders,
-                  activeColor: const Color(0xFF00C874),
-                  onChanged: (bool value) {
-                    setState(() {
-                      _medicationReminders = value;
-                    });
-                  },
-                ),
-              ),
-              _buildSettingTile(
-                Icons.water_drop_outlined,
-                'Hydration Alerts',
-                trailing: CupertinoSwitch(
-                  value: _hydrationAlerts,
-                  activeColor: const Color(0xFF00C874),
-                  onChanged: (bool value) {
-                    setState(() {
-                      _hydrationAlerts = value;
-                    });
-                  },
-                ),
+                subtitle: _canManageReminderSettings
+                    ? 'Meals, hydration, and medication reminders'
+                    : _reminderSettingsLockReason,
+                onTap: _openNotificationSettings,
               ),
               _buildSettingTile(
                 Icons.shield_outlined,
                 'Privacy & Security',
-                onTap: () => _showFeatureDialog('Privacy & Security'),
+                subtitle: _viewerSecuritySettings["mfaEnabled"] == true
+                    ? 'MFA enabled'
+                    : 'Manage multi-factor authentication',
+                onTap: _openPrivacySecurity,
+              ),
+              _buildSettingTile(
+                Icons.manage_accounts_outlined,
+                'Account Management',
+                subtitle: 'View linked account details and change password',
+                onTap: _openAccountManagement,
               ),
               _buildSettingTile(
                 Icons.people_outline,
                 'Caregiver Access',
-                onTap: () => _showFeatureDialog('Caregiver Access'),
+                subtitle: _isAdolescentRole
+                    ? (_caregiverLinked
+                        ? 'Linked caregiver'
+                        : (_caregiverLinkStatus == 'pending'
+                            ? 'Link pending'
+                            : 'No caregiver linked'))
+                    : (_isCaregiverViewer
+                        ? (_caregiverDashboardState["linkedChildAccount"] == true
+                            ? 'Linked adolescent account'
+                            : 'No adolescent linked')
+                        : 'Available for adolescent accounts'),
+                onTap: _isAdolescentRole
+                    ? _showCaregiverSettingsDialog
+                    : (_isCaregiverViewer
+                        ? _showCaregiverLinkManagementDialog
+                        : () => _showFeatureDialog('Caregiver Access')),
               ),
               _buildSettingTile(
                 Icons.insert_drive_file_outlined,
                 'Export Health Data',
-                onTap: () => _showFeatureDialog('Export Health Data'),
+                subtitle: _allowDataExport
+                    ? 'PDF health reports are enabled'
+                    : 'Allow PDF reports for provider review',
+                onTap: _showExportDataSettingsDialog,
               ),
 
               const SizedBox(height: 24),
@@ -516,7 +843,7 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                     InkWell(
-                      onTap: _openEditProfile,
+                      onTap: _canOpenEditProfile ? _openEditProfile : _openEditProfile,
                       borderRadius: BorderRadius.circular(12),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
@@ -524,22 +851,28 @@ class _ProfilePageState extends State<ProfilePage> {
                           vertical: 4,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.white,
+                          color: _canOpenEditProfile
+                              ? Colors.white
+                              : Colors.white.withOpacity(0.65),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Row(
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
                               Icons.edit_outlined,
-                              color: Color(0xFF00A864),
+                              color: _canOpenEditProfile
+                                  ? const Color(0xFF00A864)
+                                  : const Color(0xFF90A4AE),
                               size: 14,
                             ),
-                            SizedBox(width: 4),
+                            const SizedBox(width: 4),
                             Text(
                               "Edit Profile",
                               style: TextStyle(
-                                color: Color(0xFF00A864),
+                                color: _canOpenEditProfile
+                                    ? const Color(0xFF00A864)
+                                    : const Color(0xFF90A4AE),
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold,
                               ),
@@ -602,38 +935,43 @@ class _ProfilePageState extends State<ProfilePage> {
           children: [
             _buildAchievementCard(
               title: '7 Day Streak',
-              subtitle: 'Logged food daily',
-              iconWidget: const Icon(
-                Icons.local_fire_department,
-                color: Color(0xFFFF8A65),
-                size: 40,
+              subtitle: 'Logged meals and hydration daily',
+              iconWidget: _achievementIcon(
+                icon: Icons.local_fire_department,
+                color: const Color(0xFFFF8A65),
+                isLocked: !_hasAward('seven_day_streak'),
               ),
+              isLocked: !_hasAward('seven_day_streak'),
             ),
             _buildAchievementCard(
               title: 'Rainbow Eater',
               subtitle: 'Ate 5 different colored\nfoods',
-              iconWidget: const Text(
-                '🌈',
-                style: TextStyle(fontSize: 32),
-              ),
+              iconWidget: _achievementIcon(
+                        icon: Icons.palette_outlined,
+                        color: const Color(0xFF7E57C2),
+                        isLocked: !_hasAward('rainbow_eater'),
+                      ),
+              isLocked: !_hasAward('rainbow_eater'),
             ),
             _buildAchievementCard(
               title: 'Hydration Hero',
               subtitle: 'Met water goal 10 times',
-              iconWidget: const Icon(
-                Icons.water_drop,
-                color: Color(0xFF64B5F6),
-                size: 40,
+              iconWidget: _achievementIcon(
+                icon: Icons.water_drop,
+                color: const Color(0xFF64B5F6),
+                isLocked: !_hasAward('hydration_hero'),
               ),
+              isLocked: !_hasAward('hydration_hero'),
             ),
             _buildAchievementCard(
-              title: 'Perfect Week',
-              subtitle: 'All nutrients in range',
-              iconWidget: const Icon(
-                Icons.star_rounded,
-                color: Color(0xFFFFD54F),
-                size: 40,
+              title: 'Balanced Week',
+              subtitle: 'Within app nutrition ranges for 7 days',
+              iconWidget: _achievementIcon(
+                icon: Icons.star_rounded,
+                color: const Color(0xFFFFD54F),
+                isLocked: !_hasAward('balanced_week'),
               ),
+              isLocked: !_hasAward('balanced_week'),
             ),
           ],
         ),
@@ -688,6 +1026,7 @@ class _ProfilePageState extends State<ProfilePage> {
   Widget _buildSettingTile(
     IconData icon,
     String title, {
+    String? subtitle,
     Widget? trailing,
     VoidCallback? onTap,
   }) {
@@ -701,9 +1040,27 @@ class _ProfilePageState extends State<ProfilePage> {
             Icon(icon, color: const Color(0xFF37474F), size: 24),
             const SizedBox(width: 16),
             Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(color: Color(0xFF37474F), fontSize: 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Color(0xFF37474F),
+                      fontSize: 16,
+                    ),
+                  ),
+                  if (subtitle != null && subtitle.trim().isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: Color(0xFF90A4AE),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
             trailing ??
@@ -736,12 +1093,16 @@ class _ProfilePageState extends State<ProfilePage> {
           else if (index == 1)
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const FoodLogPage()),
+              MaterialPageRoute(
+                builder: (context) => AnalyticsPage(allowDataExport: _allowDataExport),
+              ),
             );
           else if (index == 2)
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const AnalyticsPage()),
+              MaterialPageRoute(
+                builder: (context) => const AnalyticsPage(),
+              ),
             );
           else if (index == 3)
             Navigator.pushReplacement(
@@ -787,960 +1148,502 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
     );
   }
-}
 
-class EditProfilePage extends StatefulWidget {
-  final Map<String, dynamic> user;
-  final Map<String, dynamic> medicalProfile;
-  final Map<String, dynamic> anthropometrics;
-
-  const EditProfilePage({
-    super.key,
-    required this.user,
-    required this.medicalProfile,
-    required this.anthropometrics,
-  });
-
-  @override
-  State<EditProfilePage> createState() => _EditProfilePageState();
-}
-
-class _EditProfilePageState extends State<EditProfilePage> {
-  final _formKey = GlobalKey<FormState>();
-  bool _isLoading = true;
-  bool _isSaving = false;
-  Map<String, String> _originalNutritionFields = {};
-
-  late final TextEditingController _nameController;
-  late final TextEditingController _ageController;
-  late final TextEditingController _dobController;
-  late final TextEditingController _heightController;
-  late final TextEditingController _weightController;
-  late final TextEditingController _bmiController;
-  late final TextEditingController _dryWeightController;
-  late final TextEditingController _kidneyDiseaseTypeController;
-  late final TextEditingController _diagnosisDateController;
-  late final TextEditingController _treatmentFrequencyController;
-  late final TextEditingController _fluidLimitController;
-
-  String? _sex;
-  String? _ckdStage;
-  String? _dialysisType;
-  String? _dietPattern;
-  String? _processedFoodIntake;
-  String? _mealPattern;
-  String? _physicalActivityLevel;
-  String? _preferredMeasurementSystem;
-  String? _fluidRestrictionStatus;
-  String? _hasHypertension;
-  bool _onDialysis = false;
-
-  static const _sexOptions = ["Male", "Female"];
-  static const _ckdStageOptions = [
-    "Stage 1",
-    "Stage 2",
-    "Stage 3",
-    "Stage 4",
-    "Stage 5",
-    "Stage 5D",
-  ];
-  static const _dialysisTypeOptions = ["HD", "PD"];
-  static const _dietPatternOptions = [
-    "Regular diet",
-    "Renal diet",
-    "High protein",
-    "Low protein",
-    "Low salt / Low fat",
-    "Low fat",
-    "Low salt",
-    "Low potassium",
-    "Low phosphorus",
-    "Low purine",
-    "Vegetarian",
-    "Vegan",
-    "Other",
-  ];
-  static const _processedFoodOptions = ["Often", "Sometimes", "Rarely"];
-  static const _mealPatternOptions = [
-    "Regular (3 meals)",
-    "3 meals + snacks",
-    "Irregular",
-  ];
-  static const _activityOptions = [
-    "Low (Mostly sedentary)",
-    "Moderate (Light active)",
-    "High (Very active)",
-  ];
-  static const _measurementOptions = ["Grams", "Ounces/Cups", "Mixed"];
-  static const _fluidRestrictionOptions = ["yes", "no", "not sure"];
-  static const _hypertensionOptions = ["yes", "no", "not_sure"];
-
-  @override
-  void initState() {
-    super.initState();
-
-    _nameController = TextEditingController(
-      text: _read(widget.user, ["childFullName", "child_name", "name"]),
-    );
-    _ageController = TextEditingController(
-      text: _read(widget.user, ["ageYears", "age_years"]),
-    );
-    _dobController = TextEditingController(
-      text: _read(widget.user, ["dateOfBirth", "dob"]),
-    );
-    _heightController = TextEditingController(
-      text: _read(widget.anthropometrics, ["height_cm", "height"]),
-    );
-    _weightController = TextEditingController(
-      text: _read(widget.anthropometrics, ["weight_kg", "weight"]),
-    );
-    _bmiController = TextEditingController(
-      text: _firstValue([
-        _read(widget.anthropometrics, ["bmi"]),
-        _read(widget.user, ["bmi"]),
-      ]),
-    );
-    _dryWeightController = TextEditingController(
-      text: _read(widget.anthropometrics, ["dryWeight", "dry_weight_kg"]),
-    );
-    _kidneyDiseaseTypeController = TextEditingController(
-      text: _read(widget.medicalProfile, ["kidneyDiseaseType"]),
-    );
-    _diagnosisDateController = TextEditingController(
-      text: _read(widget.medicalProfile, ["dateOfDiagnosis"]),
-    );
-    _treatmentFrequencyController = TextEditingController(
-      text: _read(widget.medicalProfile, ["treatmentFrequency"]),
-    );
-    _fluidLimitController = TextEditingController(
-      text: _read(widget.medicalProfile, ["fluidLimitMl", "fluid_limit_ml"]),
-    );
-    _heightController.addListener(_updateBmi);
-    _weightController.addListener(_updateBmi);
-
-    _populateDropdowns(
-      user: widget.user,
-      medical: widget.medicalProfile,
-      targets: const {},
-    );
-    _onDialysis = _readBool(widget.medicalProfile["onDialysis"]);
-    _originalNutritionFields = _nutritionAffectingValues();
-    _loadLatestProfileForEdit();
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _ageController.dispose();
-    _dobController.dispose();
-    _heightController.dispose();
-    _weightController.dispose();
-    _bmiController.dispose();
-    _dryWeightController.dispose();
-    _kidneyDiseaseTypeController.dispose();
-    _diagnosisDateController.dispose();
-    _treatmentFrequencyController.dispose();
-    _fluidLimitController.dispose();
-    super.dispose();
-  }
-
-  static String _read(Map<String, dynamic> source, List<String> keys) {
-    for (final key in keys) {
-      final value = source[key];
-      if (value != null && value.toString().trim().isNotEmpty) {
-        return value.toString();
-      }
-    }
-    return "";
-  }
-
-  Map<String, dynamic> _asStringMap(dynamic value) {
-    if (value is Map) {
-      return Map<String, dynamic>.from(value);
-    }
-    return {};
-  }
-
-  static String _firstValue(List<String> values) {
-    for (final value in values) {
-      if (value.trim().isNotEmpty) return value;
-    }
-    return "";
-  }
-
-  void _updateBmi() {
-    final heightCm = double.tryParse(_heightController.text.trim());
-    final weightKg = double.tryParse(_weightController.text.trim());
-
-    if (heightCm == null || weightKg == null || heightCm <= 0) {
-      if (_bmiController.text.isNotEmpty) {
-        _bmiController.clear();
-      }
-      return;
-    }
-
-    final heightMeters = heightCm / 100;
-    final bmi = weightKg / (heightMeters * heightMeters);
-    final bmiText = bmi.toStringAsFixed(1);
-    if (_bmiController.text != bmiText) {
-      _bmiController.text = bmiText;
-    }
-  }
-
-  static String _normalizeOption(String value) {
-    return value
-        .toLowerCase()
-        .replaceAll(RegExp(r"[^a-z0-9]+"), " ")
-        .trim();
-  }
-
-  static String _normalizeDietPattern(String value) {
-    final text = _normalizeOption(value);
-    const aliases = {
-      "regular": "Regular diet",
-      "regular diet": "Regular diet",
-      "renal": "Renal diet",
-      "renal diet": "Renal diet",
-      "high protein": "High protein",
-      "low protein": "Low protein",
-      "low salt low fat": "Low salt / Low fat",
-      "low fat low salt": "Low salt / Low fat",
-      "low fat": "Low fat",
-      "low salt": "Low salt",
-      "low sodium": "Low salt",
-      "low potassium": "Low potassium",
-      "low phosphorus": "Low phosphorus",
-      "low phosphate": "Low phosphorus",
-      "low purine": "Low purine",
-      "vegetarian": "Vegetarian",
-      "vegan": "Vegan",
-      "other": "Other",
-    };
-    return aliases[text] ?? value;
-  }
-
-  static String _normalizeProcessedFood(String value) {
-    final text = _normalizeOption(value);
-    const aliases = {
-      "often": "Often",
-      "frequent": "Often",
-      "frequently": "Often",
-      "daily": "Often",
-      "sometimes": "Sometimes",
-      "moderate": "Sometimes",
-      "rarely": "Rarely",
-      "rare": "Rarely",
-      "low": "Rarely",
-      "never": "Rarely",
-    };
-    return aliases[text] ?? value;
-  }
-
-  static String _normalizeMealPattern(String value) {
-    final text = _normalizeOption(value);
-    const aliases = {
-      "regular": "Regular (3 meals)",
-      "regular 3 meals": "Regular (3 meals)",
-      "3 meals": "Regular (3 meals)",
-      "three meals": "Regular (3 meals)",
-      "3 meals snacks": "3 meals + snacks",
-      "3 meals plus snacks": "3 meals + snacks",
-      "small frequent meals": "3 meals + snacks",
-      "frequent meals": "3 meals + snacks",
-      "irregular": "Irregular",
-      "skips meals frequently": "Irregular",
-      "skip meals": "Irregular",
-    };
-    return aliases[text] ?? value;
-  }
-
-  static String _normalizeActivityLevel(String value) {
-    final text = _normalizeOption(value);
-    const aliases = {
-      "low": "Low (Mostly sedentary)",
-      "low mostly sedentary": "Low (Mostly sedentary)",
-      "mostly sedentary": "Low (Mostly sedentary)",
-      "moderate": "Moderate (Light active)",
-      "moderate light active": "Moderate (Light active)",
-      "light active": "Moderate (Light active)",
-      "high": "High (Very active)",
-      "high very active": "High (Very active)",
-      "very active": "High (Very active)",
-    };
-    return aliases[text] ?? value;
-  }
-
-  static String _normalizeMeasurementSystem(String value) {
-    final text = _normalizeOption(value);
-    const aliases = {
-      "grams": "Grams",
-      "metric": "Grams",
-      "ounces cups": "Ounces/Cups",
-      "ounces": "Ounces/Cups",
-      "cups": "Ounces/Cups",
-      "imperial": "Ounces/Cups",
-      "mixed": "Mixed",
-    };
-    return aliases[text] ?? value;
-  }
-
-  void _setText(TextEditingController controller, String value) {
-    if (value.trim().isNotEmpty) {
-      controller.text = value;
-    }
-  }
-
-  String _normalizedFieldValue(dynamic value) {
-    return (value ?? "").toString().trim();
-  }
-
-  Map<String, String> _nutritionAffectingValues() {
-    return {
-      "age": _normalizedFieldValue(_ageController.text),
-      "dateOfBirth": _normalizedFieldValue(_dobController.text),
-      "height": _normalizedFieldValue(_heightController.text),
-      "weight": _normalizedFieldValue(_weightController.text),
-      "bmi": _normalizedFieldValue(_bmiController.text),
-      "dryWeight": _normalizedFieldValue(
-        _onDialysis ? _dryWeightController.text : "",
-      ),
-      "ckdStage": _normalizedFieldValue(_ckdStage),
-      "onDialysis": _normalizedFieldValue(_onDialysis),
-      "dialysisType": _normalizedFieldValue(_onDialysis ? _dialysisType : ""),
-      "treatmentFrequency": _normalizedFieldValue(
-        _onDialysis ? _treatmentFrequencyController.text : "",
-      ),
-      "physicalActivityLevel": _normalizedFieldValue(_physicalActivityLevel),
-      "fluidRestrictionStatus": _normalizedFieldValue(_fluidRestrictionStatus),
-      "fluidLimit": _normalizedFieldValue(
-        _fluidRestrictionStatus == "yes" ? _fluidLimitController.text : "",
-      ),
-    };
-  }
-
-  bool _hasNutritionAffectingChanges() {
-    final currentValues = _nutritionAffectingValues();
-    for (final entry in currentValues.entries) {
-      if (_originalNutritionFields[entry.key] != entry.value) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  Future<bool> _confirmNutritionTargetUpdate() async {
-    final confirmed = await showDialog<bool>(
+  Future<void> _showExportDataSettingsDialog() async {
+    await showDialog<void>(
       context: context,
       builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text("Update Nutrition Targets?"),
-          content: const Text(
-            "The changes you made affect the child's nutritional profile. "
-            "Saving this update will trigger the system to recalculate "
-            "nutrition targets and may change the recommended insights, "
-            "limits, and guidance. Are you sure you want to continue?",
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text("Cancel"),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF00C874),
-                foregroundColor: Colors.white,
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
               ),
-              child: const Text("Confirm"),
-            ),
-          ],
+              title: const Text('Export Health Data'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Allow Data Export',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Enable this to allow NutriKidney to generate downloadable PDF health reports from your nutrition, hydration, and health metrics. These reports are useful for sharing with your doctor, dietitian, or caregiver to review your health trends.',
+                    style: TextStyle(color: Color(0xFF546E7A), fontSize: 13, height: 1.4),
+                  ),
+                  const SizedBox(height: 16),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    activeColor: Color(0xFF00C874),
+                    title: const Text('Allow Data Export'),
+                    subtitle: const Text('Shows the Export PDF option in Analytics.'),
+                    value: _allowDataExport,
+                    onChanged: (value) async {
+                      setDialogState(() => _allowDataExport = value);
+                      setState(() {
+                        _allowDataExport = value;
+                        _user["allowDataExport"] = value;
+                      });
+                      try {
+                        final response = await ApiService.updateProfile({
+                          "allowDataExport": value,
+                        });
+                        if (response["success"] != true) {
+                          throw Exception(
+                            response["error"]?.toString() ??
+                                'Unable to update export preference.',
+                          );
+                        }
+                      } catch (e) {
+                        if (!mounted) return;
+                        if (context.mounted) {
+                          setDialogState(() => _allowDataExport = !value);
+                        }
+                        setState(() {
+                          _allowDataExport = !value;
+                          _user["allowDataExport"] = !value;
+                        });
+                        ScaffoldMessenger.of(this.context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Failed to update preference: $e',
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    Navigator.of(dialogContext).pop();
+                    // Reload profile from backend to ensure state is up to date
+                    await _loadProfile();
+                  },
+                  child: const Text('Close'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
-
-    return confirmed == true;
   }
 
-  void _populateDropdowns({
-    required Map<String, dynamic> user,
-    required Map<String, dynamic> medical,
-    required Map<String, dynamic> targets,
-  }) {
-    _sex = _dropdownValue(
-      _sexOptions,
-      _normalizeSex(_firstValue([
-        _read(user, ["sex", "gender"]),
-        _read(targets, ["sex", "gender"]),
-      ])),
-    );
-    _ckdStage = _dropdownValue(
-      _ckdStageOptions,
-      _firstValue([
-        _read(medical, ["ckdStage", "ckd_stage"]),
-        _read(targets, ["ckd_stage", "ckdStage"]),
-      ]),
-    );
-    _dialysisType = _dropdownValue(
-      _dialysisTypeOptions,
-      _read(medical, ["dialysisType", "dialysis_type"]),
-    );
-    _dietPattern = _dropdownValue(
-      _dietPatternOptions,
-      _normalizeDietPattern(_read(medical, ["dietPattern", "diet_pattern"])),
-    );
-    _processedFoodIntake = _dropdownValue(
-      _processedFoodOptions,
-      _normalizeProcessedFood(
-        _read(medical, ["processedFoodIntake", "processed_food_intake"]),
-      ),
-    );
-    _mealPattern = _dropdownValue(
-      _mealPatternOptions,
-      _normalizeMealPattern(_read(medical, ["mealPattern", "meal_pattern"])),
-    );
-    _physicalActivityLevel = _dropdownValue(
-      _activityOptions,
-      _normalizeActivityLevel(
-        _read(medical, ["physicalActivityLevel", "physical_activity_level"]),
-      ),
-    );
-    _preferredMeasurementSystem = _dropdownValue(
-      _measurementOptions,
-      _normalizeMeasurementSystem(
-        _read(user, ["preferredMeasurementSystem", "preferredMeasurement"]),
-      ),
-    );
-    _fluidRestrictionStatus = _dropdownValue(
-      _fluidRestrictionOptions,
-      _read(medical, ["fluidRestrictionStatus", "fluid_restriction_status"]),
-    );
-    _hasHypertension = _dropdownValue(
-      _hypertensionOptions,
-      _read(medical, ["hasHypertension", "has_hypertension"]),
-    );
-  }
+  Future<void> _showCaregiverSettingsDialog() async {
+    final pageContext = context;
+    final currentSettings = _caregiverSettings;
+    bool wantsCaregiverLink = currentSettings["wantsCaregiverLink"] == true;
+    bool consentConfirmed = currentSettings["consentConfirmed"] == true;
+    bool caregiverLinked = currentSettings["caregiverLinked"] == true;
+    String linkStatus = _caregiverLinkStatus;
+    String? caregiverId = currentSettings["caregiverId"]?.toString();
+    String linkingCodeValue = "";
+    bool isSaving = false;
+    final initialWantsCaregiverLink = wantsCaregiverLink;
+    final initialConsentConfirmed = consentConfirmed;
+    final initialCaregiverLinked = caregiverLinked;
+    final initialCaregiverId = caregiverId;
+    final initialLinkStatus = linkStatus;
 
-  Future<void> _loadLatestProfileForEdit() async {
-    try {
-      final response = await ApiService.getHealthSummary();
-      if (!mounted) return;
-
-      if (response["success"] == true) {
-        final user = _asStringMap(response["user"]);
-        final medical = _asStringMap(response["medicalProfile"]);
-        final anthropometrics = _asStringMap(response["anthropometrics"]);
-        final targets = _asStringMap(response["nutritionTargets"]);
-
-        _setText(
-          _nameController,
-          _firstValue([
-            _read(user, ["childFullName", "child_name", "name"]),
-            _read(targets, ["child_name", "childFullName"]),
-          ]),
-        );
-        _setText(
-          _ageController,
-          _firstValue([
-            _read(user, ["ageYears", "age_years"]),
-            _read(targets, ["age_years", "ageYears"]),
-          ]),
-        );
-        _setText(_dobController, _read(user, ["dateOfBirth", "dob"]));
-        _setText(
-          _heightController,
-          _firstValue([
-            _read(anthropometrics, ["height_cm", "height"]),
-            _read(targets, ["height_cm", "height"]),
-          ]),
-        );
-        _setText(
-          _weightController,
-          _firstValue([
-            _read(anthropometrics, ["weight_kg", "weight"]),
-            _read(targets, ["weight_kg", "weight"]),
-          ]),
-        );
-        _setText(
-          _bmiController,
-          _firstValue([
-            _read(anthropometrics, ["bmi"]),
-            _read(user, ["bmi"]),
-            _read(targets, ["bmi"]),
-          ]),
-        );
-        _setText(
-          _dryWeightController,
-          _firstValue([
-            _read(anthropometrics, ["dryWeight", "dry_weight_kg"]),
-            _read(targets, ["dry_weight_kg", "dryWeight"]),
-          ]),
-        );
-        _setText(
-          _kidneyDiseaseTypeController,
-          _read(medical, ["kidneyDiseaseType"]),
-        );
-        _setText(
-          _diagnosisDateController,
-          _read(medical, ["dateOfDiagnosis"]),
-        );
-        _setText(
-          _treatmentFrequencyController,
-          _read(medical, ["treatmentFrequency"]),
-        );
-        _setText(
-          _fluidLimitController,
-          _read(medical, ["fluidLimitMl", "fluid_limit_ml"]),
-        );
-
-        setState(() {
-          _populateDropdowns(user: user, medical: medical, targets: targets);
-          _onDialysis = _readBool(medical["onDialysis"]);
-          _originalNutritionFields = _nutritionAffectingValues();
-          _isLoading = false;
-        });
-      } else {
-        setState(() => _isLoading = false);
-      }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-    }
-  }
-
-  static bool _readBool(dynamic value) {
-    if (value is bool) return value;
-    final text = value?.toString().toLowerCase().trim();
-    return text == "true" || text == "yes";
-  }
-
-  static String _normalizeSex(String value) {
-    final text = value.toLowerCase().trim();
-    if (text == "male") return "Male";
-    if (text == "female") return "Female";
-    return value;
-  }
-
-  static String? _dropdownValue(List<String> options, String value) {
-    if (value.trim().isEmpty) return null;
-    final normalizedValue = _normalizeOption(value);
-    for (final option in options) {
-      if (_normalizeOption(option) == normalizedValue) {
-        return option;
-      }
-    }
-    return null;
-  }
-
-  Future<void> _pickDate(TextEditingController controller) async {
-    final selected = await showDatePicker(
+    await showDialog<void>(
       context: context,
-      initialDate: DateTime.tryParse(controller.text) ?? DateTime.now(),
-      firstDate: DateTime(1990),
-      lastDate: DateTime.now(),
-    );
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final statusText = caregiverLinked
+                ? 'A caregiver is linked. Sensitive medical changes are protected.'
+                : wantsCaregiverLink
+                    ? 'Caregiver linking is requested. The pairing flow should complete with a code.'
+                    : 'No caregiver is linked. The adolescent confirms sensitive actions directly.';
+            final caregiverIdText = caregiverId?.trim() ?? "";
 
-    if (selected != null) {
-      controller.text = selected.toIso8601String().split("T").first;
-    }
-  }
-
-  Future<void> _saveProfile() async {
-    if (!_formKey.currentState!.validate()) return;
-
-    final shouldRecalculate = _hasNutritionAffectingChanges();
-    if (shouldRecalculate) {
-      final confirmed = await _confirmNutritionTargetUpdate();
-      if (!confirmed) return;
-    }
-
-    setState(() => _isSaving = true);
-    try {
-      final response = await ApiService.updateProfile({
-        "childFullName": _nameController.text.trim(),
-        "ageYears": _ageController.text.trim(),
-        "dateOfBirth": _dobController.text.trim(),
-        "sex": _sex,
-        "height_cm": _heightController.text.trim(),
-        "weight_kg": _weightController.text.trim(),
-        "bmi": _bmiController.text.trim(),
-        "dryWeight": _onDialysis ? _dryWeightController.text.trim() : null,
-        "ckdStage": _ckdStage,
-        "kidneyDiseaseType": _kidneyDiseaseTypeController.text.trim(),
-        "dateOfDiagnosis": _diagnosisDateController.text.trim(),
-        "onDialysis": _onDialysis,
-        "dialysisType": _onDialysis ? _dialysisType : null,
-        "treatmentFrequency":
-            _onDialysis ? _treatmentFrequencyController.text.trim() : null,
-        "dietPattern": _dietPattern,
-        "processedFoodIntake": _processedFoodIntake,
-        "mealPattern": _mealPattern,
-        "physicalActivityLevel": _physicalActivityLevel,
-        "preferredMeasurementSystem": _preferredMeasurementSystem,
-        "fluidRestrictionStatus": _fluidRestrictionStatus,
-        "fluidLimitMl": _fluidRestrictionStatus == "yes"
-            ? _fluidLimitController.text.trim()
-            : null,
-        "hasHypertension": _hasHypertension,
-        "recalculateNutritionTargets": shouldRecalculate,
-      });
-
-      if (!mounted) return;
-      if (response["success"] == true) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Profile updated successfully")),
-        );
-        Navigator.pop(context, true);
-      } else {
-        _showError(response["error"]?.toString() ?? "Unable to update profile");
-      }
-    } catch (error) {
-      if (!mounted) return;
-      _showError(error.toString());
-    } finally {
-      if (mounted) setState(() => _isSaving = false);
-    }
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF9FBFB),
-      appBar: AppBar(
-        title: const Text("Edit Profile"),
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF37474F),
-        elevation: 0,
-      ),
-      body: SafeArea(
-        child: Form(
-          key: _formKey,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (_isLoading)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 16),
-                    child: LinearProgressIndicator(
-                      color: Color(0xFF00C874),
-                      backgroundColor: Color(0xFFE0F2F1),
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: const Text('Caregiver Settings'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF2FBF7),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFD8EEE6)),
+                      ),
+                      child: Text(
+                        statusText,
+                        style: const TextStyle(
+                          color: Color(0xFF546E7A),
+                          fontSize: 12,
+                          height: 1.4,
+                        ),
+                      ),
                     ),
-                  ),
-                _section(
-                  "Child Information",
-                  [
-                    _textField(
-                      _nameController,
-                      "Child full name",
-                      required: true,
-                    ),
-                    _numberField(_ageController, "Age", required: true),
-                    _dateField(_dobController, "Date of birth"),
-                    _dropdownField(
-                      label: "Sex / gender",
-                      value: _sex,
-                      options: _sexOptions,
-                      onChanged: (value) => setState(() => _sex = value),
-                    ),
-                  ],
-                ),
-                _section(
-                  "Body Measurements",
-                  [
-                    _numberField(_heightController, "Height (cm)"),
-                    _numberField(_weightController, "Weight (kg)"),
-                    _numberField(
-                      _bmiController,
-                      "BMI",
-                      readOnly: true,
-                      hint: "Auto-calculated from height and weight",
-                    ),
-                    if (_onDialysis)
-                      _numberField(_dryWeightController, "Dry weight (kg)"),
-                  ],
-                ),
-                _section(
-                  "Medical Profile",
-                  [
-                    _dropdownField(
-                      label: "CKD stage",
-                      value: _ckdStage,
-                      options: _ckdStageOptions,
-                      onChanged: (value) => setState(() => _ckdStage = value),
-                    ),
-                    _textField(
-                      _kidneyDiseaseTypeController,
-                      "Kidney disease type",
-                    ),
-                    _dateField(_diagnosisDateController, "Date of diagnosis"),
+                    const SizedBox(height: 16),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       activeColor: const Color(0xFF00C874),
-                      title: const Text("On dialysis?"),
-                      value: _onDialysis,
-                      onChanged: (value) {
-                        setState(() {
-                          _onDialysis = value;
-                          if (!value) _dialysisType = null;
-                        });
-                      },
+                      title: const Text('Want to link a caregiver'),
+                      subtitle: const Text(
+                        'Stores whether the adolescent wants caregiver pairing.',
+                      ),
+                      value: wantsCaregiverLink,
+                      onChanged: caregiverLinked
+                          ? null
+                          : (value) {
+                              setDialogState(() {
+                                wantsCaregiverLink = value;
+                                if (value) {
+                                  linkStatus = 'pending';
+                                  consentConfirmed = false;
+                                } else {
+                                  linkStatus = 'none';
+                                }
+                              });
+                            },
                     ),
-                    if (_onDialysis)
-                      _dropdownField(
-                        label: "Dialysis type",
-                        value: _dialysisType,
-                        options: _dialysisTypeOptions,
-                        onChanged: (value) =>
-                            setState(() => _dialysisType = value),
+                    if (!caregiverLinked)
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        value: consentConfirmed,
+                        onChanged: wantsCaregiverLink
+                            ? null
+                            : (value) {
+                                setDialogState(() {
+                                  consentConfirmed = value ?? false;
+                                });
+                              },
+                        title: const Text('Consent confirmed without caregiver'),
+                        subtitle: const Text(
+                          'Required when no caregiver is linked.',
+                        ),
                       ),
-                    if (_onDialysis)
-                      _textField(
-                        _treatmentFrequencyController,
-                        "Treatment frequency",
+                    const SizedBox(height: 8),
+                    Text(
+                      'Link status: ${linkStatus.toUpperCase()}',
+                      style: const TextStyle(
+                        color: Color(0xFF37474F),
+                        fontWeight: FontWeight.w600,
                       ),
+                    ),
+                    if (wantsCaregiverLink && !caregiverLinked) ...[
+                      const SizedBox(height: 14),
+                      TextField(
+                        textCapitalization: TextCapitalization.characters,
+                        onChanged: (value) {
+                          linkingCodeValue = value;
+                        },
+                        decoration: InputDecoration(
+                          labelText: 'Enter caregiver linking code',
+                          hintText: 'Example: AB12CD',
+                          filled: true,
+                          fillColor: const Color(0xFFF8FBFA),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(
+                              color: Color(0xFFDCE9E4),
+                            ),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(
+                              color: Color(0xFFDCE9E4),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'If your caregiver already generated a code, enter it here to complete the link.',
+                        style: TextStyle(
+                          color: Color(0xFF78909C),
+                          fontSize: 12,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                    if (caregiverIdText.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Linked caregiver ID: $caregiverIdText',
+                        style: const TextStyle(
+                          color: Color(0xFF78909C),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                    if (caregiverLinked) ...[
+                      const SizedBox(height: 12),
+                      const Text(
+                        'If you want to revoke caregiver linkage, please ask your caregiver to remove it.',
+                        style: TextStyle(
+                          color: Color(0xFF78909C),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
-                _section(
-                  "Dietary Lifestyle",
-                  [
-                    _dropdownField(
-                      label: "Diet pattern",
-                      value: _dietPattern,
-                      options: _dietPatternOptions,
-                      onChanged: (value) =>
-                          setState(() => _dietPattern = value),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final linkingCode =
+                              linkingCodeValue.trim().toUpperCase();
+                          final noSettingsChanged =
+                              wantsCaregiverLink ==
+                                  initialWantsCaregiverLink &&
+                              consentConfirmed == initialConsentConfirmed &&
+                              caregiverLinked == initialCaregiverLinked &&
+                              caregiverId == initialCaregiverId &&
+                              linkStatus == initialLinkStatus;
+                          if (noSettingsChanged && linkingCode.isEmpty) {
+                            Navigator.of(dialogContext).pop();
+                            ScaffoldMessenger.of(pageContext).showSnackBar(
+                              const SnackBar(
+                                content: Text('No caregiver settings changes to save.'),
+                              ),
+                            );
+                            return;
+                          }
+
+                          if (!wantsCaregiverLink &&
+                              !caregiverLinked &&
+                              !consentConfirmed) {
+                            ScaffoldMessenger.of(pageContext).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Confirm consent if no caregiver is linked.',
+                                ),
+                              ),
+                            );
+                            return;
+                          }
+
+                          setDialogState(() => isSaving = true);
+                          try {
+                            if (
+                              wantsCaregiverLink &&
+                              !caregiverLinked &&
+                              linkingCode.isNotEmpty
+                            ) {
+                              final linkResponse =
+                                  await ApiService.linkCaregiverWithCode(
+                                linkingCode: linkingCode,
+                              );
+                              if (!mounted) return;
+                              if (linkResponse["success"] == true) {
+                                Navigator.of(dialogContext).pop();
+                                await _loadProfile();
+                                if (!mounted) return;
+                                ScaffoldMessenger.of(pageContext).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Caregiver linked successfully.'),
+                                  ),
+                                );
+                              } else {
+                                ScaffoldMessenger.of(pageContext).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      linkResponse["error"]?.toString() ??
+                                          'Unable to link caregiver.',
+                                    ),
+                                  ),
+                                );
+                              }
+                              return;
+                            }
+
+                            final response = await ApiService.updateProfile({
+                              "caregiverSettings": {
+                                "wantsCaregiverLink": wantsCaregiverLink,
+                                "caregiverLinked": caregiverLinked,
+                                "caregiverId": caregiverLinked ? caregiverId : null,
+                                "consentConfirmed":
+                                    caregiverLinked ? true : consentConfirmed,
+                                "linkStatus": caregiverLinked
+                                    ? "linked"
+                                    : (wantsCaregiverLink ? "pending" : "none"),
+                              },
+                            });
+                            if (!mounted) return;
+                            if (response["success"] == true) {
+                              Navigator.of(dialogContext).pop();
+                              await _loadProfile();
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(pageContext).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Caregiver settings updated.'),
+                                ),
+                              );
+                            } else {
+                              ScaffoldMessenger.of(pageContext).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    response["error"]?.toString() ??
+                                        'Unable to update caregiver settings.',
+                                  ),
+                                ),
+                              );
+                            }
+                          } finally {
+                            if (dialogContext.mounted) {
+                              setDialogState(() => isSaving = false);
+                            }
+                          }
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00C874),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showCaregiverLinkManagementDialog() async {
+    final pageContext = context;
+    bool isRemoving = false;
+    final linkedChildAccount =
+        _caregiverDashboardState["linkedChildAccount"] == true;
+    final linkedChildUserId =
+        _caregiverDashboardState["linkedChildUserId"]?.toString();
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: const Text('Linked Child Access'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    linkedChildAccount
+                        ? 'You can view and manage the linked adolescent profile from this caregiver account.'
+                        : 'No adolescent account is currently linked to this caregiver.',
+                    style: const TextStyle(
+                      color: Color(0xFF546E7A),
+                      fontSize: 13,
+                      height: 1.4,
                     ),
-                    _dropdownField(
-                      label: "Processed food intake",
-                      value: _processedFoodIntake,
-                      options: _processedFoodOptions,
-                      onChanged: (value) =>
-                          setState(() => _processedFoodIntake = value),
-                    ),
-                    _dropdownField(
-                      label: "Meal pattern",
-                      value: _mealPattern,
-                      options: _mealPatternOptions,
-                      onChanged: (value) =>
-                          setState(() => _mealPattern = value),
-                    ),
-                    _dropdownField(
-                      label: "Physical activity level",
-                      value: _physicalActivityLevel,
-                      options: _activityOptions,
-                      onChanged: (value) =>
-                          setState(() => _physicalActivityLevel = value),
-                    ),
-                    _dropdownField(
-                      label: "Preferred measurement system",
-                      value: _preferredMeasurementSystem,
-                      options: _measurementOptions,
-                      onChanged: (value) => setState(
-                        () => _preferredMeasurementSystem = value,
+                  ),
+                  if (linkedChildAccount && linkedChildUserId != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Linked child ID: $linkedChildUserId',
+                      style: const TextStyle(
+                        color: Color(0xFF78909C),
+                        fontSize: 12,
                       ),
                     ),
                   ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isRemoving
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Close'),
                 ),
-                _section(
-                  "Fluid And Condition Settings",
-                  [
-                    _dropdownField(
-                      label: "Is fluid intake restricted?",
-                      value: _fluidRestrictionStatus,
-                      options: _fluidRestrictionOptions,
-                      onChanged: (value) =>
-                          setState(() => _fluidRestrictionStatus = value),
-                    ),
-                    if (_fluidRestrictionStatus == "yes")
-                      _numberField(
-                        _fluidLimitController,
-                        "Daily fluid limit (mL)",
-                        required: true,
-                      ),
-                    _dropdownField(
-                      label: "Does the child have high blood pressure?",
-                      value: _hasHypertension,
-                      options: _hypertensionOptions,
-                      onChanged: (value) =>
-                          setState(() => _hasHypertension = value),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _isLoading || _isSaving ? null : _saveProfile,
+                if (linkedChildAccount)
+                  ElevatedButton(
+                    onPressed: isRemoving
+                        ? null
+                        : () async {
+                            setDialogState(() => isRemoving = true);
+                            try {
+                              final response =
+                                  await ApiService.unlinkCaregiverChild(
+                                linkedChildUserId: linkedChildUserId,
+                              );
+                              if (!mounted) return;
+                              if (response["success"] == true) {
+                                Navigator.of(dialogContext).pop();
+                                await _loadProfile();
+                                if (!mounted) return;
+                                ScaffoldMessenger.of(pageContext).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Linked child removed from caregiver access.',
+                                    ),
+                                  ),
+                                );
+                              } else {
+                                ScaffoldMessenger.of(pageContext).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      response["error"]?.toString() ??
+                                          'Unable to remove linked child.',
+                                    ),
+                                  ),
+                                );
+                              }
+                            } finally {
+                              if (dialogContext.mounted) {
+                                setDialogState(() => isRemoving = false);
+                              }
+                            }
+                          },
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00C874),
+                      backgroundColor: const Color(0xFFD32F2F),
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
                     ),
-                    child: _isSaving
+                    child: isRemoving
                         ? const SizedBox(
-                            width: 20,
-                            height: 20,
+                            width: 18,
+                            height: 18,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
                               color: Colors.white,
                             ),
                           )
-                        : const Text(
-                            "Save Profile",
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
+                        : const Text('Remove Child'),
                   ),
-                ),
               ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _section(String title, List<Widget> children) {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 18),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: Color(0xFF37474F),
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 14),
-          ...children,
-        ],
-      ),
-    );
-  }
-
-  Widget _textField(
-    TextEditingController controller,
-    String label, {
-    bool required = false,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextFormField(
-        controller: controller,
-        decoration: _inputDecoration(label),
-        validator: required
-            ? (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return "$label is required";
-                }
-                return null;
-              }
-            : null,
-      ),
-    );
-  }
-
-  Widget _numberField(
-    TextEditingController controller,
-    String label, {
-    bool required = false,
-    bool readOnly = false,
-    String? hint,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextFormField(
-        controller: controller,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        readOnly: readOnly,
-        decoration: _inputDecoration(label).copyWith(hintText: hint),
-        validator: (value) {
-          final text = value?.trim() ?? "";
-          if (required && text.isEmpty) return "$label is required";
-          if (text.isNotEmpty && double.tryParse(text) == null) {
-            return "Enter a valid number";
-          }
-          return null;
-        },
-      ),
-    );
-  }
-
-  Widget _dateField(TextEditingController controller, String label) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextFormField(
-        controller: controller,
-        readOnly: true,
-        decoration: _inputDecoration(label).copyWith(
-          suffixIcon: const Icon(Icons.calendar_today_outlined),
-        ),
-        onTap: () => _pickDate(controller),
-      ),
-    );
-  }
-
-  Widget _dropdownField({
-    required String label,
-    required String? value,
-    required List<String> options,
-    required ValueChanged<String?> onChanged,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: DropdownButtonFormField<String>(
-        value: value,
-        isExpanded: true,
-        decoration: _inputDecoration(label),
-        items: options
-            .map(
-              (option) => DropdownMenuItem<String>(
-                value: option,
-                child: Text(option),
-              ),
-            )
-            .toList(),
-        onChanged: onChanged,
-      ),
-    );
-  }
-
-  InputDecoration _inputDecoration(String label) {
-    return InputDecoration(
-      labelText: label,
-      filled: true,
-      fillColor: const Color(0xFFF9FBFB),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey.shade200),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey.shade200),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Color(0xFF00C874)),
-      ),
+            );
+          },
+        );
+      },
     );
   }
 }

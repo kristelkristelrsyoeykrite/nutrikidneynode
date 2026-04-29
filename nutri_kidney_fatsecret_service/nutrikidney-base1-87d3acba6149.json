@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "nutrikidney-base1",
+  "private_key_id": "87d3acba6149b70c4a7c9337c822fc99345bd3e1",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQDGv9V4lzJKi8Ad\nmFa6+db2G7F+0LjNrel9meD2GmXeUKApwdUKYUh7YqfjjPEtKSLaY7FM9Hh/co+1\npKr2H8BuYAWy1qcNqfR5zuvh7029jlbQMTneu7M88o5lzQstyao8sAi4fZ/HXVQW\nmDuuH9mc291WWRsmV9qjWVtlzD97kLf8i0+e8KrVWAKvgvjj9xFCd/uebItCHmqX\n/zGmBeo93sS9n+jtkXU6p+aOC6kfEZcceNc1FScAhtOquS4dbAXCul0oCYksUMlD\nsrI2Qypt+yTf6keE5Xq+aBe9zvK08vJFux+SvfnSL3O8f85CV05F6+7l31LYCY7V\n6X+3Ah8lAgMBAAECgf9Zxu6L+KKMaSkaiJsQBGwSof6yL2C8Uli+Nw6r1SMLKJvj\nLwfCdfm75jbYkASFOySSIp/xW6bLOJJelY9uwfTmOixYzw6g9sJRnNZPxJaXyxCD\nyx3k2yYwsh7oHsvfCbN0P12lLltshlm0FqreuFTG6Iohr61hTkgkjV9Zk5M9P/mx\nSe0Dk0l1Mo4sd/C/OPGGijD9u6iIxcftm5N6tT11y1fRJkvQPbYjOuaN1E5gaHW7\n4u9Y4SzsOfL1CgZHgKl7v4qJnbTxwLNB2orCV6W2LtvEBrDXLso4aEfGTuSgdffp\nU8GEbJ3DzLB3pHcfyEI+kxrnC99EUMFvjcs0t5ECgYEA67lOMbwPDkYL32wEFbdR\nrOmSXWjfwmG+JFj6zuqW/Q41yggPx+s3MCHFHsOP1be0IsD5qiKdv2dq/cIwDGWm\nqTdBAIray2fAD1OJwyc8cI7FaHXu2/yu4OoB3sgoLVIq6aVOKCxlMr0pvJogqI51\nCKxoS/qpqbSGH134nHRgeWkCgYEA19hXXled43tOEKD2QYDsgZtmE84vROzpI7hM\n6oGofPDtz3lybhwdYyyuixtenBe1sr/k+HQ0taWAdcTiSh9E8BnRV/c2l4/2PW4F\nFSNcUWVdTM8X1QHdX/ieXQG78gl5AJG3ZqOMJTZWitwii9JG8u+TpWoxMQEeh7ov\nFgohZF0CgYBau6cXibWZ3uhvBVrFKRztG7LU9as7XPgdcYqI3s9jdHbL3zKD10wU\n4MrJPqk8sEtMHU98Z3qk1B/gsUBhZTczZytEFC6HoNXSkGs0jQO8p5fgz5QzZR3D\nQQ+bOxwL5dbSvGhLGluRnjJUgFcVyk/OGN7EcCWiRvRhWoB5aGpCEQKBgDEszcLl\nrUgNaJyrP09vIvLoR5pNiEFoxDjqHUP0JEHK1jNFlQd3Ck70+BMjOivPzwqZY34j\nY3ra6Ohr4a5Hb3pQN3yWCu7+0nfuX+QP+VFmCZqdN+3Ejf32c4X3Bi2/cLzrdeBB\ndIVp2s+qFYjLcHSaloXCKtDiU2VSyrV3u2HVAoGBAJ/RA//q4ORPWqBCSP8BUdla\n95tRuzRKqGYGZ+jiVG4zB5wFVYqVX2CZHgNSH7h5A3gwbFXGxp4dG0fHQY272KlA\nDHewysC2KfaCNfiz08sQ4eGpCTJbztS6ESOm6WBuesn9dbpzfYshXXwFkEGqw4pP\naagAJO9qEpUze+r4RE1u\n-----END PRIVATE KEY-----\n",
+  "client_email": "nutirkidneyvision@nutrikidney-base1.iam.gserviceaccount.com",
+  "client_id": "111446358141692826351",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/nutirkidneyvision%40nutrikidney-base1.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

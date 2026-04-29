@@ -1,14 +1,27 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
+import 'package:intl/intl.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+
+import '../services/api_service.dart';
+import '../widgets/chart_js_view.dart';
 import 'dashboard.dart';
 import 'food_log.dart';
 import 'health_metrics.dart';
-import 'profile.dart'; // Added Profile Import
+import 'profile.dart';
 
 class AnalyticsPage extends StatefulWidget {
   final String initialCategory;
+  final bool? allowDataExport;
 
-  const AnalyticsPage({super.key, this.initialCategory = 'Nutrients'});
+  const AnalyticsPage({
+    super.key,
+    this.initialCategory = 'Nutrients',
+    this.allowDataExport,
+  });
 
   @override
   State<AnalyticsPage> createState() => _AnalyticsPageState();
@@ -18,11 +31,85 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   int _currentIndex = 2;
   String _activeTimeRange = 'Week';
   late String _activeCategory;
+  bool _isLoading = true;
+  String? _error;
+  late bool _allowDataExport;
+  bool _isExporting = false;
+  DateTime _historyDate = DateTime.now();
+  List<Map<String, dynamic>> _historyLogsForSelectedDate = [];
+  List<_DailyAnalyticsPoint> _dailyPoints = [];
+  List<Map<String, dynamic>> _anthropometricHistory = [];
+  List<Map<String, dynamic>> _labResultsHistory = [];
 
   @override
   void initState() {
     super.initState();
     _activeCategory = widget.initialCategory;
+    _allowDataExport = widget.allowDataExport ?? false;
+    _loadAnalytics();
+  }
+
+  Future<void> _loadAnalytics() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final now = DateTime.now();
+
+      // Load health summary first to sync export preference immediately
+      final healthSummaryResponse = await ApiService.getHealthSummary();
+      if (healthSummaryResponse['success'] == true) {
+        final user = healthSummaryResponse['user'] is Map ? healthSummaryResponse['user'] : {};
+        if (mounted) {
+          setState(() {
+            _allowDataExport = user['allowDataExport'] == true;
+          });
+        }
+      }
+
+      final range = _analyticsDateRange(_activeTimeRange, endDate: now);
+      final analyticsSummaryResponse = await ApiService.getAnalyticsSummary(
+        range: _analyticsRangeKey(_activeTimeRange),
+        endDate: _dateKey(now),
+      );
+      final rangeLogsResponse = await ApiService.getFoodLogs(
+        dateFrom: _dateKey(range.start),
+        dateTo: _dateKey(range.end),
+        limit: 500,
+      );
+      final selectedDateLogsResponse = await ApiService.getFoodLogs(
+        date: _dateKey(_historyDate),
+        limit: 200,
+      );
+
+      final summary = _extractAnalyticsSummary(analyticsSummaryResponse);
+      final rangeLogs = _extractLogs(rangeLogsResponse);
+      final selectedDayLogs = _extractLogs(selectedDateLogsResponse);
+      final healthHistory = _extractAnthropometricHistory(healthSummaryResponse);
+      final labHistory = _extractLabResultsHistory(healthSummaryResponse);
+      final dailyPoints = _mergeHydrationFallback(
+        _dailyPointsFromSummary(summary),
+        rangeLogs,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _dailyPoints = dailyPoints;
+        _historyLogsForSelectedDate = selectedDayLogs;
+        _anthropometricHistory = healthHistory;
+        _labResultsHistory = labHistory;
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _error = e.toString();
+      });
+    }
   }
 
   @override
@@ -30,96 +117,55 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBFB),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // --- Header ---
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Text(
-                        'Analytics',
-                        style: TextStyle(
-                          color: Color(0xFF37474F),
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Track progress and trends',
-                        style: TextStyle(
-                          color: Color(0xFF90A4AE),
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () {},
-                    icon: const Icon(
-                      Icons.download,
-                      size: 16,
-                      color: Color(0xFF37474F),
-                    ),
-                    label: const Text(
-                      'Export',
-                      style: TextStyle(color: Color(0xFF37474F)),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      side: BorderSide(color: Colors.grey.shade300),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-
-              // --- Time Range Toggle ---
-              Row(
-                children: [
-                  _buildTimeToggle('Week'),
-                  const SizedBox(width: 8),
-                  _buildTimeToggle('Month'),
-                  const SizedBox(width: 8),
-                  _buildTimeToggle('3 Months'),
-                ],
-              ),
-              const SizedBox(height: 24),
-
-              // --- Category Toggle ---
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade200,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
+        child: _isLoading
+            ? const Center(
+                child: CircularProgressIndicator(color: Color(0xFF00C874)),
+              )
+            : SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(child: _buildCategoryToggle('Nutrients')),
-                    Expanded(child: _buildCategoryToggle('Growth')),
-                    Expanded(child: _buildCategoryToggle('Hydration')),
+                    _buildHeader(),
+                    const SizedBox(height: 24),
+                    if (_error != null) ...[
+                      _buildErrorCard(),
+                      const SizedBox(height: 16),
+                    ],
+                    Row(
+                      children: [
+                        _buildTimeToggle('Week'),
+                        const SizedBox(width: 8),
+                        _buildTimeToggle('Month'),
+                        const SizedBox(width: 8),
+                        _buildTimeToggle('3 Months'),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(child: _buildCategoryToggle('Nutrients')),
+                          Expanded(child: _buildCategoryToggle('Growth')),
+                          Expanded(child: _buildCategoryToggle('Hydration')),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    _buildDynamicContent(),
+                    const SizedBox(height: 16),
+                    _buildMealHistoryCard(),
+                    const SizedBox(height: 16),
+                    _buildLabResultsHistoryCard(),
+                    const SizedBox(height: 40),
                   ],
                 ),
               ),
-              const SizedBox(height: 24),
-
-              // --- DYNAMIC CONTENT ---
-              _buildDynamicContent(),
-
-              const SizedBox(height: 40),
-            ],
-          ),
-        ),
       ),
-
-      // --- Bottom Navigation Bar ---
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           boxShadow: [
@@ -152,7 +198,6 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 ),
               );
             } else if (index == 4) {
-              // --- NEW PROFILE NAVIGATION ---
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(builder: (context) => const ProfilePage()),
@@ -197,45 +242,160 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     );
   }
 
-  // ==========================================
-  // DYNAMIC CONTENT BUILDERS
-  // ==========================================
+  Widget _buildHeader() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Analytics',
+          style: TextStyle(
+            color: Color(0xFF37474F),
+            fontSize: 28,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Historical meal trends and growth history',
+          style: TextStyle(
+            color: Color(0xFF90A4AE),
+            fontSize: 14,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _loadAnalytics,
+              icon: const Icon(
+                Icons.refresh,
+                size: 16,
+                color: Color(0xFF37474F),
+              ),
+              label: const Text(
+                'Refresh',
+                style: TextStyle(color: Color(0xFF37474F)),
+              ),
+              style: OutlinedButton.styleFrom(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                side: BorderSide(color: Colors.grey.shade300),
+              ),
+            ),
+            if (_allowDataExport) ...[
+              OutlinedButton.icon(
+                onPressed: _isExporting ? null : _exportAnalyticsPdf,
+                icon: _isExporting
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(
+                        Icons.picture_as_pdf_outlined,
+                        size: 16,
+                        color: Color(0xFF37474F),
+                      ),
+                label: Text(
+                  _isExporting ? 'Exporting' : 'Export PDF',
+                  style: const TextStyle(color: Color(0xFF37474F)),
+                ),
+                style: OutlinedButton.styleFrom(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  side: BorderSide(color: Colors.grey.shade300),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(top: 4.0, left: 2.0, right: 2.0),
+                child: Text(
+                  'Export a PDF report of your health, nutrition, and hydration data to share with your doctor, dietitian, or caregiver.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF78909C)),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildErrorCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8E1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFE082)),
+      ),
+      child: Text(
+        'Analytics could not be fully loaded: $_error',
+        style: const TextStyle(
+          color: Color(0xFF78909C),
+          fontSize: 12,
+          height: 1.4,
+        ),
+      ),
+    );
+  }
 
   Widget _buildDynamicContent() {
     if (_activeCategory == 'Growth') {
       return _buildGrowthContent();
-    } else if (_activeCategory == 'Hydration') {
-      return _buildHydrationContent();
-    } else {
-      return _buildNutrientsContent();
     }
+    if (_activeCategory == 'Hydration') {
+      return _buildHydrationContent();
+    }
+    return _buildNutrientsContent();
   }
 
   Widget _buildNutrientsContent() {
+    final avgSodium = _averageFor((point) => point.sodium);
+    final avgProtein = _averageFor((point) => point.protein);
+    final totalCalories = _dailyPoints.fold<double>(
+      0,
+      (sum, point) => sum + point.calories,
+    );
+    final macroTotals = _macroTotals();
+
     return Column(
       children: [
         Row(
           children: [
             Expanded(
               child: _buildSummaryCard(
-                'Avg.Sodium',
-                '1,215 mg',
-                '-8% vs last week',
-                Icons.trending_down,
-                const Color(0xFF00C874),
+                'Avg. Sodium',
+                '${avgSodium.round()} mg',
+                '${_dailyPoints.length} days tracked',
+                Icons.water_drop_outlined,
+                const Color(0xFF42A5F5),
               ),
             ),
             const SizedBox(width: 16),
             Expanded(
               child: _buildSummaryCard(
-                'Avg.Protein',
-                '47 g',
-                '+5% vs last week',
-                Icons.trending_up,
-                const Color(0xFF00C874),
+                'Avg. Protein',
+                '${avgProtein.toStringAsFixed(1)} g',
+                '${totalCalories.round()} kcal total',
+                Icons.fitness_center,
+                const Color(0xFF9E86FF),
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 16),
+        _buildSummaryCard(
+          'Meal Log Coverage',
+          '${_dailyPoints.fold<int>(0, (sum, p) => sum + p.mealCount)} meals',
+          '${_daysWithMeals()} of ${_dailyPoints.length} days have meal logs',
+          Icons.restaurant,
+          const Color(0xFF00C874),
+          fullWidth: true,
         ),
         const SizedBox(height: 24),
         _buildChartCard(
@@ -244,36 +404,58 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             _buildLegend(const Color(0xFF42A5F5), 'Sodium (mg)'),
             _buildLegend(const Color(0xFF66BB6A), 'Potassium (mg)'),
           ],
-          chart: SizedBox(height: 200, child: LineChart(_buildLineChartData())),
+          chart: ChartJsView(
+            chartType: 'line',
+            data: _buildNutrientTrendData(),
+            options: _buildCartesianChartOptions(yAxisLabel: 'Milligrams'),
+          ),
         ),
         const SizedBox(height: 16),
         _buildChartCard(
-          title: 'Protein & Phosphorus',
+          title: 'Protein & Phosphorus by Day',
           legends: [
             _buildLegend(const Color(0xFF9E86FF), 'Protein (g)'),
             _buildLegend(const Color(0xFFFFB74D), 'Phosphorus (mg)'),
           ],
-          chart: SizedBox(height: 200, child: BarChart(_buildBarChartData())),
+          chart: ChartJsView(
+            chartType: 'bar',
+            data: _buildProteinPhosphorusData(),
+            options: _buildCartesianChartOptions(yAxisLabel: 'Amount'),
+          ),
         ),
         const SizedBox(height: 16),
         _buildChartCard(
           title: 'Macro Distribution',
           legends: [
-            _buildLegend(const Color(0xFF66BB6A), 'Protein\n25%'),
-            _buildLegend(const Color(0xFF42A5F5), 'Carbs\n50%'),
-            _buildLegend(const Color(0xFFFFB74D), 'Fat\n25%'),
+            _buildLegend(
+              const Color(0xFF66BB6A),
+              'Protein\n${macroTotals.proteinPercent}%',
+            ),
+            _buildLegend(
+              const Color(0xFF42A5F5),
+              'Carbs\n${macroTotals.carbPercent}%',
+            ),
+            _buildLegend(
+              const Color(0xFFFFB74D),
+              'Fat\n${macroTotals.fatPercent}%',
+            ),
           ],
           chart: SizedBox(
-            height: 200,
+            height: 220,
             child: Stack(
               alignment: Alignment.center,
               children: [
-                PieChart(_buildPieChartData()),
-                const Text(
-                  '100%',
-                  style: TextStyle(
+                ChartJsView(
+                  chartType: 'doughnut',
+                  data: _buildMacroChartData(macroTotals),
+                  options: _buildDoughnutOptions(),
+                ),
+                Text(
+                  '${macroTotals.totalCalories.round()} kcal',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
                     color: Color(0xFF37474F),
-                    fontSize: 26,
+                    fontSize: 20,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
@@ -286,6 +468,9 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   }
 
   Widget _buildGrowthContent() {
+    final growthPoints = _growthHistoryPoints();
+    final latest = growthPoints.isNotEmpty ? growthPoints.last : null;
+
     return Column(
       children: [
         Row(
@@ -293,9 +478,9 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             Expanded(
               child: _buildSummaryCard(
                 'Current Weight',
-                '28.5 kg',
-                '+0.5kg this month',
-                Icons.trending_up,
+                latest?.weightLabel ?? 'No data',
+                '${growthPoints.length} records',
+                Icons.scale,
                 const Color(0xFF00C874),
               ),
             ),
@@ -303,21 +488,27 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             Expanded(
               child: _buildSummaryCard(
                 'Current Height',
-                '132 cm',
-                '+1cm this month',
-                Icons.trending_up,
-                const Color(0xFF00C874),
+                latest?.heightLabel ?? 'No data',
+                latest?.bmiLabel ?? 'BMI unavailable',
+                Icons.straighten,
+                const Color(0xFF42A5F5),
               ),
             ),
           ],
         ),
         const SizedBox(height: 24),
         _buildChartCard(
-          title: 'Weight Trend (Last 6 Months)',
-          legends: [_buildLegend(const Color(0xFF9E86FF), 'Weight (kg)')],
-          chart: SizedBox(
-            height: 200,
-            child: LineChart(_buildWeightLineChartData()),
+          title: 'Weight Trend',
+          legends: [
+            _buildLegend(const Color(0xFF9E86FF), 'Weight (kg)'),
+          ],
+          chart: ChartJsView(
+            chartType: 'line',
+            data: _buildGrowthTrendData(growthPoints),
+            options: _buildCartesianChartOptions(
+              yAxisLabel: 'kg',
+              useDateLabels: true,
+            ),
           ),
         ),
       ],
@@ -325,6 +516,11 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   }
 
   Widget _buildHydrationContent() {
+    final avgWaterLiters = _averageFor((point) => point.waterMl) / 1000;
+    final highestWaterLiters =
+        _dailyPoints.fold<double>(0, (max, point) => point.waterMl > max ? point.waterMl : max) /
+            1000;
+
     return Column(
       children: [
         Row(
@@ -332,19 +528,19 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             Expanded(
               child: _buildSummaryCard(
                 'Avg Daily Intake',
-                '1.1 L',
-                'Under 1.5L Limit',
-                Icons.check_circle,
-                const Color(0xFF00C874),
+                '${avgWaterLiters.toStringAsFixed(1)} L',
+                '${_daysWithWater()} days with water logs',
+                Icons.local_drink_outlined,
+                const Color(0xFF42A5F5),
               ),
             ),
             const SizedBox(width: 16),
             Expanded(
               child: _buildSummaryCard(
-                'Adherence',
-                '92%',
-                '+2% vs last week',
-                Icons.trending_up,
+                'Highest Logged Day',
+                '${highestWaterLiters.toStringAsFixed(1)} L',
+                '${_dailyPoints.length} days tracked',
+                Icons.opacity,
                 const Color(0xFF00C874),
               ),
             ),
@@ -355,32 +551,415 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           title: 'Daily Intake vs Limit',
           legends: [
             _buildLegend(const Color(0xFF42A5F5), 'Fluid Intake (L)'),
-            _buildLegend(const Color(0xFFEF5350), 'Daily Limit (1.5L)'),
+            _buildLegend(const Color(0xFFEF5350), 'Guide Line (1.5L)'),
           ],
-          chart: SizedBox(
-            height: 200,
-            child: BarChart(_buildHydrationBarChartData()),
+          chart: ChartJsView(
+            chartType: 'bar',
+            data: _buildHydrationChartData(),
+            options: _buildHydrationChartOptions(),
           ),
         ),
       ],
     );
   }
 
-  // ==========================================
-  // UI WIDGET HELPERS
-  // ==========================================
+  Widget _buildMealHistoryCard() {
+    final formattedDate = DateFormat('MMM d, yyyy').format(_historyDate);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Meal Log History',
+                style: TextStyle(
+                  color: Color(0xFF37474F),
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _pickHistoryDate,
+                icon: const Icon(
+                  Icons.calendar_today_outlined,
+                  size: 16,
+                  color: Color(0xFF37474F),
+                ),
+                label: Text(
+                  formattedDate,
+                  style: const TextStyle(color: Color(0xFF37474F)),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(color: Colors.grey.shade300),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Review the foods logged on the selected date.',
+            style: TextStyle(
+              color: Colors.grey.shade600,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (_historyLogsForSelectedDate.isEmpty)
+            const Text(
+              'No meal logs found for this date.',
+              style: TextStyle(color: Color(0xFF90A4AE)),
+            )
+          else
+            ..._historyLogsForSelectedDate.map(_buildHistoryLogTile),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLabResultsHistoryCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(
+                Icons.calendar_month_outlined,
+                color: Color(0xFF42A5F5),
+                size: 18,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'Previous Lab Results',
+                style: TextStyle(
+                  color: Color(0xFF37474F),
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Tap any result date to view the complete lab details.',
+            style: TextStyle(
+              color: Colors.grey.shade600,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (_labResultsHistory.isEmpty)
+            const Text(
+              'No lab results recorded yet.',
+              style: TextStyle(color: Color(0xFF90A4AE)),
+            )
+          else
+            ..._labResultsHistory.map(_buildLabHistoryTile),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLabHistoryTile(Map<String, dynamic> lab) {
+    final dateLabel = _formatLabDate(
+      lab['date'] ?? lab['resultDate'] ?? lab['createdAt'],
+    );
+    final detailCount = _labDetailEntries(lab).length;
+
+    return InkWell(
+      onTap: () => _showLabResultDetails(lab),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF8FBFA),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFE0ECE8)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: const Color(0xFFE3F2FD),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.science_outlined,
+                color: Color(0xFF1E88E5),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    dateLabel,
+                    style: const TextStyle(
+                      color: Color(0xFF37474F),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$detailCount values recorded',
+                    style: const TextStyle(
+                      color: Color(0xFF78909C),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right,
+              color: Color(0xFF90A4AE),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showLabResultDetails(Map<String, dynamic> lab) {
+    final entries = _labDetailEntries(lab);
+    final dateLabel = _formatLabDate(
+      lab['date'] ?? lab['resultDate'] ?? lab['createdAt'],
+    );
+
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Lab Result Details',
+                          style: TextStyle(
+                            color: Color(0xFF37474F),
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          dateLabel,
+                          style: const TextStyle(
+                            color: Color(0xFF90A4AE),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (entries.isEmpty)
+                  const Text(
+                    'No lab details available.',
+                    style: TextStyle(color: Color(0xFF90A4AE)),
+                  )
+                else
+                  SizedBox(
+                    width: double.infinity,
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: entries.map((entry) {
+                          final status = entry.status;
+                          final statusColor = status == null || status.isEmpty
+                              ? const Color(0xFF90A4AE)
+                              : (status.toLowerCase() == 'high' ||
+                                      status.toLowerCase() == 'low'
+                                  ? const Color(0xFFEF5350)
+                                  : const Color(0xFF00A86B));
+                          return Container(
+                            width: double.infinity,
+                            margin: const EdgeInsets.only(bottom: 10),
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF8FBFA),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: const Color(0xFFE0ECE8),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      entry.label,
+                                      style: const TextStyle(
+                                        color: Color(0xFF37474F),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    if (status != null && status.isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        status,
+                                        style: TextStyle(
+                                          color: statusColor,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                Text(
+                                  '${entry.value} ${entry.unit}'.trim(),
+                                  style: const TextStyle(
+                                    color: Color(0xFF37474F),
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildHistoryLogTile(Map<String, dynamic> log) {
+    final name = log['name']?.toString() ?? 'Food';
+    final mealType = log['mealType']?.toString() ?? 'Meal';
+    final portion = log['portion']?.toString() ?? '1 serving';
+    final calories = _toDouble(log['calories']).round();
+    final time = _formatLogTime(log['loggedAt'] ?? log['createdAt']);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FBFA),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE0ECE8)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: const Color(0xFFDDF7EE),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.restaurant_menu,
+              color: Color(0xFF00A86B),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: const TextStyle(
+                    color: Color(0xFF37474F),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$mealType - $portion - $calories kcal',
+                  style: const TextStyle(
+                    color: Color(0xFF78909C),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Text(
+            time,
+            style: const TextStyle(
+              color: Color(0xFF90A4AE),
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _pickHistoryDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _historyDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+    );
+    if (picked == null) return;
+    setState(() {
+      _historyDate = picked;
+    });
+    await _loadAnalytics();
+  }
 
   Widget _buildTimeToggle(String title) {
-    bool isActive = _activeTimeRange == title;
+    final isActive = _activeTimeRange == title;
     return GestureDetector(
-      onTap: () => setState(() => _activeTimeRange = title),
+      onTap: () {
+        setState(() => _activeTimeRange = title);
+        _loadAnalytics();
+      },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          color: isActive ? const Color(0xFFC040FF) : Colors.white,
+          color: isActive ? const Color(0xFF00C874) : Colors.white,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-            color: isActive ? const Color(0xFFC040FF) : Colors.grey.shade300,
+            color: isActive ? const Color(0xFF00C874) : Colors.grey.shade300,
           ),
         ),
         child: Text(
@@ -396,13 +975,13 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   }
 
   Widget _buildCategoryToggle(String title) {
-    bool isActive = _activeCategory == title;
+    final isActive = _activeCategory == title;
     return GestureDetector(
       onTap: () => setState(() => _activeCategory = title),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
-          color: isActive ? const Color(0xFFC040FF) : Colors.transparent,
+          color: isActive ? const Color(0xFF00C874) : Colors.transparent,
           borderRadius: BorderRadius.circular(20),
         ),
         child: Center(
@@ -422,11 +1001,13 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   Widget _buildSummaryCard(
     String title,
     String value,
-    String changeText,
+    String subtitle,
     IconData icon,
-    Color changeColor,
-  ) {
-    return Container(
+    Color accent, {
+    bool fullWidth = false,
+  }) {
+    final card = Container(
+      width: fullWidth ? double.infinity : null,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -441,9 +1022,12 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             children: [
               Text(
                 title,
-                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
+                style: const TextStyle(
+                  color: Color(0xFF90A4AE),
+                  fontSize: 12,
+                ),
               ),
-              Icon(icon, color: changeColor, size: 16),
+              Icon(icon, color: accent, size: 18),
             ],
           ),
           const SizedBox(height: 8),
@@ -456,24 +1040,18 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             ),
           ),
           const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: changeColor.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              changeText,
-              style: TextStyle(
-                color: changeColor,
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-              ),
+          Text(
+            subtitle,
+            style: TextStyle(
+              color: accent,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
       ),
     );
+    return card;
   }
 
   Widget _buildChartCard({
@@ -502,609 +1080,867 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           const SizedBox(height: 24),
           chart,
           const SizedBox(height: 20),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: legends),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 12,
+            runSpacing: 8,
+            children: legends,
+          ),
         ],
       ),
     );
   }
 
   Widget _buildLegend(Color color, String text) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12.0),
-      child: Row(
-        children: [
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 11),
+          textAlign: TextAlign.center,
+        ),
+      ],
+    );
+  }
+
+  Map<String, dynamic> _buildNutrientTrendData() {
+    return {
+      'labels': _dailyPointLabels(useDateLabels: _dailyPoints.length > 7),
+      'datasets': [
+        {
+          'label': 'Sodium',
+          'data': _dailyPoints.map((point) => point.sodium.round()).toList(),
+          'borderColor': '#42A5F5',
+          'backgroundColor': 'rgba(66, 165, 245, 0.18)',
+          'tension': 0.35,
+          'fill': false,
+        },
+        {
+          'label': 'Potassium',
+          'data': _dailyPoints.map((point) => point.potassium.round()).toList(),
+          'borderColor': '#66BB6A',
+          'backgroundColor': 'rgba(102, 187, 106, 0.18)',
+          'tension': 0.35,
+          'fill': false,
+        },
+      ],
+    };
+  }
+
+  Map<String, dynamic> _buildProteinPhosphorusData() {
+    return {
+      'labels': _dailyPointLabels(useDateLabels: _dailyPoints.length > 7),
+      'datasets': [
+        {
+          'label': 'Protein',
+          'data': _dailyPoints
+              .map((point) => double.parse(point.protein.toStringAsFixed(1)))
+              .toList(),
+          'backgroundColor': '#9E86FF',
+          'borderRadius': 6,
+        },
+        {
+          'label': 'Phosphorus',
+          'data': _dailyPoints.map((point) => point.phosphorus.round()).toList(),
+          'backgroundColor': '#FFB74D',
+          'borderRadius': 6,
+        },
+      ],
+    };
+  }
+
+  Map<String, dynamic> _buildMacroChartData(_MacroTotals totals) {
+    return {
+      'labels': const ['Carbs', 'Protein', 'Fat'],
+      'datasets': [
+        {
+          'data': [
+            totals.carbCalories <= 0 ? 1 : totals.carbCalories,
+            totals.proteinCalories <= 0 ? 1 : totals.proteinCalories,
+            totals.fatCalories <= 0 ? 1 : totals.fatCalories,
+          ],
+          'backgroundColor': const ['#42A5F5', '#66BB6A', '#FFB74D'],
+          'borderWidth': 0,
+        },
+      ],
+    };
+  }
+
+  Map<String, dynamic> _buildGrowthTrendData(List<_GrowthPoint> points) {
+    final safePoints = points.isEmpty
+        ? [
+            _GrowthPoint(
+              date: DateTime.now(),
+              weightKg: 0,
+              heightCm: 0,
+              bmi: null,
+            ),
+          ]
+        : points;
+    return {
+      'labels': safePoints
+          .map((point) => DateFormat('MMM d').format(point.date))
+          .toList(),
+      'datasets': [
+        {
+          'label': 'Weight',
+          'data': safePoints
+              .map((point) => double.parse(point.weightKg.toStringAsFixed(1)))
+              .toList(),
+          'borderColor': '#9E86FF',
+          'backgroundColor': 'rgba(158, 134, 255, 0.14)',
+          'tension': 0.35,
+          'fill': true,
+        },
+      ],
+    };
+  }
+
+  Map<String, dynamic> _buildHydrationChartData() {
+    final waterLiters = _dailyPoints
+        .map((point) => double.parse((point.waterMl / 1000).toStringAsFixed(2)))
+        .toList();
+    return {
+      'labels': _dailyPointLabels(useDateLabels: _dailyPoints.length > 7),
+      'datasets': [
+        {
+          'label': 'Fluid Intake',
+          'data': waterLiters,
+          'backgroundColor': waterLiters
+              .map((value) => value > 1.5 ? '#EF5350' : '#42A5F5')
+              .toList(),
+          'borderRadius': 6,
+        },
+        {
+          'type': 'line',
+          'label': 'Guide Line',
+          'data': List<double>.filled(_dailyPoints.length, 1.5),
+          'borderColor': '#EF5350',
+          'borderDash': const [6, 6],
+          'borderWidth': 2,
+          'pointRadius': 0,
+          'fill': false,
+        },
+      ],
+    };
+  }
+
+  Map<String, dynamic> _buildCartesianChartOptions({
+    required String yAxisLabel,
+    bool useDateLabels = false,
+  }) {
+    return {
+      'responsive': true,
+      'maintainAspectRatio': false,
+      'interaction': {
+        'mode': 'index',
+        'intersect': false,
+      },
+      'plugins': {
+        'legend': {'display': false},
+      },
+      'scales': {
+        'x': {
+          'grid': {'display': false},
+          'ticks': {
+            'color': '#90A4AE',
+            'maxRotation': 0,
+            'autoSkip': true,
+          },
+        },
+        'y': {
+          'beginAtZero': true,
+          'title': {
+            'display': true,
+            'text': yAxisLabel,
+            'color': '#90A4AE',
+          },
+          'ticks': {'color': '#90A4AE'},
+          'grid': {'color': '#E6ECEF'},
+        },
+      },
+    };
+  }
+
+  Map<String, dynamic> _buildHydrationChartOptions() {
+    return {
+      'responsive': true,
+      'maintainAspectRatio': false,
+      'interaction': {
+        'mode': 'index',
+        'intersect': false,
+      },
+      'plugins': {
+        'legend': {'display': false},
+      },
+      'scales': {
+        'x': {
+          'grid': {'display': false},
+          'ticks': {
+            'color': '#90A4AE',
+            'maxRotation': 0,
+            'autoSkip': true,
+          },
+        },
+        'y': {
+          'beginAtZero': true,
+          'suggestedMax': 4,
+          'title': {
+            'display': true,
+            'text': 'Liters',
+            'color': '#90A4AE',
+          },
+          'ticks': {'color': '#90A4AE'},
+          'grid': {'color': '#E6ECEF'},
+        },
+      },
+    };
+  }
+
+  Map<String, dynamic> _buildDoughnutOptions() {
+    return {
+      'responsive': true,
+      'maintainAspectRatio': false,
+      'cutout': '68%',
+      'plugins': {
+        'legend': {'display': false},
+      },
+    };
+  }
+
+  List<String> _dailyPointLabels({required bool useDateLabels}) {
+    final format = DateFormat(useDateLabels ? 'MMM d' : 'E');
+    return _dailyPoints.map((point) => format.format(point.date)).toList();
+  }
+
+  List<Map<String, dynamic>> _extractLogs(Map<String, dynamic> response) {
+    final logs = response['logs'];
+    if (logs is! List) return [];
+    return logs
+        .whereType<Map>()
+        .map((log) => Map<String, dynamic>.from(log))
+        .toList(growable: false);
+  }
+
+  List<Map<String, dynamic>> _extractAnthropometricHistory(
+    Map<String, dynamic> response,
+  ) {
+    final history = response['anthropometricHistory'];
+    if (history is! List) return [];
+    final mapped = history
+        .whereType<Map>()
+        .map((entry) => Map<String, dynamic>.from(entry))
+        .toList(growable: false);
+    mapped.sort((a, b) => _timestampOf(a).compareTo(_timestampOf(b)));
+    return mapped;
+  }
+
+  List<Map<String, dynamic>> _extractLabResultsHistory(
+    Map<String, dynamic> response,
+  ) {
+    final history = response['labResultsHistory'];
+    if (history is! List) return [];
+    final mapped = history
+        .whereType<Map>()
+        .map((entry) => Map<String, dynamic>.from(entry))
+        .toList(growable: false);
+    mapped.sort((a, b) => _timestampOf(b).compareTo(_timestampOf(a)));
+    return mapped;
+  }
+
+  Map<String, dynamic> _extractAnalyticsSummary(Map<String, dynamic> response) {
+    final summary = response['summary'];
+    if (summary is Map) {
+      return Map<String, dynamic>.from(summary);
+    }
+    return <String, dynamic>{};
+  }
+
+  List<_DailyAnalyticsPoint> _dailyPointsFromSummary(Map<String, dynamic> summary) {
+    final dailySummaries = summary['dailySummaries'];
+    if (dailySummaries is! List) return [];
+    return dailySummaries
+        .whereType<Map>()
+        .map((entry) => _DailyAnalyticsPoint.fromSummary(Map<String, dynamic>.from(entry)))
+        .toList(growable: false);
+  }
+
+  List<_DailyAnalyticsPoint> _mergeHydrationFallback(
+    List<_DailyAnalyticsPoint> points,
+    List<Map<String, dynamic>> logs,
+  ) {
+    if (points.isEmpty || logs.isEmpty) return points;
+
+    final waterByDate = <String, double>{};
+    for (final log in logs) {
+      final dateKey = log['date']?.toString();
+      if (dateKey == null || dateKey.isEmpty) continue;
+      waterByDate.update(
+        dateKey,
+        (value) => value + _waterMlFromLog(log),
+        ifAbsent: () => _waterMlFromLog(log),
+      );
+    }
+
+    return points.map((point) {
+      if (point.waterMl > 0) return point;
+      final fallbackWater = waterByDate[_dateKey(point.date)] ?? 0;
+      if (fallbackWater <= 0) return point;
+      return point.copyWith(waterMl: fallbackWater);
+    }).toList(growable: false);
+  }
+
+  List<_GrowthPoint> _growthHistoryPoints() {
+    return _anthropometricHistory
+        .map((entry) => _GrowthPoint.fromMap(entry))
+        .where((point) => point.weightKg > 0 || point.heightCm > 0)
+        .toList(growable: false);
+  }
+
+  _MacroTotals _macroTotals() {
+    final proteinGrams = _dailyPoints.fold<double>(0, (sum, p) => sum + p.protein);
+    final carbGrams =
+        _dailyPoints.fold<double>(0, (sum, p) => sum + p.carbohydrate);
+    final fatGrams = _dailyPoints.fold<double>(0, (sum, p) => sum + p.fat);
+    return _MacroTotals.fromGrams(
+      proteinGrams: proteinGrams,
+      carbGrams: carbGrams,
+      fatGrams: fatGrams,
+    );
+  }
+
+  double _averageFor(double Function(_DailyAnalyticsPoint point) selector) {
+    if (_dailyPoints.isEmpty) return 0;
+    final total = _dailyPoints.fold<double>(0, (sum, point) => sum + selector(point));
+    return total / _dailyPoints.length;
+  }
+
+  int _daysWithMeals() {
+    return _dailyPoints.where((point) => point.mealCount > 0).length;
+  }
+
+  int _daysWithWater() {
+    return _dailyPoints.where((point) => point.waterMl > 0).length;
+  }
+
+  String _analyticsRangeKey(String range) {
+    switch (range) {
+      case 'Month':
+        return 'month';
+      case '3 Months':
+        return '3_months';
+      case 'Week':
+      default:
+        return 'week';
+    }
+  }
+
+  ({DateTime start, DateTime end}) _analyticsDateRange(
+    String range, {
+    DateTime? endDate,
+  }) {
+    final end = DateTime(
+      (endDate ?? DateTime.now()).year,
+      (endDate ?? DateTime.now()).month,
+      (endDate ?? DateTime.now()).day,
+    );
+    final days = switch (range) {
+      'Month' => 29,
+      '3 Months' => 89,
+      _ => 6,
+    };
+    return (start: end.subtract(Duration(days: days)), end: end);
+  }
+
+  String _dateKey(DateTime value) {
+    return DateFormat('yyyy-MM-dd').format(value);
+  }
+
+  double _waterMlFromLog(Map<String, dynamic> log) {
+    final explicitWater = _toDouble(
+      log['waterMl'] ?? log['water_ml'] ?? log['fluid_ml'],
+    );
+    if (explicitWater > 0) return explicitWater;
+
+    final name = (log['name'] ?? log['foodName'] ?? log['food_name'])
+        ?.toString()
+        .trim()
+        .toLowerCase();
+    if (name == null || name.isEmpty) return 0;
+
+    const hydrationKeywords = [
+      'water',
+      'juice',
+      'milk',
+      'tea',
+      'coffee',
+      'smoothie',
+      'drink',
+      'beverage',
+      'liquid',
+      'coconut water',
+      'sports drink',
+      'electrolyte',
+    ];
+    final isHydrationItem = hydrationKeywords.any(name.contains);
+    if (!isHydrationItem) return 0;
+
+    final portion = (log['portion'] ??
+            log['selectedServingDescription'] ??
+            log['selected_serving_description'])
+        ?.toString()
+        .toLowerCase() ??
+        '';
+
+    final mlMatch = RegExp(r'(\d+(?:\.\d+)?)\s*m\s*l\b').firstMatch(portion);
+    if (mlMatch != null) {
+      return double.tryParse(mlMatch.group(1) ?? '') ?? 0;
+    }
+
+    final cupMatch = RegExp(r'(\d+(?:\.\d+)?)\s*(?:cup|c\b)').firstMatch(portion);
+    if (cupMatch != null) {
+      final cups = double.tryParse(cupMatch.group(1) ?? '');
+      return cups == null ? 0 : cups * 240;
+    }
+
+    final ozMatch = RegExp(
+      r'(\d+(?:\.\d+)?)\s*(?:oz|fl\s*oz|fluid\s*oz)\b',
+    ).firstMatch(portion);
+    if (ozMatch != null) {
+      final ounces = double.tryParse(ozMatch.group(1) ?? '');
+      return ounces == null ? 0 : ounces * 30;
+    }
+
+    return 0;
+  }
+
+  double _toDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  double _maxValue(List<double> values) {
+    if (values.isEmpty) return 0;
+    return values.reduce((a, b) => a > b ? a : b);
+  }
+
+  double _niceInterval(double maxY) {
+    if (maxY <= 10) return 2;
+    if (maxY <= 50) return 10;
+    if (maxY <= 100) return 20;
+    if (maxY <= 500) return 100;
+    if (maxY <= 2000) return 250;
+    return 500;
+  }
+
+  DateTime _timestampOf(Map<String, dynamic> map) {
+    final candidates = [
+      map['updatedAt'],
+      map['createdAt'],
+      map['date'],
+    ];
+    for (final candidate in candidates) {
+      final parsed = DateTime.tryParse(candidate?.toString() ?? '');
+      if (parsed != null) return parsed;
+    }
+    return DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  String _formatLogTime(dynamic raw) {
+    final parsed = DateTime.tryParse(raw?.toString() ?? '');
+    if (parsed == null) return '';
+    return DateFormat('h:mm a').format(parsed.toLocal());
+  }
+
+  Future<void> _exportAnalyticsPdf() async {
+    if (_isExporting) return;
+
+    setState(() {
+      _isExporting = true;
+    });
+
+    try {
+      final bytes = await _buildAnalyticsPdf();
+      final timestamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
+      await Printing.sharePdf(
+        bytes: bytes,
+        filename: 'nutrikidney_analytics_$timestamp.pdf',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to export PDF: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
+      }
+    }
+  }
+
+  Future<Uint8List> _buildAnalyticsPdf() async {
+    final pdf = pw.Document();
+    final exportDate = DateFormat('MMM d, yyyy h:mm a').format(DateTime.now());
+    final growthPoints = _growthHistoryPoints();
+    final latestGrowth = growthPoints.isNotEmpty ? growthPoints.last : null;
+    final mealRows = _historyLogsForSelectedDate.map((log) {
+      final name = log['name']?.toString() ?? 'Food';
+      final mealType = log['mealType']?.toString() ?? 'Meal';
+      final portion = log['portion']?.toString() ?? '1 serving';
+      final calories = _toDouble(log['calories']).round();
+      return [name, mealType, portion, '$calories kcal'];
+    }).toList(growable: false);
+    final dailyRows = _dailyPoints.map((point) {
+      return [
+        DateFormat('MMM d, yyyy').format(point.date),
+        point.mealCount.toString(),
+        point.calories.round().toString(),
+        point.protein.toStringAsFixed(1),
+        point.sodium.round().toString(),
+        (point.waterMl / 1000).toStringAsFixed(1),
+      ];
+    }).toList(growable: false);
+    final labRows = _labResultsHistory.map((lab) {
+      final values = _labDetailEntries(lab)
+          .map((entry) => '${entry.label}: ${entry.value} ${entry.unit}'.trim())
+          .join(', ');
+      return [
+        _formatLabDate(lab['date'] ?? lab['resultDate'] ?? lab['createdAt']),
+        values.isEmpty ? 'No values' : values,
+      ];
+    }).toList(growable: false);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        build: (context) => [
+          pw.Text(
+            'NutriKidney Analytics Report',
+            style: pw.TextStyle(
+              fontSize: 22,
+              fontWeight: pw.FontWeight.bold,
+            ),
           ),
-          const SizedBox(width: 8),
-          Text(
-            text,
-            style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 11),
-            textAlign: TextAlign.center,
+          pw.SizedBox(height: 6),
+          pw.Text('Exported: $exportDate'),
+          pw.Text('Range: $_activeTimeRange'),
+          pw.Text('Category view: $_activeCategory'),
+          pw.SizedBox(height: 18),
+          pw.Header(level: 1, text: 'Summary'),
+          pw.Bullet(text: 'Days tracked: ${_dailyPoints.length}'),
+          pw.Bullet(text: 'Days with meals: ${_daysWithMeals()}'),
+          pw.Bullet(
+            text:
+                'Average sodium: ${_averageFor((point) => point.sodium).round()} mg',
           ),
+          pw.Bullet(
+            text:
+                'Average protein: ${_averageFor((point) => point.protein).toStringAsFixed(1)} g',
+          ),
+          pw.Bullet(
+            text:
+                'Average hydration: ${(_averageFor((point) => point.waterMl) / 1000).toStringAsFixed(1)} L',
+          ),
+          if (latestGrowth != null) ...[
+            pw.Bullet(text: 'Latest weight: ${latestGrowth.weightLabel}'),
+            pw.Bullet(text: 'Latest height: ${latestGrowth.heightLabel}'),
+            pw.Bullet(text: latestGrowth.bmiLabel),
+          ],
+          pw.SizedBox(height: 12),
+          pw.Header(level: 1, text: 'Daily Analytics'),
+          if (dailyRows.isEmpty)
+            pw.Text('No daily analytics data available.')
+          else
+            pw.TableHelper.fromTextArray(
+              headers: const [
+                'Date',
+                'Meals',
+                'Calories',
+                'Protein (g)',
+                'Sodium (mg)',
+                'Water (L)',
+              ],
+              data: dailyRows,
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+              cellStyle: const pw.TextStyle(fontSize: 9),
+              headerDecoration: const pw.BoxDecoration(
+                color: PdfColor.fromInt(0xFFE8F5F1),
+              ),
+            ),
+          pw.SizedBox(height: 12),
+          pw.Header(level: 1, text: 'Meal History (${DateFormat('MMM d, yyyy').format(_historyDate)})'),
+          if (mealRows.isEmpty)
+            pw.Text('No meal logs found for the selected date.')
+          else
+            pw.TableHelper.fromTextArray(
+              headers: const ['Food', 'Meal', 'Portion', 'Calories'],
+              data: mealRows,
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+              cellStyle: const pw.TextStyle(fontSize: 9),
+              headerDecoration: const pw.BoxDecoration(
+                color: PdfColor.fromInt(0xFFEFF7FB),
+              ),
+            ),
+          pw.SizedBox(height: 12),
+          pw.Header(level: 1, text: 'Previous Lab Results'),
+          if (labRows.isEmpty)
+            pw.Text('No lab history recorded yet.')
+          else
+            pw.TableHelper.fromTextArray(
+              headers: const ['Date', 'Details'],
+              data: labRows,
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+              cellStyle: const pw.TextStyle(fontSize: 9),
+              headerDecoration: const pw.BoxDecoration(
+                color: PdfColor.fromInt(0xFFF5F0FF),
+              ),
+              cellAlignments: {
+                0: pw.Alignment.centerLeft,
+                1: pw.Alignment.centerLeft,
+              },
+            ),
         ],
       ),
     );
+
+    return pdf.save();
   }
 
-  // ==========================================
-  // FL CHART CONFIGURATIONS
-  // ==========================================
+  String _formatLabDate(dynamic raw) {
+    final parsed = DateTime.tryParse(raw?.toString() ?? '');
+    if (parsed != null) {
+      return DateFormat('MMM d, yyyy').format(parsed.toLocal());
+    }
+    final text = raw?.toString().trim() ?? '';
+    return text.isEmpty ? 'No date' : text;
+  }
 
-  LineChartData _buildLineChartData() {
-    return LineChartData(
-      lineTouchData: LineTouchData(
-        enabled: true,
-        touchTooltipData: LineTouchTooltipData(
-          getTooltipColor: (touchedSpot) => Colors.white,
-          tooltipPadding: const EdgeInsets.all(12),
-          getTooltipItems: (touchedSpots) {
-            return touchedSpots.map((spot) {
-              final isSodium = spot.barIndex == 0;
-              final color = isSodium
-                  ? const Color(0xFF42A5F5)
-                  : const Color(0xFF66BB6A);
-              final label = isSodium ? 'Sodium' : 'Potassium';
-              return LineTooltipItem(
-                '$label: ${spot.y.toInt()} mg',
-                TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
-              );
-            }).toList();
-          },
+  List<_LabDetailEntry> _labDetailEntries(Map<String, dynamic> lab) {
+    final entries = <_LabDetailEntry>[];
+
+    void addEntry(
+      String label,
+      dynamic value,
+      String unit, {
+      String? status,
+    }) {
+      final text = value?.toString().trim() ?? '';
+      if (text.isEmpty || text.toLowerCase() == 'null') return;
+      entries.add(
+        _LabDetailEntry(
+          label: label,
+          value: text,
+          unit: unit,
+          status: status?.trim().isEmpty == true ? null : status?.trim(),
         ),
-      ),
-      gridData: FlGridData(
-        show: true,
-        drawVerticalLine: false,
-        horizontalInterval: 550,
-        getDrawingHorizontalLine: (double value) => FlLine(
-          color: Colors.grey.shade200,
-          strokeWidth: 1,
-          dashArray: const [5, 5],
-        ),
-      ),
-      titlesData: FlTitlesData(
-        rightTitles: const AxisTitles(
-          sideTitles: SideTitles(showTitles: false),
-        ),
-        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        bottomTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            reservedSize: 22,
-            getTitlesWidget: (double value, TitleMeta meta) {
-              const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-              if (value.toInt() < 0 || value.toInt() >= days.length) {
-                return const Text('');
-              }
-              return Padding(
-                padding: const EdgeInsets.only(top: 4.0),
-                child: Text(
-                  days[value.toInt()],
-                  style: const TextStyle(
-                    color: Color(0xFF90A4AE),
-                    fontSize: 10,
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        leftTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            reservedSize: 40,
-            interval: 550,
-            getTitlesWidget: (double value, TitleMeta meta) {
-              return Text(
-                value.toInt().toString(),
-                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 10),
-              );
-            },
-          ),
-        ),
-      ),
-      borderData: FlBorderData(
-        show: true,
-        border: Border(
-          bottom: BorderSide(color: Colors.grey.shade400),
-          left: BorderSide(color: Colors.grey.shade400),
-        ),
-      ),
-      minX: 0,
-      maxX: 6,
-      minY: 0,
-      maxY: 2200,
-      lineBarsData: [
-        LineChartBarData(
-          spots: const [
-            FlSpot(0, 1150),
-            FlSpot(1, 1050),
-            FlSpot(2, 1250),
-            FlSpot(3, 1200),
-            FlSpot(4, 1100),
-            FlSpot(5, 1350),
-            FlSpot(6, 1150),
-          ],
-          isCurved: true,
-          color: const Color(0xFF42A5F5),
-          barWidth: 2,
-          dotData: const FlDotData(show: true),
-        ),
-        LineChartBarData(
-          spots: const [
-            FlSpot(0, 1800),
-            FlSpot(1, 1900),
-            FlSpot(2, 1650),
-            FlSpot(3, 2000),
-            FlSpot(4, 1850),
-            FlSpot(5, 2150),
-            FlSpot(6, 1800),
-          ],
-          isCurved: true,
-          color: const Color(0xFF66BB6A),
-          barWidth: 2,
-          dotData: const FlDotData(show: true),
-        ),
-      ],
+      );
+    }
+
+    addEntry('Creatinine', lab['creatinine'], 'mg/dL');
+    addEntry('eGFR', lab['egfr'] ?? lab['eGFR'], 'mL/min');
+    addEntry('Potassium', lab['potassium'], 'mEq/L');
+    addEntry(
+      'Phosphorus',
+      lab['phosphorus'],
+      'mg/dL',
+      status: lab['phosphorus_status']?.toString(),
     );
-  }
-
-  BarChartData _buildBarChartData() {
-    return BarChartData(
-      alignment: BarChartAlignment.spaceAround,
-      maxY: 1000,
-      barTouchData: BarTouchData(
-        enabled: true,
-        touchTooltipData: BarTouchTooltipData(
-          getTooltipColor: (BarChartGroupData group) => Colors.white,
-          tooltipPadding: const EdgeInsets.all(16),
-          tooltipMargin: 8,
-          getTooltipItem: (group, groupIndex, rod, rodIndex) {
-            if (rodIndex == 0) return null; // Avoid duplicate bubbles
-            const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-            String day = days[group.x.toInt()];
-            double protein = group.barRods[0].toY;
-            double phosphorus = group.barRods[1].toY;
-
-            return BarTooltipItem(
-              '$day\n',
-              const TextStyle(
-                color: Color(0xFF37474F),
-                fontWeight: FontWeight.normal,
-                fontSize: 16,
-              ),
-              children: [
-                TextSpan(
-                  text: 'phosphorus:${phosphorus.toInt()}\n',
-                  style: const TextStyle(
-                    color: Color(0xFFD6B26A),
-                    fontWeight: FontWeight.normal,
-                    fontSize: 16,
-                  ),
-                ),
-                TextSpan(
-                  text: 'protein:${protein.toInt()}',
-                  style: const TextStyle(
-                    color: Color(0xFF9E86FF),
-                    fontWeight: FontWeight.normal,
-                    fontSize: 16,
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-      titlesData: FlTitlesData(
-        rightTitles: const AxisTitles(
-          sideTitles: SideTitles(showTitles: false),
-        ),
-        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        bottomTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            getTitlesWidget: (double value, TitleMeta meta) {
-              const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-              if (value.toInt() < 0 || value.toInt() >= days.length) {
-                return const Text('');
-              }
-              return Padding(
-                padding: const EdgeInsets.only(top: 4.0),
-                child: Text(
-                  days[value.toInt()],
-                  style: const TextStyle(
-                    color: Color(0xFF90A4AE),
-                    fontSize: 10,
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        leftTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            reservedSize: 40,
-            interval: 250,
-            getTitlesWidget: (double value, TitleMeta meta) {
-              return Text(
-                value.toInt().toString(),
-                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 10),
-              );
-            },
-          ),
-        ),
-      ),
-      gridData: FlGridData(
-        show: true,
-        drawVerticalLine: false,
-        horizontalInterval: 250,
-        getDrawingHorizontalLine: (double value) => FlLine(
-          color: Colors.grey.shade200,
-          strokeWidth: 1,
-          dashArray: const [5, 5],
-        ),
-      ),
-      borderData: FlBorderData(
-        show: true,
-        border: Border(
-          bottom: BorderSide(color: Colors.grey.shade400),
-          left: BorderSide(color: Colors.grey.shade400),
-        ),
-      ),
-      barGroups: [
-        _makeBarGroup(0, 40, 250),
-        _makeBarGroup(1, 45, 250),
-        _makeBarGroup(2, 40, 250),
-        _makeBarGroup(3, 50, 250),
-        _makeBarGroup(4, 46, 790, isHighlight: true),
-        _makeBarGroup(5, 45, 900),
-        _makeBarGroup(6, 45, 950),
-      ],
+    addEntry('Calcium', lab['calcium'], 'mg/dL');
+    addEntry(
+      'Sodium',
+      lab['sodium'],
+      'mEq/L',
+      status: lab['sodium_status']?.toString(),
     );
-  }
 
-  BarChartGroupData _makeBarGroup(
-    int x,
-    double protein,
-    double phosphorus, {
-    bool isHighlight = false,
+    return entries;
+  }
+}
+
+class _DailyAnalyticsPoint {
+  final DateTime date;
+  final int mealCount;
+  final double calories;
+  final double protein;
+  final double carbohydrate;
+  final double fat;
+  final double sodium;
+  final double potassium;
+  final double phosphorus;
+  final double waterMl;
+
+  const _DailyAnalyticsPoint({
+    required this.date,
+    required this.mealCount,
+    required this.calories,
+    required this.protein,
+    required this.carbohydrate,
+    required this.fat,
+    required this.sodium,
+    required this.potassium,
+    required this.phosphorus,
+    required this.waterMl,
+  });
+
+  _DailyAnalyticsPoint copyWith({
+    DateTime? date,
+    int? mealCount,
+    double? calories,
+    double? protein,
+    double? carbohydrate,
+    double? fat,
+    double? sodium,
+    double? potassium,
+    double? phosphorus,
+    double? waterMl,
   }) {
-    return BarChartGroupData(
-      x: x,
-      barsSpace: 4,
-      barRods: [
-        BarChartRodData(
-          toY: protein,
-          color: const Color(0xFF9E86FF),
-          width: 8,
-          borderRadius: BorderRadius.circular(2),
-        ),
-        BarChartRodData(
-          toY: phosphorus,
-          color: const Color(0xFFFFB74D),
-          width: 8,
-          borderRadius: BorderRadius.circular(2),
-          backDrawRodData: BackgroundBarChartRodData(
-            show: isHighlight,
-            toY: 1000,
-            color: Colors.grey.shade300,
-          ),
-        ),
-      ],
+    return _DailyAnalyticsPoint(
+      date: date ?? this.date,
+      mealCount: mealCount ?? this.mealCount,
+      calories: calories ?? this.calories,
+      protein: protein ?? this.protein,
+      carbohydrate: carbohydrate ?? this.carbohydrate,
+      fat: fat ?? this.fat,
+      sodium: sodium ?? this.sodium,
+      potassium: potassium ?? this.potassium,
+      phosphorus: phosphorus ?? this.phosphorus,
+      waterMl: waterMl ?? this.waterMl,
     );
   }
 
-  PieChartData _buildPieChartData() {
-    return PieChartData(
-      sectionsSpace: 4,
-      centerSpaceRadius: 60,
-      sections: [
-        PieChartSectionData(
-          color: const Color(0xFF42A5F5),
-          value: 50,
-          radius: 25,
-          showTitle: false,
-        ),
-        PieChartSectionData(
-          color: const Color(0xFF66BB6A),
-          value: 25,
-          radius: 25,
-          showTitle: false,
-        ),
-        PieChartSectionData(
-          color: const Color(0xFFFFB74D),
-          value: 25,
-          radius: 25,
-          showTitle: false,
-        ),
-      ],
+  factory _DailyAnalyticsPoint.fromSummary(Map<String, dynamic> summary) {
+    double asDouble(dynamic value) {
+      if (value is num) return value.toDouble();
+      return double.tryParse(value?.toString() ?? '') ?? 0;
+    }
+
+    final totals = summary['totals'] is Map
+        ? Map<String, dynamic>.from(summary['totals'] as Map)
+        : const <String, dynamic>{};
+
+    return _DailyAnalyticsPoint(
+      date: DateTime.tryParse(summary['date']?.toString() ?? '') ?? DateTime.now(),
+      mealCount: asDouble(summary['mealCount'] ?? summary['meal_count']).round(),
+      calories: asDouble(totals['calories']),
+      protein: asDouble(totals['protein']),
+      carbohydrate: asDouble(totals['carbohydrate']),
+      fat: asDouble(totals['fat']),
+      sodium: asDouble(totals['sodium']),
+      potassium: asDouble(totals['potassium']),
+      phosphorus: asDouble(totals['phosphorus']),
+      waterMl: asDouble(summary['waterMl'] ?? summary['water_ml'] ?? summary['fluid_ml']),
+    );
+  }
+}
+
+class _GrowthPoint {
+  final DateTime date;
+  final double weightKg;
+  final double heightCm;
+  final double? bmi;
+
+  const _GrowthPoint({
+    required this.date,
+    required this.weightKg,
+    required this.heightCm,
+    required this.bmi,
+  });
+
+  factory _GrowthPoint.fromMap(Map<String, dynamic> map) {
+    double asDouble(dynamic value) {
+      if (value is num) return value.toDouble();
+      return double.tryParse(value?.toString() ?? '') ?? 0;
+    }
+
+    DateTime parseDate(dynamic value) {
+      return DateTime.tryParse(value?.toString() ?? '') ?? DateTime.now();
+    }
+
+    return _GrowthPoint(
+      date: parseDate(map['updatedAt'] ?? map['createdAt'] ?? map['date']),
+      weightKg: asDouble(map['weight_kg'] ?? map['weight']),
+      heightCm: asDouble(map['height_cm'] ?? map['height']),
+      bmi: (() {
+        final value = map['bmi'];
+        if (value == null || value == '') return null;
+        return asDouble(value);
+      })(),
     );
   }
 
-  LineChartData _buildWeightLineChartData() {
-    return LineChartData(
-      lineTouchData: LineTouchData(
-        touchTooltipData: LineTouchTooltipData(
-          getTooltipColor: (spot) => Colors.white,
-          getTooltipItems: (spots) => spots
-              .map(
-                (s) => LineTooltipItem(
-                  '${s.y} kg',
-                  const TextStyle(
-                    color: Color(0xFF9E86FF),
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              )
-              .toList(),
-        ),
-      ),
-      gridData: FlGridData(
-        show: true,
-        drawVerticalLine: false,
-        horizontalInterval: 1,
-        getDrawingHorizontalLine: (double value) => FlLine(
-          color: Colors.grey.shade200,
-          strokeWidth: 1,
-          dashArray: const [5, 5],
-        ),
-      ),
-      titlesData: FlTitlesData(
-        rightTitles: const AxisTitles(
-          sideTitles: SideTitles(showTitles: false),
-        ),
-        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        bottomTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            reservedSize: 22,
-            getTitlesWidget: (double value, TitleMeta meta) {
-              const months = ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'];
-              if (value.toInt() < 0 || value.toInt() >= months.length) {
-                return const Text('');
-              }
-              return Padding(
-                padding: const EdgeInsets.only(top: 4.0),
-                child: Text(
-                  months[value.toInt()],
-                  style: const TextStyle(
-                    color: Color(0xFF90A4AE),
-                    fontSize: 10,
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        leftTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            reservedSize: 40,
-            interval: 1,
-            getTitlesWidget: (double value, TitleMeta meta) {
-              return Text(
-                value.toInt().toString(),
-                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 10),
-              );
-            },
-          ),
-        ),
-      ),
-      borderData: FlBorderData(
-        show: true,
-        border: Border(
-          bottom: BorderSide(color: Colors.grey.shade400),
-          left: BorderSide(color: Colors.grey.shade400),
-        ),
-      ),
-      minX: 0,
-      maxX: 5,
-      minY: 26,
-      maxY: 30,
-      lineBarsData: [
-        LineChartBarData(
-          spots: const [
-            FlSpot(0, 26.5),
-            FlSpot(1, 27.0),
-            FlSpot(2, 27.2),
-            FlSpot(3, 27.8),
-            FlSpot(4, 28.0),
-            FlSpot(5, 28.5),
-          ],
-          isCurved: true,
-          color: const Color(0xFF9E86FF),
-          barWidth: 3,
-          dotData: const FlDotData(show: true),
-          belowBarData: BarAreaData(
-            show: true,
-            color: const Color(0xFF9E86FF).withOpacity(0.1),
-          ),
-        ),
-      ],
-    );
-  }
+  String get weightLabel =>
+      weightKg > 0 ? '${weightKg.toStringAsFixed(1)} kg' : 'No weight';
+  String get heightLabel =>
+      heightCm > 0 ? '${heightCm.toStringAsFixed(0)} cm' : 'No height';
+  String get bmiLabel =>
+      bmi != null && bmi! > 0 ? 'BMI ${bmi!.toStringAsFixed(1)}' : 'BMI unavailable';
+}
 
-  BarChartData _buildHydrationBarChartData() {
-    return BarChartData(
-      alignment: BarChartAlignment.spaceAround,
-      maxY: 2.0,
-      barTouchData: BarTouchData(
-        touchTooltipData: BarTouchTooltipData(
-          getTooltipColor: (group) => Colors.white,
-          getTooltipItem: (group, groupIndex, rod, rodIndex) {
-            const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-            return BarTooltipItem(
-              '${days[group.x.toInt()]}\n',
-              const TextStyle(
-                color: Color(0xFF37474F),
-                fontWeight: FontWeight.bold,
-              ),
-              children: [
-                TextSpan(
-                  text: '${rod.toY} L',
-                  style: const TextStyle(
-                    color: Color(0xFF42A5F5),
-                    fontWeight: FontWeight.normal,
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-      titlesData: FlTitlesData(
-        rightTitles: const AxisTitles(
-          sideTitles: SideTitles(showTitles: false),
-        ),
-        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        bottomTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            getTitlesWidget: (double value, TitleMeta meta) {
-              const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-              if (value.toInt() < 0 || value.toInt() >= days.length) {
-                return const Text('');
-              }
-              return Padding(
-                padding: const EdgeInsets.only(top: 4.0),
-                child: Text(
-                  days[value.toInt()],
-                  style: const TextStyle(
-                    color: Color(0xFF90A4AE),
-                    fontSize: 10,
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        leftTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            reservedSize: 40,
-            interval: 0.5,
-            getTitlesWidget: (double value, TitleMeta meta) {
-              return Text(
-                '${value.toStringAsFixed(1)}L',
-                style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 10),
-              );
-            },
-          ),
-        ),
-      ),
-      gridData: FlGridData(
-        show: true,
-        drawVerticalLine: false,
-        horizontalInterval: 0.5,
-        getDrawingHorizontalLine: (double value) {
-          if (value == 1.5) {
-            return const FlLine(
-              color: Color(0xFFEF5350),
-              strokeWidth: 2,
-              dashArray: [4, 4],
-            );
-          }
-          return FlLine(
-            color: Colors.grey.shade200,
-            strokeWidth: 1,
-            dashArray: const [5, 5],
-          );
-        },
-      ),
-      borderData: FlBorderData(
-        show: true,
-        border: Border(
-          bottom: BorderSide(color: Colors.grey.shade400),
-          left: BorderSide(color: Colors.grey.shade400),
-        ),
-      ),
-      barGroups: [
-        BarChartGroupData(
-          x: 0,
-          barRods: [
-            BarChartRodData(
-              toY: 1.2,
-              color: const Color(0xFF42A5F5),
-              width: 12,
-              borderRadius: BorderRadius.circular(4),
-            ),
-          ],
-        ),
-        BarChartGroupData(
-          x: 1,
-          barRods: [
-            BarChartRodData(
-              toY: 1.4,
-              color: const Color(0xFF42A5F5),
-              width: 12,
-              borderRadius: BorderRadius.circular(4),
-            ),
-          ],
-        ),
-        BarChartGroupData(
-          x: 2,
-          barRods: [
-            BarChartRodData(
-              toY: 1.1,
-              color: const Color(0xFF42A5F5),
-              width: 12,
-              borderRadius: BorderRadius.circular(4),
-            ),
-          ],
-        ),
-        BarChartGroupData(
-          x: 3,
-          barRods: [
-            BarChartRodData(
-              toY: 1.6,
-              color: const Color(0xFFEF5350),
-              width: 12,
-              borderRadius: BorderRadius.circular(4),
-            ),
-          ],
-        ),
-        BarChartGroupData(
-          x: 4,
-          barRods: [
-            BarChartRodData(
-              toY: 1.3,
-              color: const Color(0xFF42A5F5),
-              width: 12,
-              borderRadius: BorderRadius.circular(4),
-            ),
-          ],
-        ),
-        BarChartGroupData(
-          x: 5,
-          barRods: [
-            BarChartRodData(
-              toY: 1.0,
-              color: const Color(0xFF42A5F5),
-              width: 12,
-              borderRadius: BorderRadius.circular(4),
-            ),
-          ],
-        ),
-        BarChartGroupData(
-          x: 6,
-          barRods: [
-            BarChartRodData(
-              toY: 1.2,
-              color: const Color(0xFF42A5F5),
-              width: 12,
-              borderRadius: BorderRadius.circular(4),
-            ),
-          ],
-        ),
-      ],
+class _MacroTotals {
+  final double proteinCalories;
+  final double carbCalories;
+  final double fatCalories;
+  final double totalCalories;
+  final int proteinPercent;
+  final int carbPercent;
+  final int fatPercent;
+
+  const _MacroTotals({
+    required this.proteinCalories,
+    required this.carbCalories,
+    required this.fatCalories,
+    required this.totalCalories,
+    required this.proteinPercent,
+    required this.carbPercent,
+    required this.fatPercent,
+  });
+
+  factory _MacroTotals.fromGrams({
+    required double proteinGrams,
+    required double carbGrams,
+    required double fatGrams,
+  }) {
+    final proteinCalories = proteinGrams * 4;
+    final carbCalories = carbGrams * 4;
+    final fatCalories = fatGrams * 9;
+    final totalCalories = proteinCalories + carbCalories + fatCalories;
+
+    int percent(double value) {
+      if (totalCalories <= 0) return 0;
+      return ((value / totalCalories) * 100).round();
+    }
+
+    return _MacroTotals(
+      proteinCalories: proteinCalories,
+      carbCalories: carbCalories,
+      fatCalories: fatCalories,
+      totalCalories: totalCalories,
+      proteinPercent: percent(proteinCalories),
+      carbPercent: percent(carbCalories),
+      fatPercent: percent(fatCalories),
     );
   }
+}
+
+class _LabDetailEntry {
+  final String label;
+  final String value;
+  final String unit;
+  final String? status;
+
+  const _LabDetailEntry({
+    required this.label,
+    required this.value,
+    required this.unit,
+    this.status,
+  });
 }

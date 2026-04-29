@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:nutri_kidney/main/medication_scan_flow.dart';
+import 'package:nutri_kidney/main/health_metrics_widgets.dart';
 import 'package:nutri_kidney/services/api_service.dart';
 import 'dashboard.dart';
 import 'food_log.dart';
@@ -33,7 +35,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       'time': '8:00 AM, 8:00 PM',
       'status': 'Taken',
       'isPending': false,
-    },
+    },2222222
     {
       'time': '8:00 AM',
       'status': 'Taken',
@@ -49,6 +51,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
 
   List<Map<String, dynamic>> _labResults = [];
   List<Map<String, dynamic>> _labHistory = [];
+  bool _isScanningPrescription = false;
   bool _isLoadingHealth = true;
   String? _healthError;
   /*
@@ -114,7 +117,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       final latestLab = _asStringMap(response["latestLabResult"]);
       final labHistory = _asStringMapList(response["labResultsHistory"]);
       final medications = _asStringMapList(response["medications"]);
-
       setState(() {
         _vitals = _buildVitals(anthropometrics);
         _labResults = _buildLabCards(latestLab);
@@ -599,6 +601,22 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
     final existingLab = isEdit ? _labResults[editIndex] : null;
     bool isSavingMeasurement = false;
 
+    // ==================== UNIT MAPPING ====================
+    final Map<String, String> unitMap = {
+      'Height': 'cm',
+      'Weight': 'kg',
+      'BMI': 'kg/m²',
+      'Dry Weight': 'kg',
+      'Blood Pressure': 'mmHg',
+      'Heart Rate': 'bpm',
+      'Creatinine': 'mg/dL',
+      'Potassium': 'mmol/L',
+      'Phosphorus': 'mg/dL',
+      'Sodium': 'mmol/L',
+      'Calcium': 'mg/dL',
+      'eGFR': 'mL/min',
+    };
+
     String selectedType = existingLab?['title'] ?? initialType ?? 'Weight';
     final valueController = TextEditingController(
       text: existingLab?['value'] ?? '',
@@ -608,15 +626,18 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
     );
 
     final List<String> metricTypes = [
+      'Height',
       'Weight',
+      'BMI',
+      'Dry Weight',
       'Blood Pressure',
       'Heart Rate',
-      'Height',
       'Creatinine',
-      'eGFR',
       'Potassium',
       'Phosphorus',
+      'Sodium',
       'Calcium',
+      'eGFR',
     ];
 
     showDialog(
@@ -625,6 +646,11 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       builder: (BuildContext dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            // Track validation state
+            bool hasDate = dateController.text.trim().isNotEmpty;
+            bool hasValue = valueController.text.trim().isNotEmpty;
+            bool isFormValid = hasDate && hasValue;
+
             return Dialog(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
@@ -661,7 +687,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       ),
                       const SizedBox(height: 20),
 
-                      _buildFormLabel('Metric Type'),
+                      const HealthMetricsFormLabel(label: 'Metric Type'),
                       const SizedBox(height: 8),
                       DropdownButtonFormField<String>(
                         value: selectedType,
@@ -669,7 +695,9 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             .map(
                               (type) => DropdownMenuItem(
                                 value: type,
-                                child: Text(type),
+                                child: Text(
+                                  '${type} (${unitMap[type] ?? 'unit'})',
+                                ),
                               ),
                             )
                             .toList(),
@@ -682,25 +710,59 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       ),
                       const SizedBox(height: 20),
 
-                      _buildFormLabel('Value'),
+                      HealthMetricsFormLabel(
+                        label:
+                            'Measurement Value (${unitMap[selectedType] ?? 'unit'})',
+                      ),
                       const SizedBox(height: 8),
-                      _buildTextFormField(valueController, 'Enter value'),
+                      HealthMetricsTextFormField(
+                        controller: valueController,
+                        placeholder: 'Enter value',
+                        onChanged: (_) => setDialogState(() {}),
+                      ),
+                      if (hasDate && !hasValue)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(
+                            'Enter at least one measurement value.',
+                            style: TextStyle(
+                              color: Colors.orange.shade600,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
                       const SizedBox(height: 20),
 
-                      _buildFormLabel('Date & Time'),
-                      const SizedBox(height: 8),
-                      _buildDatePickerFormField(
-                        dialogContext,
-                        dateController,
-                        'Select date',
+                      const HealthMetricsFormLabel(
+                        label: 'Measurement Date (Required)',
                       ),
+                      const SizedBox(height: 8),
+                      HealthMetricsDatePickerFormField(
+                        dialogContext: dialogContext,
+                        controller: dateController,
+                        placeholder: 'Select date',
+                        onDateSelected: () => setDialogState(() {}),
+                      ),
+                      if (!hasDate)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(
+                            'Please enter the measurement date.',
+                            style: TextStyle(
+                              color: Colors.red.shade600,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
                       const SizedBox(height: 32),
 
                       SizedBox(
                         width: double.infinity,
                         height: 50,
                         child: ElevatedButton(
-                          onPressed: isSavingMeasurement
+                          onPressed: (isSavingMeasurement || !isFormValid)
                               ? null
                               : () async {
                             final measurementValue =
@@ -714,6 +776,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                               'Heart Rate',
                             ].contains(selectedType);
 
+                            // Validate numeric value
                             if (measurementValue.isEmpty) {
                               ScaffoldMessenger.of(pageContext).showSnackBar(
                                 const SnackBar(
@@ -723,12 +786,25 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                               return;
                             }
 
-                            if (!isVitalMeasurement &&
-                                measurementDate.isEmpty) {
+                            // Validate date is required for ALL measurements
+                            if (measurementDate.isEmpty) {
                               ScaffoldMessenger.of(pageContext).showSnackBar(
                                 const SnackBar(
                                   content: Text(
-                                    'Lab result date is required.',
+                                    'Please enter the measurement date.',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
+
+                            // Try to parse value as number for basic validation
+                            final numValue = double.tryParse(measurementValue);
+                            if (numValue == null) {
+                              ScaffoldMessenger.of(pageContext).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Please enter a valid number for the measurement value.',
                                   ),
                                 ),
                               );
@@ -800,7 +876,10 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             }
                           },
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF00B074),
+                            backgroundColor: isFormValid && !isSavingMeasurement
+                                ? const Color(0xFF00B074)
+                                : Colors.grey.shade400,
+                            disabledBackgroundColor: Colors.grey.shade400,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(8),
                             ),
@@ -817,10 +896,12 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                                     ),
                                   ),
                                 )
-                              : const Text(
+                              : Text(
                                   'Save Measurement',
                                   style: TextStyle(
-                                    color: Colors.white,
+                                    color: isFormValid && !isSavingMeasurement
+                                        ? Colors.white
+                                        : Colors.white60,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 16,
                                   ),
@@ -839,19 +920,38 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
   }
 
   // Form 2: Add/Edit Medications with Time Picker & Frequency Scheduling
-  void _showMedicationForm({int? editIndex}) {
+  void _showMedicationForm({
+    int? editIndex,
+    Map<String, dynamic>? seedMedication,
+  }) {
     final pageContext = context;
     final isEdit = editIndex != null;
     final existingMed = isEdit ? _medications[editIndex] : null;
 
     final nameController = TextEditingController(
-      text: existingMed?['name'] ?? '',
+      text:
+          existingMed?['name'] ??
+          existingMed?['medicineName'] ??
+          existingMed?['medicationName'] ??
+          existingMed?['medication_name'] ??
+          seedMedication?['name']?.toString() ??
+          seedMedication?['medicineName']?.toString() ??
+          seedMedication?['medicationName']?.toString() ??
+          seedMedication?['medication_name']?.toString() ??
+          '',
     );
     final dosageController = TextEditingController(
-      text: existingMed?['rawDosage'] ?? existingMed?['dosage'] ?? '',
+      text:
+          existingMed?['rawDosage'] ??
+          existingMed?['dosage'] ??
+          seedMedication?['dosage']?.toString() ??
+          '',
     );
     final instructionsController = TextEditingController(
-      text: existingMed?['instructions'] ?? '',
+      text:
+          existingMed?['instructions'] ??
+          seedMedication?['instructions']?.toString() ??
+          '',
     );
 
     TimeOfDay selectedTime = const TimeOfDay(hour: 8, minute: 0);
@@ -971,19 +1071,25 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       const SizedBox(height: 20),
 
                       // Medication Name
-                      _buildFormLabel('Medication Name'),
+                      const HealthMetricsFormLabel(label: 'Medication Name'),
                       const SizedBox(height: 8),
-                      _buildTextFormField(nameController, 'e.g. Calcium'),
+                      HealthMetricsTextFormField(
+                        controller: nameController,
+                        placeholder: 'e.g. Calcium',
+                      ),
                       const SizedBox(height: 20),
 
                       // Dosage
-                      _buildFormLabel('Dosage'),
+                      const HealthMetricsFormLabel(label: 'Dosage'),
                       const SizedBox(height: 8),
-                      _buildTextFormField(dosageController, 'e.g. 500mg'),
+                      HealthMetricsTextFormField(
+                        controller: dosageController,
+                        placeholder: 'e.g. 500mg',
+                      ),
                       const SizedBox(height: 20),
 
                       // Start Time Picker
-                      _buildFormLabel('Start Time'),
+                      const HealthMetricsFormLabel(label: 'Start Time'),
                       const SizedBox(height: 8),
                       GestureDetector(
                         onTap: () async {
@@ -1028,7 +1134,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       const SizedBox(height: 20),
 
                       // Frequency Type
-                      _buildFormLabel('Frequency Type'),
+                      const HealthMetricsFormLabel(label: 'Frequency Type'),
                       const SizedBox(height: 8),
                       DropdownButtonFormField<String>(
                         value: frequencyType,
@@ -1056,7 +1162,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       const SizedBox(height: 20),
 
                       // Frequency Value
-                      _buildFormLabel('Frequency'),
+                      const HealthMetricsFormLabel(label: 'Frequency'),
                       const SizedBox(height: 8),
                       DropdownButtonFormField<int>(
                         value: frequencyValue,
@@ -1128,16 +1234,18 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       const SizedBox(height: 20),
 
                       // Instructions (Optional)
-                      _buildFormLabel('Instructions (Optional)'),
+                      const HealthMetricsFormLabel(
+                        label: 'Instructions (Optional)',
+                      ),
                       const SizedBox(height: 8),
-                      _buildTextFormField(
-                        instructionsController,
-                        'e.g. Take with water, with food',
+                      HealthMetricsTextFormField(
+                        controller: instructionsController,
+                        placeholder: 'e.g. Take with water, with food',
                       ),
                       const SizedBox(height: 20),
 
                       // Status
-                      _buildFormLabel('Status'),
+                      const HealthMetricsFormLabel(label: 'Status'),
                       const SizedBox(height: 8),
                       DropdownButtonFormField<String>(
                         value: status,
@@ -1194,12 +1302,23 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                               'medication_name': nameController.text.trim(),
                               'dosage': dosageController.text.trim(),
                               'dose': dosageController.text.trim(),
+                              if (seedMedication?['form'] != null)
+                                'form': seedMedication?['form'],
                               'frequency_type': frequencyType,
                               'frequency_value': frequencyValue,
                               'start_time':
                                   '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}',
                               'scheduled_times': finalSchedule,
                               'instructions': instructionsController.text.trim(),
+                              if (seedMedication?['duration'] != null)
+                                'duration': seedMedication?['duration'],
+                              if (seedMedication?['rxcui'] != null)
+                                'rxcui': seedMedication?['rxcui'],
+                              if (seedMedication?['rawOcrText'] != null)
+                                'rawOcrText': seedMedication?['rawOcrText'],
+                              if (seedMedication?['confirmedByUser'] != null)
+                                'confirmedByUser':
+                                    seedMedication?['confirmedByUser'],
                               'status': status,
                               'isPending': status == 'Pending',
                               'frequency': frequencyLabel,
@@ -1207,6 +1326,8 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                               'schedule': displayTimes,
                               'display_freq': frequencyLabel,
                               'display_times': displayTimes,
+                              'source':
+                                  seedMedication?['source'] ?? 'manual_entry',
                             };
 
                             try {
@@ -1312,6 +1433,33 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
     );
   }
 
+  Future<void> _scanPrescriptionForMedications() {
+    if (_isScanningPrescription) return Future<void>.value();
+
+    return MedicationScanFlow.scanPrescriptionForMedications(
+      context: context,
+      onScanningChanged: (isScanning) {
+        if (!mounted) return;
+        setState(() {
+          _isScanningPrescription = isScanning;
+        });
+      },
+      onMedicationSelected: (seedMedication) async {
+        if (!mounted) return;
+        _showMedicationForm(seedMedication: seedMedication);
+      },
+    );
+  }
+
+  Future<void> _showAddMedicationOptions() {
+    return MedicationScanFlow.showAddMedicationOptions(
+      context: context,
+      isScanning: _isScanningPrescription,
+      onScanPrescription: _scanPrescriptionForMedications,
+      onManualEntry: () => _showMedicationForm(),
+    );
+  }
+
   // ==========================================
   // MAIN BUILD METHOD
   // ==========================================
@@ -1321,34 +1469,38 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBFB),
       body: SafeArea(
-        child: _isLoadingHealth
-            ? const Center(
-                child: CircularProgressIndicator(color: Color(0xFF00C874)),
-              )
-            : SingleChildScrollView(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        child: Stack(
+          children: [
+            _isLoadingHealth
+                ? const Center(
+                    child: CircularProgressIndicator(color: Color(0xFF00C874)),
+                  )
+                : SingleChildScrollView(
+                    padding: const EdgeInsets.all(20.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
               if (_healthError != null) ...[
-                _buildHealthErrorCard(),
+                HealthErrorCard(
+                  message: "Health data could not be loaded: $_healthError",
+                ),
                 const SizedBox(height: 16),
               ],
-              // --- Header ---
-              const Text(
-                'Health Metrics',
-                style: TextStyle(
-                  color: Color(0xFF37474F),
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                'Monitor vital signs and lab results',
-                style: TextStyle(color: Color(0xFF90A4AE), fontSize: 14),
-              ),
-              const SizedBox(height: 24),
+                        // --- Header ---
+                        const Text(
+                          'Health Metrics',
+                          style: TextStyle(
+                            color: Color(0xFF37474F),
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Monitor vital signs and lab results',
+                          style: TextStyle(color: Color(0xFF90A4AE), fontSize: 14),
+                        ),
+                        const SizedBox(height: 24),
 
               // --- Log New Measurement Button ---
               InkWell(
@@ -1401,40 +1553,40 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                 childAspectRatio: 1.1,
                 physics: const NeverScrollableScrollPhysics(),
                 children: [
-                  _buildVitalCard(
-                    'Blood Pressure',
-                    _vitalValue('Blood Pressure'),
-                    'mmHg',
-                    Icons.favorite,
-                    Colors.redAccent,
+                  HealthMetricsVitalCard(
+                    title: 'Blood Pressure',
+                    value: _vitalValue('Blood Pressure'),
+                    unit: 'mmHg',
+                    icon: Icons.favorite,
+                    color: Colors.redAccent,
                   ),
-                  _buildVitalCard(
-                    'Weight',
-                    _vitalValue('Weight'),
-                    'kg',
-                    Icons.scale,
-                    Colors.greenAccent,
+                  HealthMetricsVitalCard(
+                    title: 'Weight',
+                    value: _vitalValue('Weight'),
+                    unit: 'kg',
+                    icon: Icons.scale,
+                    color: Colors.greenAccent,
                   ),
-                  _buildVitalCard(
-                    'Height',
-                    _vitalValue('Height'),
-                    'cm',
-                    Icons.straighten,
-                    Colors.blueAccent,
+                  HealthMetricsVitalCard(
+                    title: 'Height',
+                    value: _vitalValue('Height'),
+                    unit: 'cm',
+                    icon: Icons.straighten,
+                    color: Colors.blueAccent,
                   ),
-                  _buildVitalCard(
-                    'BMI',
-                    _vitalValue('BMI'),
-                    'kg/m2',
-                    Icons.analytics_outlined,
-                    Colors.orangeAccent,
+                  HealthMetricsVitalCard(
+                    title: 'BMI',
+                    value: _vitalValue('BMI'),
+                    unit: 'kg/m2',
+                    icon: Icons.analytics_outlined,
+                    color: Colors.orangeAccent,
                   ),
-                  _buildVitalCard(
-                    'Heart Rate',
-                    _vitalValue('Heart Rate'),
-                    'bpm',
-                    Icons.monitor_heart,
-                    Colors.purpleAccent,
+                  HealthMetricsVitalCard(
+                    title: 'Heart Rate',
+                    value: _vitalValue('Heart Rate'),
+                    unit: 'bpm',
+                    icon: Icons.monitor_heart,
+                    color: Colors.purpleAccent,
                   ),
                 ],
               ),
@@ -1453,15 +1605,21 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                     ),
                   ),
                   TextButton.icon(
-                    onPressed: () => _showMedicationForm(),
-                    icon: const Icon(
-                      Icons.add,
-                      size: 18,
-                      color: Color(0xFF9E86FF),
-                    ),
-                    label: const Text(
-                      'Add',
-                      style: TextStyle(
+                    onPressed: _showAddMedicationOptions,
+                    icon: _isScanningPrescription
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(
+                            Icons.add,
+                            size: 18,
+                            color: Color(0xFF9E86FF),
+                          ),
+                    label: Text(
+                      _isScanningPrescription ? 'Scanning...' : 'Add',
+                      style: const TextStyle(
                         color: Color(0xFF9E86FF),
                         fontWeight: FontWeight.bold,
                       ),
@@ -1479,12 +1637,12 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
               ..._medications.asMap().entries.map((entry) {
                 int idx = entry.key;
                 var med = entry.value;
-                return _buildMedicationCard(
-                  idx,
-                  med['name'],
-                  med['dosage'],
-                  med['time'],
-                  med['status'],
+                return HealthMetricsMedicationCard(
+                  name: med['name'],
+                  dosage: med['dosage'],
+                  time: med['time'],
+                  status: med['status'],
+                  onTap: () => _showItemManageSheet(idx, 'Medication'),
                   isPending: med['isPending'],
                 );
               }).toList(),
@@ -1572,23 +1730,54 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
               ..._labResults.asMap().entries.map((entry) {
                 int idx = entry.key;
                 var lab = entry.value;
-                return _buildLabResultCard(
-                  idx,
-                  lab['title'],
-                  '${lab['value']} ${lab['unit']}',
-                  lab['date'],
-                  lab['status'],
-                  lab['range'],
+                return HealthMetricsLabResultCard(
+                  title: lab['title'],
+                  value: '${lab['value']} ${lab['unit']}',
+                  date: lab['date'],
+                  status: lab['status'],
+                  range: lab['range'],
+                  onTap: () => _showItemManageSheet(idx, 'Lab Result'),
                   isWarning: lab['isWarning'],
                 );
               }).toList(),
 
-              const SizedBox(height: 40),
-            ],
-          ),
+                        const SizedBox(height: 40),
+                      ],
+                    ),
+                  ),
+            if (_isScanningPrescription)
+              const MedicationScanProgressOverlay(),
+          ],
         ),
       ),
-      bottomNavigationBar: _buildBottomNavBar(),
+      bottomNavigationBar: HealthMetricsBottomNavBar(
+        currentIndex: _currentIndex,
+        onTap: (index) {
+          if (index == 0) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const DashboardPage()),
+            );
+          } else if (index == 1) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const FoodLogPage()),
+            );
+          } else if (index == 2) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const AnalyticsPage()),
+            );
+          } else if (index == 4) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const ProfilePage()),
+            );
+          } else {
+            setState(() => _currentIndex = index);
+          }
+        },
+      ),
     );
   }
 
@@ -1596,349 +1785,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
   // COMPONENT BUILDERS
   // ==========================================
 
-  Widget _buildHealthErrorCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFF8E1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFFFE082)),
-      ),
-      child: Text(
-        "Health data could not be loaded: $_healthError",
-        style: const TextStyle(
-          color: Color(0xFF78909C),
-          fontSize: 12,
-          height: 1.4,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMedicationCard(
-    int index,
-    String name,
-    String dosage,
-    String time,
-    String status, {
-    bool isPending = false,
-  }) {
-    return InkWell(
-      onTap: () => _showItemManageSheet(index, 'Medication'),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.grey.shade100),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF0F4FF),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Icon(
-                Icons.medication_outlined,
-                color: Color(0xFF5C6BC0),
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF37474F),
-                    ),
-                  ),
-                  Text(
-                    dosage,
-                    style: const TextStyle(
-                      color: Color(0xFF90A4AE),
-                      fontSize: 13,
-                    ),
-                  ),
-                  Text(
-                    time,
-                    style: const TextStyle(
-                      color: Color(0xFFB0BEC5),
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: isPending
-                    ? const Color(0xFFFFF3E0)
-                    : const Color(0xFFE8F5E9),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                status,
-                style: TextStyle(
-                  color: isPending ? Colors.orange : Colors.green,
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLabResultCard(
-    int index,
-    String title,
-    String value,
-    String date,
-    String status,
-    String range, {
-    bool isWarning = false,
-  }) {
-    return InkWell(
-      onTap: () => _showItemManageSheet(index, 'Lab Result'),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.grey.shade100),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: Color(0xFF37474F),
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
-                  style: TextStyle(
-                    color: isWarning
-                        ? Colors.orange.shade800
-                        : const Color(0xFF37474F),
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                Text(
-                  date,
-                  style: const TextStyle(
-                    color: Color(0xFFB0BEC5),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                if (status.trim().isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isWarning
-                          ? const Color(0xFFFFF8E1)
-                          : const Color(0xFFE8F5E9),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      status,
-                      style: TextStyle(
-                        color: isWarning ? Colors.orange : Colors.green,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                if (range.trim().isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    range,
-                    style: const TextStyle(
-                      color: Color(0xFF90A4AE),
-                      fontSize: 11,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildVitalCard(
-    String title,
-    String value,
-    String unit,
-    IconData icon,
-    Color color,
-  ) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Row(
-            children: [
-              Icon(icon, color: color, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                title,
-                style: const TextStyle(
-                  color: Color(0xFF90A4AE),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            value,
-            style: const TextStyle(
-              color: Color(0xFF37474F),
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          if (value != 'Not set')
-            Text(
-              unit,
-              style: const TextStyle(color: Color(0xFFB0BEC5), fontSize: 12),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFormLabel(String label) {
-    return Text(
-      label,
-      style: const TextStyle(
-        fontWeight: FontWeight.bold,
-        color: Color(0xFF37474F),
-        fontSize: 15,
-      ),
-    );
-  }
-
-  Widget _buildTextFormField(
-    TextEditingController controller,
-    String placeholder,
-  ) {
-    return TextFormField(
-      controller: controller,
-      decoration: InputDecoration(
-        hintText: placeholder,
-        hintStyle: const TextStyle(color: Color(0xFFB0BEC5), fontSize: 15),
-        filled: true,
-        fillColor: const Color(0xFFF5F6FA),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 14,
-        ),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide.none,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDatePickerFormField(
-    BuildContext dialogContext,
-    TextEditingController controller,
-    String placeholder,
-  ) {
-    return GestureDetector(
-      onTap: () async {
-        final picked = await showDatePicker(
-          context: dialogContext,
-          initialDate: DateTime.now(),
-          firstDate: DateTime(2000),
-          lastDate: DateTime.now(),
-          builder: (context, child) {
-            return Theme(
-              data: Theme.of(context).copyWith(
-                colorScheme: const ColorScheme.light(
-                  primary: Color(0xFF00B074),
-                  onPrimary: Colors.white,
-                  onSurface: Color(0xFF37474F),
-                ),
-              ),
-              child: child!,
-            );
-          },
-        );
-
-        if (picked != null) {
-          controller.text =
-              "${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}";
-        }
-      },
-      child: AbsorbPointer(
-        child: TextFormField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: placeholder,
-            hintStyle: const TextStyle(
-              color: Color(0xFFB0BEC5),
-              fontSize: 15,
-            ),
-            suffixIcon: const Icon(
-              Icons.calendar_today_outlined,
-              color: Color(0xFF90A4AE),
-              size: 18,
-            ),
-            filled: true,
-            fillColor: const Color(0xFFF5F6FA),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 14,
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide.none,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 
   InputDecoration _dropdownDecoration() {
     return InputDecoration(
@@ -1956,74 +1802,4 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
     );
   }
 
-  Widget _buildBottomNavBar() {
-    return Container(
-      decoration: BoxDecoration(
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, -5),
-          ),
-        ],
-      ),
-      child: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) {
-          if (index == 0)
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const DashboardPage()),
-            );
-          else if (index == 1)
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const FoodLogPage()),
-            );
-          else if (index == 2)
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const AnalyticsPage()),
-            );
-          else if (index == 4) // Added this logic to go to the Profile screen
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const ProfilePage()),
-            );
-          else
-            setState(() => _currentIndex = index);
-        },
-        type: BottomNavigationBarType.fixed,
-        backgroundColor: Colors.white,
-        selectedItemColor: const Color(0xFF00C874),
-        unselectedItemColor: const Color(0xFFB0BEC5),
-        selectedFontSize: 11,
-        unselectedFontSize: 11,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
-            activeIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.restaurant_menu),
-            label: 'Food',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.bar_chart),
-            label: 'Analytics',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.favorite_border),
-            activeIcon: Icon(Icons.favorite),
-            label: 'Health',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            label: 'Profile',
-          ),
-        ],
-      ),
-    );
-  }
 }

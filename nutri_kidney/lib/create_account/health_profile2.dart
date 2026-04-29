@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:nutri_kidney/services/api_service.dart';
 import 'health_profile3.dart'; // IMPORT ADDED HERE
 
@@ -10,17 +12,46 @@ class HealthProfile2Page extends StatefulWidget {
 }
 
 class _HealthProfile2PageState extends State<HealthProfile2Page> {
+  static const List<String> _allergyOptions = [
+    'No known allergies',
+    'Not sure',
+    'Milk',
+    'Egg',
+    'Peanut',
+    'Tree nuts',
+    'Soy',
+    'Wheat / Gluten',
+    'Fish',
+    'Shellfish',
+    'Sesame',
+    'Other',
+  ];
+
   // State variables for the selections
   String? _dialysisType;
   String? _treatmentFrequency;
   List<Map<String, dynamic>> _medications = [];
+  final ImagePicker _imagePicker = ImagePicker();
+  bool _isScanningPrescription = false;
+  final Set<String> _selectedAllergies = {};
 
   final TextEditingController _allergiesController = TextEditingController();
 
-  void _showAddMedicationDialog() {
-    final nameController = TextEditingController();
-    final dosageController = TextEditingController();
-    final instructionsController = TextEditingController();
+  void _showAddMedicationDialog({Map<String, dynamic>? seedMedication}) {
+    final nameController = TextEditingController(
+      text:
+          seedMedication?['name']?.toString() ??
+          seedMedication?['medicineName']?.toString() ??
+          seedMedication?['medicationName']?.toString() ??
+          seedMedication?['medication_name']?.toString() ??
+          '',
+    );
+    final dosageController = TextEditingController(
+      text: seedMedication?['dosage']?.toString() ?? '',
+    );
+    final instructionsController = TextEditingController(
+      text: seedMedication?['instructions']?.toString() ?? '',
+    );
     TimeOfDay selectedTime = const TimeOfDay(hour: 8, minute: 0);
     String frequencyType = 'times_per_day';
     int frequencyValue = 1;
@@ -379,6 +410,8 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                                   "medicationName": medicationName,
                                   "medication_name": medicationName,
                                   "dosage": dosageController.text.trim(),
+                                  if (seedMedication?['form'] != null)
+                                    "form": seedMedication?['form'],
                                   "instructions": instructionsController.text.trim(),
                                   "frequency_type": frequencyType,
                                   "frequency_value": frequencyValue,
@@ -390,6 +423,17 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                                   "time": displayTimes,
                                   "schedule": displayTimes,
                                   "display_times": displayTimes,
+                                  if (seedMedication?['duration'] != null)
+                                    "duration": seedMedication?['duration'],
+                                  if (seedMedication?['rxcui'] != null)
+                                    "rxcui": seedMedication?['rxcui'],
+                                  if (seedMedication?['rawOcrText'] != null)
+                                    "rawOcrText": seedMedication?['rawOcrText'],
+                                  if (seedMedication?['confirmedByUser'] != null)
+                                    "confirmedByUser":
+                                        seedMedication?['confirmedByUser'],
+                                  "source":
+                                      seedMedication?['source'] ?? 'manual_entry',
                                   "status": "Pending",
                                 });
                               });
@@ -520,6 +564,545 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
       if (frequency.toString().isNotEmpty) frequency,
       if (times.toString().isNotEmpty) times,
     ].join(' - ');
+  }
+
+  List<String> _selectedAllergyPayload() {
+    final selected = _selectedAllergies.toList(growable: true);
+    final otherText = _allergiesController.text.trim();
+    if (_selectedAllergies.contains('No known allergies')) {
+      return ['No known allergies'];
+    }
+    if (_selectedAllergies.contains('Other') && otherText.isNotEmpty) {
+      selected.add(otherText);
+    }
+    return selected;
+  }
+
+  void _toggleAllergyOption(String option) {
+    setState(() {
+      if (option == 'No known allergies') {
+        if (_selectedAllergies.contains(option)) {
+          _selectedAllergies.remove(option);
+        } else {
+          _selectedAllergies
+            ..clear()
+            ..add(option);
+          _allergiesController.clear();
+        }
+        return;
+      }
+
+      _selectedAllergies.remove('No known allergies');
+
+      if (_selectedAllergies.contains(option)) {
+        _selectedAllergies.remove(option);
+        if (option == 'Other') {
+          _allergiesController.clear();
+        }
+      } else {
+        _selectedAllergies.add(option);
+      }
+    });
+  }
+
+  Widget _buildAllergySelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _allergyOptions.map((option) {
+            final isSelected = _selectedAllergies.contains(option);
+            return FilterChip(
+              selected: isSelected,
+              onSelected: (_) => _toggleAllergyOption(option),
+              label: Text(option),
+              selectedColor: const Color(0xFFE0F2F1),
+              checkmarkColor: const Color(0xFF00796B),
+              labelStyle: TextStyle(
+                color: isSelected
+                    ? const Color(0xFF00796B)
+                    : const Color(0xFF37474F),
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+              ),
+              side: BorderSide(
+                color: isSelected
+                    ? const Color(0xFF80CBC4)
+                    : const Color(0xFFD5E3E0),
+              ),
+              backgroundColor: Colors.white,
+            );
+          }).toList(),
+        ),
+        if (_selectedAllergies.contains('Other')) ...[
+          const SizedBox(height: 12),
+          _buildLargeTextField(
+            label: "Other allergy details",
+            hint: "Enter other allergies",
+            controller: _allergiesController,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _showAddMedicationOptions() {
+    return showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (bottomSheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Add Medication',
+                  style: TextStyle(
+                    color: Color(0xFF37474F),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Choose how you want to add medication details.',
+                  style: TextStyle(
+                    color: Color(0xFF78909C),
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: const Icon(
+                    Icons.document_scanner_outlined,
+                    color: Color(0xFF00BFA5),
+                  ),
+                  title: const Text('Scan Prescription'),
+                  subtitle: const Text('Use OCR to extract medication details'),
+                  onTap: _isScanningPrescription
+                      ? null
+                      : () {
+                          Navigator.pop(bottomSheetContext);
+                          _scanPrescriptionForMedications();
+                        },
+                ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.edit_note_outlined,
+                    color: Color(0xFF9E86FF),
+                  ),
+                  title: const Text('Manual Entry'),
+                  subtitle: const Text('Type medication details yourself'),
+                  onTap: () {
+                    Navigator.pop(bottomSheetContext);
+                    _showAddMedicationDialog();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _scanPrescriptionForMedications() async {
+    if (_isScanningPrescription) return;
+
+    final source = await showDialog<ImageSource>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Scan Prescription',
+                style: TextStyle(
+                  color: Color(0xFF37474F),
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'For better accuracy, it is recommended to scan a computerized prescription.',
+                style: TextStyle(
+                  color: Color(0xFF78909C),
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(
+                  Icons.camera_alt_outlined,
+                  color: Color(0xFF00BFA5),
+                ),
+                title: const Text('Take Photo'),
+                onTap: () => Navigator.pop(dialogContext, ImageSource.camera),
+              ),
+              ListTile(
+                leading: const Icon(
+                  Icons.upload_file_outlined,
+                  color: Color(0xFF00BFA5),
+                ),
+                title: const Text('Upload File'),
+                onTap: () => Navigator.pop(dialogContext, ImageSource.gallery),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (source == null) return;
+
+    XFile? pickedImage;
+    try {
+      pickedImage = await _imagePicker.pickImage(
+        source: source,
+        imageQuality: 90,
+        maxWidth: 1800,
+      );
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      final sourceLabel = source == ImageSource.camera ? 'camera' : 'gallery';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error.code.toLowerCase().contains('cancel')
+                ? 'Prescription scan canceled.'
+                : 'Unable to open the $sourceLabel.',
+          ),
+        ),
+      );
+      return;
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to choose prescription image.')),
+      );
+      return;
+    }
+
+    if (pickedImage == null) return;
+
+    setState(() {
+      _isScanningPrescription = true;
+    });
+
+    try {
+      final response = await ApiService.extractPrescription(
+        imagePath: pickedImage.path,
+        contentType: _contentTypeForImage(pickedImage.path),
+      );
+
+      if (!mounted) return;
+      if (response["success"] != true) {
+        throw Exception(response["error"] ?? "Prescription scan failed");
+      }
+
+      final medications = response["medications"] is List
+          ? (response["medications"] as List)
+                .whereType<Map>()
+                .map((item) => Map<String, dynamic>.from(item))
+                .toList(growable: false)
+          : <Map<String, dynamic>>[];
+
+      await _showPrescriptionScanResultSheet(
+        medications: medications,
+        extractedText: response["extractedText"]?.toString() ?? "",
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to scan prescription: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isScanningPrescription = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _showPrescriptionScanResultSheet({
+    required List<Map<String, dynamic>> medications,
+    required String extractedText,
+  }) {
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (bottomSheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Prescription Scan Results',
+                  style: TextStyle(
+                    color: Color(0xFF37474F),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  medications.isEmpty
+                      ? 'No medications could be confidently extracted.'
+                      : 'Tap a result to prefill the medication form. Medication name verification uses the RxNorm database.',
+                  style: const TextStyle(
+                    color: Color(0xFF78909C),
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF8E1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFFE082)),
+                  ),
+                  child: const Text(
+                    'Medication scanning does not guarantee 100% accuracy. Please double-check the medicine name, dosage, and instructions before inputting or saving.',
+                    style: TextStyle(
+                      color: Color(0xFF7A5C00),
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFC8E6C9)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(
+                        Icons.storage_rounded,
+                        size: 16,
+                        color: Color(0xFF2E7D32),
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Prescription scan results use the RxNorm database for medication verification.',
+                          style: TextStyle(
+                            color: Color(0xFF2E7D32),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (medications.isEmpty)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FBFA),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFE0ECE8)),
+                    ),
+                    child: Text(
+                      extractedText.isEmpty ? 'No OCR text found.' : extractedText,
+                      style: const TextStyle(
+                        color: Color(0xFF37474F),
+                        fontSize: 12,
+                      ),
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: medications.map((medication) {
+                          final name = medication["medicineName"]
+                                              ?.toString()
+                                              .trim()
+                                              .isNotEmpty ==
+                                          true
+                              ? medication["medicineName"].toString().trim()
+                              : (medication["name"]?.toString().trim().isNotEmpty ==
+                                      true
+                                  ? medication["name"].toString().trim()
+                                  : "Medication");
+                          final dosage =
+                              medication["dosage"]?.toString().trim() ?? "";
+                          final frequency =
+                              medication["frequency"]?.toString().trim() ?? "";
+                          final form =
+                              medication["form"]?.toString().trim() ?? "";
+                          final duration =
+                              medication["duration"]?.toString().trim() ?? "";
+                          final instructions =
+                              medication["instructions"]?.toString().trim() ?? "";
+                          final subtitle = [
+                            if (dosage.isNotEmpty) dosage,
+                            if (form.isNotEmpty) form,
+                            if (frequency.isNotEmpty) frequency,
+                            if (duration.isNotEmpty) duration,
+                            if (instructions.isNotEmpty) instructions,
+                          ].join(' - ');
+
+                          return InkWell(
+                            onTap: () async {
+                              final selectedMedication = {
+                                "name": name,
+                                "medicineName": name,
+                                "medicationName": name,
+                                "medication_name": name,
+                                "dosage": dosage,
+                                "form": form,
+                                "duration": duration,
+                                "instructions": instructions,
+                                "frequency": frequency,
+                                "rxcui": medication["rxcui"]?.toString(),
+                                "confirmedByUser": true,
+                                "rawOcrText": extractedText.isNotEmpty
+                                    ? extractedText
+                                    : (medication["rawLine"]?.toString() ?? ""),
+                                "source": medication["verified"] == true
+                                    ? "ocr_rxnorm"
+                                    : "ocr_unverified",
+                              };
+                              Navigator.pop(bottomSheetContext);
+                              await Future<void>.delayed(
+                                const Duration(milliseconds: 150),
+                              );
+                              if (!mounted) return;
+                              _showAddMedicationDialog(
+                                seedMedication: selectedMedication,
+                              );
+                            },
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(bottom: 10),
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.grey.shade200),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: const TextStyle(
+                                      color: Color(0xFF37474F),
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  if (subtitle.isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      subtitle,
+                                      style: const TextStyle(
+                                        color: Color(0xFF78909C),
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                  const SizedBox(height: 8),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 5,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFE8F5E9),
+                                          borderRadius: BorderRadius.circular(999),
+                                        ),
+                                        child: const Text(
+                                          'Database: RxNorm',
+                                          style: TextStyle(
+                                            color: Color(0xFF2E7D32),
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                      if (medication["verified"] == true)
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 5,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFE3F2FD),
+                                            borderRadius: BorderRadius.circular(999),
+                                          ),
+                                          child: const Text(
+                                            'Verified',
+                                            style: TextStyle(
+                                              color: Color(0xFF1565C0),
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _contentTypeForImage(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.heic') || lower.endsWith('.heif')) {
+      return 'image/heic';
+    }
+    return 'image/jpeg';
   }
 
   Widget _buildTextField({required String label, required String hint, required TextEditingController controller}) {
@@ -688,9 +1271,19 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                     _buildMedicationList(),
                     const SizedBox(height: 8),
                     OutlinedButton.icon(
-                      onPressed: _showAddMedicationDialog,
-                      icon: const Icon(Icons.add),
-                      label: const Text("Add Medication"),
+                      onPressed: _showAddMedicationOptions,
+                      icon: _isScanningPrescription
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.add),
+                      label: Text(
+                        _isScanningPrescription
+                            ? "Scanning..."
+                            : "Add Medication",
+                      ),
                       style: OutlinedButton.styleFrom(
                         minimumSize: const Size(double.infinity, 45),
                         side: const BorderSide(color: Color(0xFF4DB6AC)),
@@ -701,11 +1294,7 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                     const SizedBox(height: 16),
 
                     // Allergies (Large Box)
-                    _buildLargeTextField(
-                      label: "Allergies (if any)",
-                      hint: "List any allergies or food restrictions",
-                      controller: _allergiesController,
-                    ),
+                    _buildAllergySelector(),
                     const SizedBox(height: 40),
 
                     // --- Side-by-Side Buttons ---
@@ -778,7 +1367,7 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                                       "treatmentFrequency": _treatmentFrequency,
                                       "medications": _medications,
                                       "medicationsSummary": medicationSummaries.join('; '),
-                                      "allergies": _allergiesController.text,
+                                      "allergies": _selectedAllergyPayload(),
                                     });
 
                                     Navigator.push(
@@ -816,6 +1405,7 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                 ),
               ),
             ),
+            if (_isScanningPrescription) _buildPrescriptionScanOverlay(),
           ],
         ),
       ),
@@ -833,6 +1423,72 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
           color: Color(0xFF9E86FF),
           fontWeight: FontWeight.bold,
           fontSize: 11,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPrescriptionScanOverlay() {
+    return Positioned.fill(
+      child: AbsorbPointer(
+        child: Container(
+          color: Colors.black.withOpacity(0.28),
+          alignment: Alignment.center,
+          padding: const EdgeInsets.all(24),
+          child: Container(
+            width: double.infinity,
+            constraints: const BoxConstraints(maxWidth: 360),
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.08),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text(
+                  'Scanning Prescription',
+                  style: TextStyle(
+                    color: Color(0xFF37474F),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'We are extracting medication details from the image. This can take a few seconds.',
+                  style: TextStyle(
+                    color: Color(0xFF78909C),
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+                SizedBox(height: 16),
+                LinearProgressIndicator(
+                  minHeight: 8,
+                  backgroundColor: Color(0xFFE8F5E9),
+                  color: Color(0xFF00B074),
+                  borderRadius: BorderRadius.all(Radius.circular(999)),
+                ),
+                SizedBox(height: 12),
+                Text(
+                  'Uploading image and running OCR...',
+                  style: TextStyle(
+                    color: Color(0xFF90A4AE),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

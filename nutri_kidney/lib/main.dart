@@ -4,12 +4,14 @@ import 'firebase_options.dart';
 import 'login/login.dart';
 import 'main/dashboard.dart';
 import 'services/auth_service.dart';
+import 'services/push_notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  await PushNotificationService.initialize();
   runApp(const NutriKidneyApp());
 }
 
@@ -34,6 +36,7 @@ class _NutriKidneyAppState extends State<NutriKidneyApp> {
     final hasRememberedSession = await AuthService.hasRememberedSession();
     
     if (hasRememberedSession) {
+      await PushNotificationService.syncTokenIfPossible();
       // User has a valid remembered session - take them to dashboard
       return const DashboardPage();
     } else {

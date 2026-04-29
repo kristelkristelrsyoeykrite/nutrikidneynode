@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -8,9 +6,8 @@ import 'package:nutri_kidney/services/auth_service.dart';
 import 'package:nutri_kidney/utils/app_logger.dart';
 import 'package:nutri_kidney/models/user_status.dart';
 import 'health_profile1.dart';
-import 'otp_verification_dialog.dart';
 import 'account_success_screen.dart';
-import '../main/dashboard.dart';
+import 'caregiver_child_age_screen.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -31,18 +28,6 @@ class _RegisterPageState extends State<RegisterPage> {
   // Role selection (NEW)
   String? _selectedRole;
 
-  // Phone verification state
-  String? _verificationId;
-  bool _showPhoneInput = false;
-  bool _showOtpInput =   false;
-  bool _isPhoneVerified = false;
-  String _otpErrorMessage = '';
-  // Country code selection for phone entry (default to +63)
-  String _selectedCountryCode = '+63';
-  final List<String> _countryCodes = ['+1', '+63', '+44', '+61', '+91'];
-  
-  final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _otpController = TextEditingController();
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
   // Controllers to track text input in real-time
@@ -50,7 +35,12 @@ class _RegisterPageState extends State<RegisterPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
-  final TextEditingController _phoneNumberController = TextEditingController();
+
+  String? _normalizedRole(String? role) {
+    if (role == null) return null;
+    if (role == 'parent_caregiver') return 'caregiver';
+    return role;
+  }
 
   @override
   void initState() {
@@ -60,12 +50,12 @@ class _RegisterPageState extends State<RegisterPage> {
     // If signup data was prefilled (e.g., from Google), populate the fields
     final prefill = ApiService.signupData;
     if (prefill.isNotEmpty) {
-      final contact = (prefill['email'] ?? prefill['phoneNumber'])?.toString() ?? '';
+      final contact = prefill['email']?.toString() ?? '';
       _nameController.text = (prefill['fullName'] ?? '').toString();
       _emailController.text = contact;
     }
 
-    _selectedRole = ApiService.userRole;
+    _selectedRole = _normalizedRole(ApiService.userRole);
 
     // Listeners rebuild the UI whenever a user types
     _nameController.addListener(() {
@@ -75,10 +65,6 @@ class _RegisterPageState extends State<RegisterPage> {
       setState(() {});
     });
 
-    // If the user types digits, we want the UI to update to show country code
-    _emailController.addListener(() {
-      setState(() {});
-    });
     _passwordController.addListener(() {
       setState(() {});
     });
@@ -93,8 +79,6 @@ class _RegisterPageState extends State<RegisterPage> {
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
-    _phoneController.dispose();
-    _otpController.dispose();
     _privacyTapRecognizer.dispose();
     super.dispose();
   }
@@ -105,32 +89,6 @@ class _RegisterPageState extends State<RegisterPage> {
     // Basic email format check
     final email = input.trim();
     return RegExp(r"^[\w\.\-]+@([\w\-]+\.)+[a-zA-Z]{2,}").hasMatch(email);
-  }
-
-  bool _isPhoneFormat(String input) {
-    // Normalize common separators then check digits with optional leading +
-    final normalized = input.replaceAll(RegExp(r"[\s\-\(\)]"), '');
-    return RegExp(r'^\+?\d{7,15}$').hasMatch(normalized);
-  }
-
-  bool _isProbablyPhone(String input) {
-    final s = input.trim();
-    if (s.isEmpty) return false;
-    if (s.contains('@')) return false; // clearly an email
-    // If it contains only digits, spaces, +, parentheses or dashes, assume phone-ish
-    return RegExp(r'^[\d\s\+\-\(\)]+$').hasMatch(s);
-  }
-
-  String _normalizePhone(String input) {
-    var n = input.replaceAll(RegExp(r"[\s\-\(\)]"), '');
-    if (n.startsWith('+')) return n;
-    // remove leading zeros
-    n = n.replaceFirst(RegExp(r'^0+'), '');
-    return '$_selectedCountryCode$n';
-  }
-
-  bool _isContactValid(String input) {
-    return _isEmailFormat(input) || _isPhoneFormat(input);
   }
 
   bool _isPasswordValid(String password) {
@@ -144,62 +102,18 @@ class _RegisterPageState extends State<RegisterPage> {
     return true;
   }
 
-  String _getOtpErrorMessage(Object error) {
-    if (error is FirebaseAuthException) {
-      debugPrint(
-        'DEBUG OTP error code=${error.code} message=${error.message}',
-      );
-      final code = error.code.toLowerCase();
-      final message = (error.message ?? '').toLowerCase();
-      if (code == 'invalid-verification-code' ||
-          code == 'invalid-credential' ||
-          message.contains('invalid verification code') ||
-          message.contains('verification code is invalid') ||
-          message.contains('invalid code') ||
-          message.contains('invalid otp') ||
-          message.contains('invalid sms code')) {
-        return 'Wrong OTP. Please try again.';
-      }
-      if (code == 'session-expired' ||
-          message.contains('code has expired') ||
-          message.contains('session expired') ||
-          message.contains('sms code has expired')) {
-        return 'OTP expired. Please request a new code.';
-      }
-      return error.message ?? 'OTP verification failed. Please try again.';
-    }
-    final text = error.toString().toLowerCase();
-    debugPrint('DEBUG OTP error raw=$error');
-    if (text.contains('invalid-verification-code') ||
-        text.contains('invalid verification code') ||
-        text.contains('verification code is invalid') ||
-        text.contains('invalid credential') ||
-        text.contains('invalid code') ||
-        text.contains('invalid otp') ||
-        text.contains('invalid sms code')) {
-      return 'Wrong OTP. Please try again.';
-    }
-    if (text.contains('session-expired') ||
-        text.contains('code has expired') ||
-        text.contains('session expired') ||
-        text.contains('sms code has expired')) {
-      return 'OTP expired. Please request a new code.';
-    }
-    return 'OTP verification failed. Please try again.';
-  }
-
   // --- Updated Validation Logic ---
- bool get _isFormValid {
-  final contact = _emailController.text.trim();
-  final password = _passwordController.text;
-  final confirmPassword = _confirmPasswordController.text;
+  bool get _isFormValid {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    final confirmPassword = _confirmPasswordController.text;
 
-  return _nameController.text.trim().isNotEmpty &&
-    _isContactValid(contact) &&
-    _isPasswordValid(password) &&
-    password == confirmPassword &&
-    _hasAgreedToPrivacy;
-}
+    return _nameController.text.trim().isNotEmpty &&
+        _isEmailFormat(email) &&
+        _isPasswordValid(password) &&
+        password == confirmPassword &&
+        _hasAgreedToPrivacy;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -358,7 +272,7 @@ class _RegisterPageState extends State<RegisterPage> {
                         value: _selectedRole,
                         hint: const Text("Select your role"),
                         items: const [
-                          DropdownMenuItem(value: "parent_caregiver", child: Text("Parent/Caregiver")),
+                          DropdownMenuItem(value: "caregiver", child: Text("Parent/Caregiver")),
                           DropdownMenuItem(value: "adolescent", child: Text("Adolescent (13-18)")),
                         ]
                             .map<DropdownMenuItem<String>>((DropdownMenuItem<String> value) {
@@ -366,10 +280,11 @@ class _RegisterPageState extends State<RegisterPage> {
                         }).toList(),
                         onChanged: (String? newValue) {
                           setState(() {
-                            _selectedRole = newValue;
+                            _selectedRole = _normalizedRole(newValue);
                           });
-                          if (newValue != null) {
-                            ApiService.setUserRole(newValue);
+                          final normalizedRole = _normalizedRole(newValue);
+                          if (normalizedRole != null) {
+                            ApiService.setUserRole(normalizedRole);
                           }
                         },
                         underline: Container(),
@@ -510,132 +425,6 @@ class _RegisterPageState extends State<RegisterPage> {
     );
   }
 
-  // Phone Verification Methods
-  Future<void> _sendPhoneOtp(String phoneNumber) async {
-    if (phoneNumber.isEmpty) {
-      _showErrorDialog('Phone Number Required', 'Please enter your phone number');
-      return;
-    }
-
-    // Add country code if not present
-    if (!phoneNumber.startsWith('+')) {
-      phoneNumber = '$_selectedCountryCode$phoneNumber';
-    }
-
-    // Prepare multiple normalized variants to account for backend storage
-    final normalizedPlus = _normalizePhone(phoneNumber); // usually starts with '+'
-    final normalizedNoPlus = normalizedPlus.startsWith('+') ? normalizedPlus.substring(1) : normalizedPlus;
-
-    // Also try stripping the selected country code if present (e.g. +63)
-    String normalizedWithoutCountry = normalizedNoPlus;
-    final codeNoPlus = _selectedCountryCode.startsWith('+') ? _selectedCountryCode.substring(1) : _selectedCountryCode;
-    if (normalizedNoPlus.startsWith(codeNoPlus)) {
-      normalizedWithoutCountry = normalizedNoPlus.substring(codeNoPlus.length);
-    }
-
-    final variants = <String>{normalizedPlus, normalizedNoPlus, normalizedWithoutCountry}.toList();
-
-    // Check backend whether this phone is already registered using variants.
-    try {
-      for (final v in variants) {
-        debugPrint('DEBUG: Checking phone variant against backend: $v');
-        final checkResp = await ApiService.checkUserExists({
-          "phoneNumber": v,
-        });
-        debugPrint('DEBUG: check-user response for $v -> $checkResp');
-
-        if (checkResp["success"] == true && checkResp["exists"] == true) {
-          // Show a clear phone-exists dialog and stop the OTP flow.
-          await _showPhoneExistsDialog();
-          return;
-        }
-      }
-    } catch (e) {
-      // If the backend check fails, do NOT allow proceeding to OTP by default.
-      // This ensures we never send an OTP before confirming the number isn't already used.
-      debugPrint('ERROR: checkUserExists failed: $e');
-      if (!mounted) return;
-      _showErrorDialog('Unable to verify number', 'Could not confirm whether this phone number is already registered. Please try again later.');
-      return;
-    }
-
-    try {
-      await _auth.verifyPhoneNumber(
-        phoneNumber: phoneNumber,
-        timeout: const Duration(seconds: 60),
-        verificationCompleted: (PhoneAuthCredential credential) async {
-          // Auto-sign in when OTP is auto-retrieved
-          setState(() => _isPhoneVerified = true);
-          // Close the dialog if it's open, then proceed
-          if (mounted) {
-            try {
-              Navigator.pop(context);
-            } catch (_) {}
-          }
-          _proceedWithSignup();
-        },
-        verificationFailed: (FirebaseAuthException e) {
-          _showErrorDialog('Phone Verification Failed', e.message ?? 'Unknown error');
-        },
-        codeSent: (String verificationId, int? resendToken) {
-          setState(() {
-            _verificationId = verificationId;
-            _showOtpInput = true;
-            _showPhoneInput = false;
-          });
-          // Close current dialog and reopen so the dialog's StatefulBuilder
-          // can display the OTP input UI (dialog state is local to the builder).
-          if (mounted) {
-            try {
-              Navigator.pop(context);
-            } catch (_) {}
-            _showPhoneVerificationDialog();
-          }
-        },
-        codeAutoRetrievalTimeout: (String verificationId) {
-          setState(() {
-            _verificationId = verificationId;
-          });
-        },
-      );
-    } catch (e) {
-      _showErrorDialog('Phone Sign-In Failed', e.toString());
-    }
-  }
-
-  Future<void> _showPhoneVerifiedThenGoHome() async {
-    if (!mounted) return;
-
-    // Show a confirmation dialog that the phone is verified
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext ctx) {
-        return AlertDialog(
-          title: const Text('Phone Verified'),
-          content: const Text('Your phone number has been successfully verified.'),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(ctx).pop();
-              },
-              child: const Text('Continue'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (!mounted) return;
-
-    // Navigate to the dashboard and remove all previous routes.
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (context) => const DashboardPage()),
-      (route) => false,
-    );
-  }
-
   void _proceedWithSignup() async {
     // NEW FLOW: All Firebase operations go through backend
     AppLogger.info(
@@ -647,62 +436,52 @@ class _RegisterPageState extends State<RegisterPage> {
       final fullName = _nameController.text.trim();
       final contact = _emailController.text.trim();
       final password = _passwordController.text;
-      final bool contactIsEmail = _isEmailFormat(contact);
 
-      String? emailToSend;
-      String? phoneToSend;
-
-      if (contactIsEmail) {
-        emailToSend = contact;
-      } else {
-        phoneToSend = _normalizePhone(contact);
-      }
+      final String emailToSend = contact;
 
       // Save signup data locally for later use
       final signupPayload = {
         "fullName": fullName,
         "email": emailToSend,
         "password": password,
-        "phoneNumber": phoneToSend,
-        "userRole": _selectedRole,
+        "phoneNumber": null,
+        "userRole": _normalizedRole(_selectedRole),
       };
       ApiService.setSignupData(signupPayload);
 
       String? userId;
 
-      if (contactIsEmail) {
-        AppLogger.info(
-          'Creating email user via backend: $emailToSend',
-          tag: LogTag.signup,
-        );
+      AppLogger.info(
+        'Creating email user via backend: $emailToSend',
+        tag: LogTag.signup,
+      );
 
-        final createResponse = await ApiService.createUser(
-          fullName: fullName,
-          email: emailToSend,
-          phoneNumber: phoneToSend,
-          password: password,
-        );
+      final createResponse = await ApiService.createUser(
+        fullName: fullName,
+        email: emailToSend,
+        phoneNumber: null,
+        password: password,
+        userRole: _normalizedRole(_selectedRole),
+      );
 
-        if (createResponse['success'] != true) {
-          throw Exception(createResponse['error'] ?? 'Failed to create user');
-        }
-
-        userId = createResponse['uid'];
-        if (userId == null) {
-          throw Exception('Failed to get user ID after creation');
-        }
-
-        ApiService.setUserId(userId);
-        ApiService.signupData['uid'] = userId;
-
-        AppLogger.success(
-          'Email user created via backend: $userId',
-          tag: LogTag.signup,
-        );
+      if (createResponse['success'] != true) {
+        throw Exception(createResponse['error'] ?? 'Failed to create user');
       }
 
-      // Step 2: Send verification based on contact type
-      if (contactIsEmail) {
+      userId = createResponse['uid'];
+      if (userId == null) {
+        throw Exception('Failed to get user ID after creation');
+      }
+
+      ApiService.setUserId(userId);
+      ApiService.signupData['uid'] = userId;
+
+      AppLogger.success(
+        'Email user created via backend: $userId',
+        tag: LogTag.signup,
+      );
+
+      // Step 2: Send email verification
         AppLogger.info(
           'Sending email verification request to backend for: $emailToSend',
           tag: LogTag.signup,
@@ -710,7 +489,7 @@ class _RegisterPageState extends State<RegisterPage> {
         
         try {
           await _sendFirebaseEmailVerification(
-            email: emailToSend!,
+            email: emailToSend,
             password: password,
           );
         } catch (e) {
@@ -728,7 +507,7 @@ class _RegisterPageState extends State<RegisterPage> {
           try {
             verified = await _showEmailVerificationDialog(
               userId: userId!,
-              email: emailToSend!,
+              email: emailToSend,
             );
           } catch (e) {
             AppLogger.error(
@@ -762,148 +541,6 @@ class _RegisterPageState extends State<RegisterPage> {
             return;
           }
         }
-      } else {
-        // Phone verification happens before account creation.
-        String? verificationId;
-        final verificationIdCompleter = Completer<String>();
-        await _auth.verifyPhoneNumber(
-          phoneNumber: phoneToSend!,
-          timeout: const Duration(seconds: 60),
-          verificationCompleted: (PhoneAuthCredential credential) async {
-            AppLogger.success(
-              'Phone verification auto-completed via Firebase',
-              tag: LogTag.signup,
-            );
-          },
-          verificationFailed: (FirebaseAuthException e) {
-            AppLogger.error(
-              'Phone verification failed',
-              tag: LogTag.signup,
-              error: e,
-            );
-            if (mounted) {
-              _showErrorDialog('Phone Verification Failed', e.message ?? 'Unknown error');
-            }
-            if (!verificationIdCompleter.isCompleted) {
-              verificationIdCompleter.completeError(
-                Exception(e.message ?? 'Phone verification failed'),
-              );
-            }
-          },
-          codeSent: (String verificationIdFromFirebase, int? resendToken) {
-            verificationId = verificationIdFromFirebase;
-            AppLogger.info(
-              'OTP sent to phone via Firebase: $phoneToSend',
-              tag: LogTag.signup,
-            );
-            if (!verificationIdCompleter.isCompleted) {
-              verificationIdCompleter.complete(verificationIdFromFirebase);
-            }
-          },
-          codeAutoRetrievalTimeout: (String verificationId) {
-            AppLogger.warning(
-              'OTP auto-retrieval timeout',
-              tag: LogTag.signup,
-            );
-          },
-        );
-
-        verificationId ??= await verificationIdCompleter.future;
-
-        // Show OTP dialog for phone verification
-        if (mounted) {
-          bool? verified;
-          try {
-            verified = await showDialog<bool>(
-              context: context,
-              barrierDismissible: false,
-              builder: (context) => OTPVerificationDialog(
-                verificationId: verificationId!,
-                contact: phoneToSend!,
-                isPhoneVerification: true,
-                onOtpSubmit: (otp) async {
-                  try {
-                    final PhoneAuthCredential credential = PhoneAuthProvider.credential(
-                      verificationId: verificationId!,
-                      smsCode: otp,
-                    );
-                    final userCredential = await _auth.signInWithCredential(
-                      credential,
-                    );
-                    final verifiedUid = userCredential.user?.uid;
-                    if (verifiedUid == null || verifiedUid.isEmpty) {
-                      throw Exception('Failed to get verified phone user ID');
-                    }
-
-                    ApiService.setUserId(verifiedUid);
-                    ApiService.signupData['uid'] = verifiedUid;
-
-                    final createPhoneResponse =
-                        await ApiService.verifyPhoneAndCreateProfile(
-                      ApiService.signupData,
-                    );
-                    if (createPhoneResponse['success'] != true) {
-                      throw Exception(
-                        createPhoneResponse['error'] ??
-                            'Failed to create phone account',
-                      );
-                    }
-
-                    userId = createPhoneResponse['userId'] ??
-                        createPhoneResponse['uid'] ??
-                        verifiedUid;
-                    
-                    AppLogger.success(
-                      'Phone verification completed and account created',
-                      tag: LogTag.signup,
-                    );
-                  } catch (e) {
-                    AppLogger.error(
-                      'OTP verification failed',
-                      tag: LogTag.signup,
-                      error: e,
-                    );
-                    rethrow;
-                  }
-                },
-              ),
-            );
-          } catch (e) {
-            AppLogger.error(
-              'Error showing phone verification dialog',
-              tag: LogTag.signup,
-              error: e,
-            );
-            verified = false;
-          }
-
-          if (verified != true && mounted) {
-            AppLogger.warning(
-              'User cancelled phone verification - requesting deletion for user: $userId',
-              tag: LogTag.signup,
-            );
-            
-            try {
-              if (ApiService.userId == null || ApiService.userId!.isEmpty) {
-                return;
-              }
-              await ApiService.deleteUserAccount(ApiService.userId!);
-              AppLogger.info(
-                'User deletion requested from backend: ${ApiService.userId}',
-                tag: LogTag.signup,
-              );
-            } catch (e) {
-              AppLogger.error(
-                'Error requesting user deletion from backend',
-                tag: LogTag.signup,
-                error: e,
-              );
-            }
-            
-            return;
-          }
-        }
-      }
 
       // Step 3: Save user profile via backend with VERIFIED status
       AppLogger.info(
@@ -920,9 +557,9 @@ class _RegisterPageState extends State<RegisterPage> {
           uid: verifiedUserId,
           fullName: fullName,
           email: emailToSend,
-          phoneNumber: phoneToSend,
+          phoneNumber: null,
           password: password,
-          userRole: _selectedRole,
+          userRole: _normalizedRole(_selectedRole),
           status: UserStatus.verified.toShortString(),
         );
       } catch (e) {
@@ -942,9 +579,9 @@ class _RegisterPageState extends State<RegisterPage> {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (context) => AccountSuccessScreen(
-              userName: fullName,
-            ),
+            builder: (context) => _normalizedRole(_selectedRole) == "caregiver"
+                ? CaregiverChildAgeScreen(userName: fullName)
+                : AccountSuccessScreen(userName: fullName),
           ),
         );
       }
@@ -1098,111 +735,6 @@ class _RegisterPageState extends State<RegisterPage> {
     }
   }
 
-  void _showPhoneVerificationDialog() {
-    // Reset error message when opening dialog
-    _otpErrorMessage = '';
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return StatefulBuilder(
-          builder: (context, setStateDialog) {
-            return AlertDialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              title: const Text(
-                'Verify Your Phone Number',
-                style: TextStyle(
-                  color: Color(0xFF37474F),
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              content: _showOtpInput
-                  ? Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('Enter the OTP sent to your phone'),
-                        const SizedBox(height: 16),
-                        TextField(
-                          controller: _otpController,
-                          keyboardType: TextInputType.number,
-                          decoration: InputDecoration(
-                            hintText: '000000',
-                            errorText: _otpErrorMessage.isNotEmpty ? _otpErrorMessage : null,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                        ),
-                      ],
-                    )
-                  : Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('Enter your phone number to receive an OTP'),
-                        const SizedBox(height: 16),
-                        TextField(
-                          controller: _phoneController,
-                          keyboardType: TextInputType.phone,
-                          decoration: InputDecoration(
-                            hintText: '$_selectedCountryCode (555) 123-4567',
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancel'),
-                ),
-                TextButton(
-                  onPressed: () async {
-                    if (_showOtpInput) {
-                      final otp = _otpController.text.trim();
-                      if (otp.isEmpty || _verificationId == null) {
-                        setStateDialog(() {
-                          _otpErrorMessage = 'Please enter the OTP code';
-                        });
-                        return;
-                      }
-                      try {
-                        debugPrint('DEBUG signup OTP verify tapped with input length=${otp.length}');
-                        final PhoneAuthCredential credential = PhoneAuthProvider.credential(
-                          verificationId: _verificationId!,
-                          smsCode: otp,
-                        );
-                        await _auth.signInWithCredential(credential);
-                        setState(() => _isPhoneVerified = true);
-                        if (!mounted) return;
-                        try {
-                          Navigator.of(context, rootNavigator: true).pop();
-                        } catch (_) {}
-                        await _showPhoneVerifiedThenGoHome();
-                      } catch (e) {
-                        debugPrint('DEBUG signup OTP verify failed: $e');
-                        setStateDialog(() {
-                          _otpErrorMessage = _getOtpErrorMessage(e);
-                        });
-                        _otpController.clear();
-                      }
-                    } else {
-                      _sendPhoneOtp(_phoneController.text);
-                    }
-                  },
-                  child: Text(_showOtpInput ? 'Verify OTP' : 'Send OTP'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
   // Google Sign-In for Registration
   Future<void> _handleGoogleSignInRegister() async {
     try {
@@ -1220,7 +752,7 @@ class _RegisterPageState extends State<RegisterPage> {
       ApiService.setSignupData({
         'fullName': displayName ?? '',
         'email': email ?? '',
-        'userRole': _selectedRole,
+        'userRole': _normalizedRole(_selectedRole),
       });
 
       // Populate form fields
@@ -1252,19 +784,18 @@ Future<void> _signupUser() async {
     return;
   }
 
-  // Validation 2: Check contact (email or phone)
+  // Validation 2: Check email
   final contact = _emailController.text.trim();
   if (contact.isEmpty) {
-    AppLogger.warning('Signup rejected: Empty contact', tag: LogTag.signup);
-    _showErrorDialog("Please enter an email address or phone number");
+    AppLogger.warning('Signup rejected: Empty email', tag: LogTag.signup);
+    _showErrorDialog("Please enter an email address");
     return;
   }
 
   final bool contactIsEmail = _isEmailFormat(contact);
-  final bool contactIsPhone = _isPhoneFormat(contact);
-  if (!contactIsEmail && !contactIsPhone) {
-    AppLogger.warning('Signup rejected: Invalid contact format', tag: LogTag.signup);
-    _showErrorDialog("Please enter a valid email address or phone number");
+  if (!contactIsEmail) {
+    AppLogger.warning('Signup rejected: Invalid email format', tag: LogTag.signup);
+    _showErrorDialog("Please enter a valid email address");
     return;
   }
 
@@ -1297,15 +828,6 @@ Future<void> _signupUser() async {
   }
 
   AppLogger.info('All validations passed, proceeding with signup', tag: LogTag.signup);
-
-  // All validations passed.
-  if (contactIsPhone) {
-    AppLogger.info('Phone-based signup detected, proceeding', tag: LogTag.signup);
-    // For phone-based signups we do NOT verify here. Save signup data and
-    // proceed to the health profile flow; final verification will occur on Proceed.
-    _proceedWithSignup();
-    return;
-  }
 
   // Email-based signup: proceed to signup without phone verification
   _proceedWithSignup();
@@ -1457,27 +979,6 @@ void _showErrorDialog(String title, [String message = '']) {
   );
 }
 
-  Future<void> _showPhoneExistsDialog() async {
-    if (!mounted) return;
-
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext ctx) {
-        return AlertDialog(
-          title: const Text('Phone Number Already Registered'),
-          content: const Text('This phone number is already registered. Please use a different phone number or log in.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('OK'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   Widget _buildBulletPoint(String text) {
     return Padding(
       padding: const EdgeInsets.only(left: 12.0, bottom: 4.0),
@@ -1554,12 +1055,11 @@ void _showErrorDialog(String title, [String message = '']) {
   }
 
   Widget _buildContactField() {
-    final showDropdown = _isProbablyPhone(_emailController.text);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Email or Phone',
+        const Text(
+          'Email',
           style: const TextStyle(
             color: Color(0xFF9E86FF),
             fontWeight: FontWeight.bold,
@@ -1574,31 +1074,13 @@ void _showErrorDialog(String title, [String message = '']) {
           ),
           child: Row(
             children: [
-              if (showDropdown)
-                Padding(
-                  padding: const EdgeInsets.only(left: 8.0),
-                  child: DropdownButton<String>(
-                    value: _selectedCountryCode,
-                    items: _countryCodes
-                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                        .toList(),
-                    onChanged: (val) {
-                      if (val == null) return;
-                      setState(() {
-                        _selectedCountryCode = val;
-                      });
-                    },
-                    underline: const SizedBox.shrink(),
-                    style: const TextStyle(color: Color(0xFF37474F)),
-                  ),
-                ),
               Expanded(
                 child: TextFormField(
                   controller: _emailController,
-                  keyboardType: TextInputType.text,
+                  keyboardType: TextInputType.emailAddress,
                   style: const TextStyle(color: Color(0xFF37474F)),
                   decoration: InputDecoration(
-                    hintText: 'you@example.com or $_selectedCountryCode 555 123 4567',
+                    hintText: 'you@example.com',
                     hintStyle: const TextStyle(
                       color: Color(0xFFB0BEC5),
                       fontSize: 14,

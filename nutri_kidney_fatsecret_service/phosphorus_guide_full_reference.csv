@@ -1,0 +1,235 @@
+food_name,category,serving_size,phosphorus_mg,phosphorus_level,potassium_flag,processed_caution,source_page
+Blackeyed peas,"Protein > Beans, canned",1/2 cup,84,low,True,True,1
+Roast beef,Protein > Meat,1/2 cup,150,medium,False,False,1
+Brazilnut,Protein > Nuts,1 nut,36,low,False,False,1
+Macadamia,Protein > Nuts,10-12 nuts,56,low,False,False,1
+Pecans,Protein > Nuts,20 halves,79,low,False,False,1
+Walnuts,Protein > Nuts,14 halves,98,low,False,False,1
+Baked beans,"Protein > Beans, canned",1/2 cup,132,medium,True,True,1
+Black beans,"Protein > Beans, canned",1/2 cup,120,medium,True,True,1
+Garbanzo/chickpeas,"Protein > Beans, canned",1/2 cup,108,medium,False,True,1
+Kidney beans,"Protein > Beans, canned",1/2 cup,115,medium,True,True,1
+Lentils,"Protein > Beans, canned",1/2 cup,178,medium,True,True,1
+Lima beans,"Protein > Beans, canned",1/2 cup,100,low,True,True,1
+Navy beans,"Protein > Beans, canned",1/2 cup,176,medium,True,True,1
+Northern beans,"Protein > Beans, canned",1/2 cup,178,medium,True,True,1
+Pinto beans,"Protein > Beans, canned",1/2 cup,111,medium,True,True,1
+"Beef (80% lean, ground)",Protein > Meat,3 oz,165,medium,False,False,1
+Chicken (white),Protein > Meat,3 oz,180,medium,False,False,1
+Chicken (dark),Protein > Meat,3 oz,157,medium,False,False,1
+Duck (domestic),Protein > Meat,3 oz,173,medium,False,False,1
+Lamb (leg),Protein > Meat,3 oz,162,medium,True,False,1
+Turkey (white),Protein > Meat,3 oz,184,medium,True,False,1
+Turkey (dark),Protein > Meat,3 oz,171,medium,True,False,1
+Almonds,Protein > Nuts,24 nuts,134,medium,False,False,1
+Cashews,Protein > Nuts,18 nuts,151,medium,False,False,1
+Mixed nuts,Protein > Nuts,1 oz,132,medium,False,True,1
+Peanuts,Protein > Nuts,28 nuts,101,medium,False,False,1
+Pistachios,Protein > Nuts,1 oz,137,medium,True,False,1
+Clams (raw),Protein > Seafood,3 oz,144,medium,True,False,1
+Crab,Protein > Seafood,3 oz,175,medium,False,False,1
+Lobster,Protein > Seafood,3 oz,157,medium,True,False,1
+Oysters,Protein > Seafood,3 oz,172,medium,False,False,1
+Scallops,Protein > Seafood,3 oz,186,medium,False,False,1
+Shrimp,Protein > Seafood,3 oz,116,medium,False,False,1
+"Tuna (light, in water)",Protein > Seafood,3 oz,139,medium,False,False,1
+Refried beans,"Protein > Beans, canned",1/2 cup,400,high,True,True,1
+Soybeans,"Protein > Beans, canned",1/2 cup,206,high,True,True,1
+Beef (bottom round),Protein > Meat,3 oz,217,high,True,False,1
+Liver (beef),Protein > Meat,3 oz,392,high,True,False,1
+Pork (loin),Protein > Meat,3 oz,200,high,True,False,1
+Veal,Protein > Meat,3 oz,200,high,True,False,1
+Catfish,Protein > Seafood,3 oz,208,high,True,False,1
+Cod,Protein > Seafood,3 oz,200,high,True,False,1
+Haddock,Protein > Seafood,3 oz,205,high,True,False,1
+Sardines w/ bone,Protein > Seafood,3 oz,420,high,False,False,1
+Salmon (canned w/ bone),Protein > Seafood,3 oz,280,high,True,True,1
+"Salmon (fresh, cooked)",Protein > Seafood,3 oz,235,high,True,False,1
+"Tuna (light, in oil)",Protein > Seafood,3 oz,265,high,False,False,1
+"Tuna (fresh, cooked)",Protein > Seafood,3 oz,208,high,True,False,1
+Butter/Margarine,Milk & Dairy > Butter,1 tbsp,3,low,False,False,2
+Cream cheese,Milk & Dairy > Cheese,1 tbsp,15,low,False,False,2
+Feta,Milk & Dairy > Cheese,1 oz,94,low,False,False,2
+Parmesan,Milk & Dairy > Cheese,2 tbsp,80,low,False,False,2
+Half & half cream,Milk & Dairy > Cream,1 tbsp,14,low,False,False,2
+Sour cream,Milk & Dairy > Cream,1 tbsp,10,low,False,False,2
+Egg,Milk & Dairy > Eggs,1 medium,90,low,False,False,2
+Egg substitute,Milk & Dairy > Eggs,1/4 cup,76,low,False,False,2
+Ice cream (vanilla),Milk & Dairy > Ice cream,1/2 cup,69,low,False,False,2
+Rice milk (unenriched),Milk & Dairy > Milk,1/2 cup,17,low,False,False,2
+Soy milk (unenriched),Milk & Dairy > Milk,1/2 cup,60,low,False,False,2
+Sherbet,Milk & Dairy > Sherbet,1/2 cup,38,low,False,False,2
+Blue cheese,Milk & Dairy > Cheese,1 oz,110,medium,False,False,2
+Cheddar,Milk & Dairy > Cheese,1 oz,145,medium,False,False,2
+Cottage (1% milkfat),Milk & Dairy > Cheese,1 oz,151,medium,False,False,2
+Cottage (2% milkfat),Milk & Dairy > Cheese,1 oz,170,medium,False,False,2
+Mozzarella,Milk & Dairy > Cheese,1 oz,149,medium,False,False,2
+Swiss,Milk & Dairy > Cheese,1 oz,172,medium,False,False,2
+Ice milk (soft serve),Milk & Dairy > Ice cream,1/2 cup,106,medium,False,False,2
+Buttermilk,Milk & Dairy > Milk,1/2 cup,109,medium,False,False,2
+Chocolate low fat milk,Milk & Dairy > Milk,1/2 cup,128,medium,False,False,2
+Eggnog,Milk & Dairy > Milk,1/2 cup,139,medium,False,False,2
+"Milk, 1%",Milk & Dairy > Milk,1/2 cup,116,medium,False,False,2
+"Milk, skim (0% milk fat)",Milk & Dairy > Milk,1/2 cup,124,medium,False,False,2
+"Milk, whole",Milk & Dairy > Milk,1/2 cup,113.5,medium,False,False,2
+Yogurt (skim/plain/Greek style),Milk & Dairy > Yogurt,1/2 cup,178,medium,True,False,2
+Yogurt (whole/4 gm. protein),Milk & Dairy > Yogurt,1/2 cup,108,medium,False,False,2
+Yogurt (with fruit/5 gm. protein),Milk & Dairy > Yogurt,1/2 cup,135,medium,False,False,2
+American cheese,Milk & Dairy > Cheese,1 oz,211,high,False,False,2
+"Ricotta, part skim",Milk & Dairy > Cheese,1/2 cup,225,high,False,False,2
+Evaporated nonfat milk,Milk & Dairy > Milk,1/2 cup,250,high,True,False,2
+Apple,Fruit & Fruit Juices > Fruits,1 medium,10,low,False,False,3
+Applesauce,Fruit & Fruit Juices > Fruits,1/2 cup,9,low,False,False,3
+Apricot,Fruit & Fruit Juices > Fruits,1 medium,7,low,False,False,3
+Banana,Fruit & Fruit Juices > Fruits,1 medium,24,low,True,False,3
+Blueberries,Fruit & Fruit Juices > Fruits,1/2 cup,8,low,False,False,3
+Cantaloupe,Fruit & Fruit Juices > Fruits,1/8 melon,12,low,False,False,3
+"Cherries, red, sweet",Fruit & Fruit Juices > Fruits,10 cherries,13,low,False,False,3
+"Cranberries, fresh",Fruit & Fruit Juices > Fruits,1/2 cup,7,low,False,False,3
+Cranberry sauce,Fruit & Fruit Juices > Fruits,1 slice,3,low,False,False,3
+"Figs, dried",Fruit & Fruit Juices > Fruits,2 figs,26,low,True,False,3
+Grapes,Fruit & Fruit Juices > Fruits,1/2 cup,11,low,False,False,3
+Grapefruit,Fruit & Fruit Juices > Fruits,1/2 fruit,11,low,False,False,3
+Honeydew,Fruit & Fruit Juices > Fruits,1/8 melon,16,low,False,False,3
+Kiwi,Fruit & Fruit Juices > Fruits,1 medium,30,low,False,False,3
+Mango,Fruit & Fruit Juices > Fruits,1 medium,23,low,False,False,3
+Nectarines,Fruit & Fruit Juices > Fruits,1 medium,22,low,False,False,3
+Orange,Fruit & Fruit Juices > Fruits,1 medium,18,low,False,False,3
+Peach,Fruit & Fruit Juices > Fruits,1 medium,12,low,False,False,3
+Pears,Fruit & Fruit Juices > Fruits,1 medium,18,low,False,False,3
+Pineapple,Fruit & Fruit Juices > Fruits,1/2 cup,6,low,False,False,3
+Plums,Fruit & Fruit Juices > Fruits,1 medium,7,low,False,False,3
+"Prunes, dried",Fruit & Fruit Juices > Fruits,5 prunes,33,low,True,False,3
+Raisins,Fruit & Fruit Juices > Fruits,1/2 cup,71,low,True,False,3
+Raspberries,Fruit & Fruit Juices > Fruits,1/2 cup,8,low,False,False,3
+Rhubarb,Fruit & Fruit Juices > Fruits,1/2 cup,9,low,False,False,3
+Strawberries,Fruit & Fruit Juices > Fruits,1/2 cup,16,low,False,False,3
+Tangerines (mandarin),Fruit & Fruit Juices > Fruits,1 medium,8,low,False,False,3
+Watermelon,Fruit & Fruit Juices > Fruits,1 cup,14,low,False,False,3
+Apple juice,Fruit & Fruit Juices > Juices,1 cup,17,low,False,False,3
+Cranberry juice,Fruit & Fruit Juices > Juices,1/2 cup,3,low,False,False,3
+Grape juice,Fruit & Fruit Juices > Juices,1/2 cup,5,low,False,False,3
+Grapefruit juice,Fruit & Fruit Juices > Juices,1/2 cup,14,low,False,False,3
+Orange juice,Fruit & Fruit Juices > Juices,1/2 cup,20,low,False,False,3
+Pineapple juice,Fruit & Fruit Juices > Juices,1/2 cup,10,low,False,False,3
+Prune juice,Fruit & Fruit Juices > Juices,1/2 cup,32,low,True,False,3
+Asparagus,Vegetables > Vegetables,4 spears,32,low,False,False,4
+"Beans, green/yellow snap",Vegetables > Vegetables,1/2 cup,21,low,False,False,4
+Beets (canned),Vegetables > Vegetables,1/2 cup,33,low,False,True,4
+Broccoli,Vegetables > Vegetables,1/2 cup,29,low,False,False,4
+Cabbage (green or red),Vegetables > Vegetables,1/2 cup,8,low,False,False,4
+Carrots,Vegetables > Vegetables,1/2 cup,24,low,False,False,4
+Cauliflower,Vegetables > Vegetables,1/2 cup,22,low,False,False,4
+Celery,Vegetables > Vegetables,1/2 cup,15,low,False,False,4
+"Corn, kernel",Vegetables > Vegetables,1/2 cup,69,low,False,False,4
+"Corn, creamed in can",Vegetables > Vegetables,1/2 cup,66,low,False,False,4
+Cucumber (without skin),Vegetables > Vegetables,1/2 cup,11,low,False,False,4
+Lettuce,Vegetables > Vegetables,1/2 cup,7,low,False,False,4
+Mushrooms (raw),Vegetables > Vegetables,1/2 cup,37,low,False,False,4
+Okra,Vegetables > Vegetables,1/2 cup,32,low,False,False,4
+Onions,Vegetables > Vegetables,1/2 cup,27,low,False,False,4
+Parsnips,Vegetables > Vegetables,1/2 cup,47,low,False,False,4
+Peas (green),Vegetables > Vegetables,1/2 cup,57,low,False,False,4
+"Peppers, red or green",Vegetables > Vegetables,1 medium,23,low,False,False,4
+"Pickle, dill",Vegetables > Vegetables,1 pickle,14,low,False,False,4
+"Rutabaga, boil/mash",Vegetables > Vegetables,1/2 cup,67,low,True,False,4
+Spinach (cooked),Vegetables > Vegetables,1/2 cup,50,low,True,False,4
+Spinach (raw),Vegetables > Vegetables,1/2 cup,8,low,False,False,4
+"Squash, summer/winter",Vegetables > Vegetables,1 cup,45,low,False,False,4
+Tomato,Vegetables > Vegetables,1 medium,30,low,False,False,4
+Baked sweet potato,Vegetables > Potatoes,1 medium,97,low,True,False,4
+Tomato juice,Vegetables > Juices,1/2 cup,23,low,True,False,4
+Artichoke,Vegetables > Vegetables,1 medium,103,medium,False,False,4
+Avocado,Vegetables > Vegetables,1 medium,105,medium,False,False,4
+Baked potato,Vegetables > Potatoes,1 medium,141,medium,True,False,4
+Boiled/mashed potato,Vegetables > Potatoes,1/2 cup,101,medium,True,False,4
+7 grain bread,Grains & Starches > Bread,1 slice,46,low,False,False,5
+Pumpernickel bread,Grains & Starches > Bread,1 slice,57,low,False,False,5
+Rye bread,Grains & Starches > Bread,1 slice,40,low,False,False,5
+White bread,Grains & Starches > Bread,1 slice,24,low,False,False,5
+"White cake, no frosting",Grains & Starches > Cake,2x2 in,69,low,False,False,5
+Cornflakes,Grains & Starches > Cereal,1 cup,14,low,False,False,5
+Rice Krispies,Grains & Starches > Cereal,1 cup,37,low,False,False,5
+Malt-O-Meal,Grains & Starches > Cereal,1 cup,24,low,False,False,5
+Graham crackers,Grains & Starches > Crackers,4 crackers,29,low,False,False,5
+Saltines,Grains & Starches > Crackers,4 crackers,13,low,False,False,5
+Whole-wheat crackers,Grains & Starches > Crackers,4 crackers,47,low,False,False,5
+Bagel,Grains & Starches > Grains,3 1/2 in,60,low,False,False,5
+"Biscuit, round",Grains & Starches > Grains,2 1/2 in,98,low,False,False,5
+Croissant,Grains & Starches > Grains,1,60,low,False,False,5
+English muffin,Grains & Starches > Grains,1,76,low,False,False,5
+Hamburger/hot dog bun,Grains & Starches > Grains,1 bun,38,low,False,False,5
+Brown rice,Grains & Starches > Starches,1/2 cup,81,low,False,False,5
+Egg noodles,Grains & Starches > Starches,1/2 cup,55,low,False,False,5
+Spaghetti,Grains & Starches > Starches,1/2 cup,28,low,False,False,5
+White rice,Grains & Starches > Starches,1/2 cup,37,low,False,False,5
+Cheerios,Grains & Starches > Cereal,1 cup,100,low,False,False,5
+Cream of wheat,Grains & Starches > Cereal,1 cup,100,low,False,False,5
+Farina,Grains & Starches > Cereal,1 cup,28,low,False,False,5
+Granola,Grains & Starches > Cereal,1/2 cup,175,medium,True,False,5
+Oatmeal,Grains & Starches > Cereal,1 cup,178,medium,False,False,5
+Shredded wheat,Grains & Starches > Cereal,2 biscuits,168,medium,False,False,5
+Cornbread,Grains & Starches > Grains,2x2 in,110,medium,False,False,5
+Fry bread,Grains & Starches > Grains,"5"" bread",141,medium,False,False,5
+"Pancakes, plain",Grains & Starches > Grains,1 frozen,134,medium,False,False,5
+Corn muffin,Grains & Starches > Muffin,1 medium,192,medium,False,False,5
+All Bran,Grains & Starches > Cereal,1/2 cup,339,high,True,False,5
+Bran flakes,Grains & Starches > Cereal,1 cup,209,high,False,False,5
+Raisin Bran,Grains & Starches > Cereal,1 cup,259,high,True,False,5
+Blueberry muffin,Grains & Starches > Muffin,1 medium,222,high,False,False,5
+Oat bran muffin,Grains & Starches > Muffin,1 medium,424,high,True,False,5
+Cocoa mix (made w/water),Other > Beverages,1 cup,89,low,False,True,6
+Coffee/tea,Other > Beverages,1 cup,5 or less,low,False,False,6
+Club soda,"Other > Beverages, carbonated",12 fl oz,0,low,False,True,6
+Pepper-type soda,"Other > Beverages, carbonated",12 fl oz,40,low,False,True,6
+Root beer,"Other > Beverages, carbonated",12 fl oz,0,low,False,False,6
+"Cheese sauce, canned",Other > Condiments,1/4 cup,99,low,False,True,6
+"Gravy, beef/chicken",Other > Condiments,1/4 cup,17,low,False,False,6
+Honey,Other > Condiments,1 tbsp,1,low,False,False,6
+Jelly/jam,Other > Condiments,1 tbsp,1,low,False,False,6
+Mustard,Other > Condiments,1 packet,5 or less,low,False,False,6
+Ketchup,Other > Condiments,1 packet,5 or less,low,False,False,6
+"Oil, any kind",Other > Condiments,1 tbsp,0,low,False,False,6
+Salad dressings,Other > Condiments,1 tbsp,5 or less,low,False,False,6
+Corn syrup,Other > Condiments,2 tbsp,0,low,False,False,6
+Maple syrup,Other > Condiments,2 tbsp,0.8,low,False,False,6
+Bologna,Other > Deli,2 slices,52,low,False,True,6
+Potato salad,Other > Deli,1/2 cup,75,low,True,True,6
+Salami,Other > Deli,2 slices,65,low,False,True,6
+Doughnut (yeast),Other > Desserts,1,56,low,False,False,6
+Gelatin desserts,Other > Desserts,1/2 cup,30,low,False,False,6
+Pastry (fruit danish),Other > Desserts,1,63,low,False,False,6
+"Toaster pastries, fruit",Other > Desserts,1 pastry,58,low,False,False,6
+"Apple pie, homemade","Other > Pie, homemade",1/8 pie,43,low,False,False,6
+"Cherry pie, homemade","Other > Pie, homemade",1/8 pie,54,low,False,False,6
+"Lemon meringue pie, homemade","Other > Pie, homemade",1/8 pie,53,low,False,False,6
+"Granola bar, plain, soft",Other > Snacks,1 bar,62,low,False,False,6
+Popcorn,Other > Snacks,1 cup,24,low,False,False,6
+Potato chips,Other > Snacks,1 oz,45,low,True,False,6
+Pretzels,Other > Snacks,10 pretzels,68,low,False,False,6
+Tortilla chips,Other > Snacks,1 oz,69,low,False,False,6
+"Beef noodle soup, canned, ready to eat","Other > Soup, canned, ready to eat",1 cup,46,low,False,True,6
+"Chicken noodle soup, canned, ready to eat","Other > Soup, canned, ready to eat",1 cup,72,low,False,True,6
+Doughnut,Other > Dessert,1 medium,126,medium,False,False,6
+Pumpkin pie,Other > Pie,1/8 pie,152,medium,True,False,6
+Pecan pie,Other > Pie,1/8 pie,115,medium,False,False,6
+Potatoes au gratin,Other > Potatoes,1/2 cup,138,medium,True,False,6
+Chicken pot pie,Other > Proteins,1 small pie,119,medium,False,False,6
+Chili con carne w/ beans,Other > Proteins,1 cup,193,medium,True,False,6
+"Hot dog on bun, beef",Other > Proteins,1 medium sized,110,medium,False,False,6
+Peanut butter,Other > Proteins,2 tbsp,110,medium,False,False,6
+"Tofu, firm",Other > Proteins,1/4 block,119,medium,False,False,6
+"Bean w/ ham soup, canned, ready to eat","Other > Soup, canned, ready to eat",1 cup,143,medium,True,True,7
+"Beef stew, canned, ready to eat","Other > Soup, canned, ready to eat",1 cup,128,medium,False,True,7
+"Clam chowder, canned, ready to eat","Other > Soup, canned, ready to eat",1 cup,156,medium,True,True,7
+"Creamed chicken soup, canned, ready to eat","Other > Soup, canned, ready to eat",1 cup,151,medium,True,True,7
+"Tomato soup, canned, ready to eat","Other > Soup, canned, ready to eat",1 cup,149,medium,True,True,7
+"Chocolate pudding, homemade","Other > Pudding, homemade",1/2 cup,136,medium,False,False,7
+"Vanilla pudding, homemade","Other > Pudding, homemade",1/2 cup,116,medium,False,False,7
+"Cocoa mix, sugar-free, made w/milk",Other > Beverages,1 cup,255,high,True,True,7
+"Macaroni & cheese, mix",Other > Macaroni & cheese,1 cup,400,high,True,True,7
+"Macaroni & cheese, homemade",Other > Macaroni & cheese,1 cup,322,high,False,False,7
+"Cheeseburger, plain",Other > Meat,1,312,high,False,False,7
+"Chocolate pudding, instant","Other > Pudding, instant",1/2 cup,350,high,False,True,7
+"Vanilla pudding, instant","Other > Pudding, instant",1/2 cup,279,high,False,True,7
+Trail mix,Other > Snacks,1/2 cup,282,high,True,True,7

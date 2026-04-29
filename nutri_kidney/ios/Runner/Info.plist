@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>NutriKidney uses the camera to recognize foods for meal logging.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>NutriKidney uses selected food photos to recognize meals for logging.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

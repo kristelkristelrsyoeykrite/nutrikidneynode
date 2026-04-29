@@ -32,6 +32,53 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
   DateTime? _dob;
   DateTime? _diagnosisDate;
 
+  bool get _isAdolescentRole => ApiService.userRole == 'adolescent';
+
+  DateTime _todayDateOnly() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
+
+  int _calculateAgeFromDate(DateTime dob) {
+    final today = _todayDateOnly();
+    var age = today.year - dob.year;
+    final birthdayThisYearPassed =
+        today.month > dob.month ||
+        (today.month == dob.month && today.day >= dob.day);
+    if (!birthdayThisYearPassed) {
+      age -= 1;
+    }
+    return age;
+  }
+
+  DateTime _latestAllowedAdolescentDob() {
+    final today = _todayDateOnly();
+    return DateTime(today.year - 13, today.month, today.day);
+  }
+
+  DateTime _earliestAllowedAdolescentDob() {
+    final today = _todayDateOnly();
+    return DateTime(today.year - 18, today.month, today.day);
+  }
+
+  bool _isAgeAllowedForRole() {
+    final age = int.tryParse(_ageController.text.trim());
+    if (age == null) return false;
+    if (_isAdolescentRole) {
+      return age >= 13 && age <= 18;
+    }
+    return age > 0;
+  }
+
+  bool _isDobAllowedForRole() {
+    if (_dob == null) return false;
+    if (_isAdolescentRole) {
+      final age = _calculateAgeFromDate(_dob!);
+      return age >= 13 && age <= 18;
+    }
+    return true;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -86,6 +133,8 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     return _nameController.text.trim().isNotEmpty &&
         _dob != null &&
         _ageController.text.trim().isNotEmpty &&
+        _isAgeAllowedForRole() &&
+        _isDobAllowedForRole() &&
         _selectedSex != null &&
         _heightController.text.trim().isNotEmpty &&
         _weightController.text.trim().isNotEmpty &&
@@ -104,11 +153,18 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
   // DATE PICKER (DOB + Diagnosis)
   Future<void> _selectDate(BuildContext context, String type) async {
+    final now = _todayDateOnly();
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(1990),
-      lastDate: DateTime.now(),
+      initialDate: type == "dob" && _isAdolescentRole
+          ? _latestAllowedAdolescentDob()
+          : now,
+      firstDate: type == "dob" && _isAdolescentRole
+          ? _earliestAllowedAdolescentDob()
+          : DateTime(1990),
+      lastDate: type == "dob" && _isAdolescentRole
+          ? _latestAllowedAdolescentDob()
+          : now,
       builder: (context, child) {
         return Theme(
           data: Theme.of(context).copyWith(
@@ -128,6 +184,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
         if (type == "dob") {
           _dob = picked;
           _dobController.text = _formatDate(picked);
+          _ageController.text = _calculateAgeFromDate(picked).toString();
         } else {
           _diagnosisDate = picked;
           _diagnosisDateController.text = _formatDate(picked);
@@ -250,7 +307,9 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     _buildTextField(
                       label: "Age (years)",
-                      hint: "Enter age in years",
+                      hint: _isAdolescentRole
+                          ? "Adolescent age must be 13-18"
+                          : "Enter age in years",
                       controller: _ageController,
                       keyboardType: TextInputType.number,
                     ),
@@ -364,6 +423,30 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       child: ElevatedButton(
                         onPressed: _isFormValid
                             ? () async {
+                                if (!_isAgeAllowedForRole()) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        _isAdolescentRole
+                                            ? 'Adolescent accounts must be between 13 and 18 years old.'
+                                            : 'Enter a valid age before continuing.',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                if (!_isDobAllowedForRole()) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'The date of birth must match an adolescent age between 13 and 18.',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
+
                                 final data = {
                                   "name": _nameController.text,
                                   "dob": _dob!.toIso8601String(),

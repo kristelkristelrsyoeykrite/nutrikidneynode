@@ -32,13 +32,7 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
 
   // --- Variables to store popup data ---
   String? _uploadedPrescriptionPath;
-  // --- Phone verification state for final proceed ---
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final TextEditingController _verifyPhoneController = TextEditingController();
-  final TextEditingController _verifyOtpController = TextEditingController();
-  String? _verifyId;
-  bool _verifyShowOtp = false;
-  String _otpErrorMessage = '';
   bool _isFinishingRegistration = false;
   bool _registrationCompleted = false;
 
@@ -63,175 +57,6 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
     });
   }
 
-  Future<bool> _showVerifyDialogAndSignIn(String phone) async {
-    _verifyPhoneController.text = phone;
-    _verifyShowOtp = false;
-    _verifyId = null;
-    _otpErrorMessage = '';
-
-    return await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return StatefulBuilder(builder: (context, setStateDialog) {
-          return AlertDialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: const Text('Verify Your Phone'),
-            content: _verifyShowOtp
-                ? Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('Enter the OTP sent to your phone'),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _verifyOtpController,
-                        keyboardType: TextInputType.number,
-                        decoration: InputDecoration(
-                          hintText: '000000',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                          errorText: _otpErrorMessage.isNotEmpty ? _otpErrorMessage : null,
-                        ),
-                      ),
-                    ],
-                  )
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('We will send an OTP to this phone to verify it before creating your account'),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _verifyPhoneController,
-                        keyboardType: TextInputType.phone,
-                        decoration: InputDecoration(
-                          hintText: '+63 912 345 6789',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                      ),
-                    ],
-                  ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-              TextButton(
-                onPressed: () async {
-                  if (_verifyShowOtp) {
-                    // verify OTP
-                    final otp = _verifyOtpController.text.trim();
-                    if (otp.isEmpty || _verifyId == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter the OTP')));
-                      return;
-                    }
-                    try {
-                      debugPrint('DEBUG profile OTP verify tapped with input length=${otp.length}');
-                      final cred = PhoneAuthProvider.credential(verificationId: _verifyId!, smsCode: otp);
-                      final userCredential = await _auth.signInWithCredential(cred);
-                      
-                      // Save the UID so backend knows this user was created in Firebase Auth
-                      ApiService.signupData["uid"] = userCredential.user?.uid ?? "";
-                      
-                      // Sign out immediately - backend will use the UID to just create Firestore profile
-                      await _auth.signOut();
-                      
-                      Navigator.pop(context, true);
-                    } catch (e) {
-                      debugPrint('DEBUG profile OTP verify failed: $e');
-                      setStateDialog(() {
-                        _otpErrorMessage = _getOtpErrorMessage(e);
-                      });
-                      _verifyOtpController.clear();
-                    }
-                  } else {
-                    // send OTP
-                    final phoneNumber = _verifyPhoneController.text.trim();
-                    if (phoneNumber.isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter phone number')));
-                      return;
-                    }
-                    try {
-                      await _auth.verifyPhoneNumber(
-                        phoneNumber: phoneNumber,
-                        timeout: const Duration(seconds: 60),
-                        verificationCompleted: (PhoneAuthCredential credential) async {
-                          // auto verified
-                          final userCredential = await _auth.signInWithCredential(credential);
-                          
-                          // Save the UID so backend knows this user was created in Firebase Auth
-                          ApiService.signupData["uid"] = userCredential.user?.uid ?? "";
-                          
-                          // Sign out immediately - backend will use the UID to just create Firestore profile
-                          await _auth.signOut();
-                          if (mounted) Navigator.pop(context, true);
-                        },
-                        verificationFailed: (e) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Verification failed: ${e.message}')));
-                        },
-                        codeSent: (verId, _) {
-                          _verifyId = verId;
-                          setStateDialog(() {
-                            _verifyShowOtp = true;
-                          });
-                        },
-                        codeAutoRetrievalTimeout: (verId) {
-                          _verifyId = verId;
-                        },
-                      );
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Send OTP failed: $e')));
-                    }
-                  }
-                },
-                child: Text(_verifyShowOtp ? 'Verify OTP' : 'Send OTP'),
-              ),
-            ],
-          );
-        });
-      },
-    ).then((v) => v == true);
-  }
-
-  String _getOtpErrorMessage(Object error) {
-    if (error is FirebaseAuthException) {
-      debugPrint(
-        'DEBUG OTP error code=${error.code} message=${error.message}',
-      );
-      final code = error.code.toLowerCase();
-      final message = (error.message ?? '').toLowerCase();
-      if (code == 'invalid-verification-code' ||
-          code == 'invalid-credential' ||
-          message.contains('invalid verification code') ||
-          message.contains('verification code is invalid') ||
-          message.contains('invalid code') ||
-          message.contains('invalid otp') ||
-          message.contains('invalid sms code')) {
-        return 'Wrong OTP. Please try again.';
-      }
-      if (code == 'session-expired' ||
-          message.contains('code has expired') ||
-          message.contains('session expired') ||
-          message.contains('sms code has expired')) {
-        return 'OTP expired. Please request a new code.';
-      }
-      return error.message ?? 'OTP verification failed. Please try again.';
-    }
-    final text = error.toString().toLowerCase();
-    debugPrint('DEBUG OTP error raw=$error');
-    if (text.contains('invalid-verification-code') ||
-        text.contains('invalid verification code') ||
-        text.contains('verification code is invalid') ||
-        text.contains('invalid credential') ||
-        text.contains('invalid code') ||
-        text.contains('invalid otp') ||
-        text.contains('invalid sms code')) {
-      return 'Wrong OTP. Please try again.';
-    }
-    if (text.contains('session-expired') ||
-        text.contains('code has expired') ||
-        text.contains('session expired') ||
-        text.contains('sms code has expired')) {
-      return 'OTP expired. Please request a new code.';
-    }
-    return 'OTP verification failed. Please try again.';
-  }
-
   @override
   void dispose() {
     // Clean up controllers to prevent memory leaks
@@ -243,8 +68,6 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
     _ureaController.dispose();
     _albumController.dispose();
     _hemoglobinController.dispose();
-    _verifyPhoneController.dispose();
-    _verifyOtpController.dispose();
     super.dispose();
   }
 
@@ -1100,33 +923,10 @@ Future<void> _handleFinishRegistration() async {
     if (existingUserId != null && existingUserId.trim().isNotEmpty) {
       print("Existing user already created earlier: $existingUserId");
     } else {
-      // If signupData contains a phoneNumber, verify it first (send OTP now)
+      // Phone-number sign-up is no longer supported.
       final phone = ApiService.signupData["phoneNumber"] as String?;
       if (phone != null && phone.trim().isNotEmpty) {
-        // Phone-based flow
-        _showLoadingDialog("Verifying phone number...");
-      
-      // Show OTP dialog for verification
-      final ok = await _showVerifyDialogAndSignIn(phone);
-      if (!ok) {
-        Navigator.pop(context); // Close loading dialog
-        return;
-      }
-
-      _showLoadingDialog("Creating your account...");
-      try {
-        final phoneVerifyResponse = await ApiService.verifyPhoneAndCreateProfile(ApiService.signupData);
-        Navigator.pop(context); // Close loading dialog
-
-        if (phoneVerifyResponse["success"] != true) {
-          throw Exception(phoneVerifyResponse["error"] ?? "Failed to create account after phone verification");
-        }
-
-        print("Phone verified and user account created successfully");
-      } catch (e) {
-        Navigator.pop(context); // Close loading dialog
-        throw e;
-      }
+        throw Exception("Phone-number sign-up is no longer supported. Please create your account with an email address.");
       } else {
         // EMAIL-BASED SIGNUP FLOW
         _showLoadingDialog("Preparing email verification...");

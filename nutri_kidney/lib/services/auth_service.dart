@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:nutri_kidney/services/api_service.dart';
+import 'package:nutri_kidney/services/push_notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthService {
@@ -49,26 +50,15 @@ class AuthService {
       if (profileStatus['success'] != true ||
           profileStatus['exists'] != true ||
           profileStatus['verified'] != true ||
-          profileStatus['profileComplete'] != true) {
+          profileStatus['needsProfileSetup'] == true) {
         print('No completed app profile found for remembered session - signing out');
         await _auth.signOut();
         await _googleSignIn.signOut();
         return false;
       }
 
-      final isSavedPhoneContact =
-          savedContact != null &&
-          savedContact.isNotEmpty &&
-          !savedContact.contains('@');
-
       if (currentUser == null) {
-        if (isSavedPhoneContact) {
-          ApiService.setUserId(savedUserId);
-          print('Remembered phone session valid without Firebase auth session');
-          return true;
-        }
-
-        print('No Firebase session for remembered non-phone login - signing out');
+        print('No Firebase session for remembered login - signing out');
         await _auth.signOut();
         await _googleSignIn.signOut();
         return false;
@@ -85,12 +75,6 @@ class AuthService {
       currentUser = _auth.currentUser;
 
       if (currentUser == null || currentUser.uid != savedUserId) {
-        if (isSavedPhoneContact) {
-          ApiService.setUserId(savedUserId);
-          print('Firebase session expired but remembered phone session is valid');
-          return true;
-        }
-
         print('Session lost after reload - signing out');
         await _auth.signOut();
         await _googleSignIn.signOut();
@@ -249,6 +233,7 @@ class AuthService {
 
       if (userIdToNotify != null) {
         try {
+          await PushNotificationService.unregisterCurrentDeviceToken();
           await ApiService.signOut(userIdToNotify);
         } catch (e) {
           print('Error notifying backend of sign out: $e');

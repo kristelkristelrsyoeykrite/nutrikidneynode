@@ -3,11 +3,17 @@ const cors = require("cors");
 const crypto = require("crypto");
 const dns = require("dns").promises;
 const { admin, db, auth } = require("./firebase/admin");
+const {
+  isValidAuthenticatorCode,
+  normalizeSecuritySettings,
+  verifyTotpCode,
+} = require("./services/authenticatorMfaService");
+const { initializeReminderScheduler } = require("./services/reminderScheduler");
 
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "8mb" }));
 
 app.get("/", (req, res) => {
   res.send("NutriKidney API running");
@@ -116,6 +122,248 @@ function isUserVerified({ authUser = null, profile = {} } = {}) {
   );
 }
 
+function isCaregiverRole(role) {
+  const normalized = String(role || "").trim().toLowerCase();
+  return normalized === "parent_caregiver" || normalized === "caregiver";
+}
+
+function normalizeStoredRole(role) {
+  const normalized = String(role || "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "parent_caregiver") return "caregiver";
+  return normalized;
+}
+
+function isLinkOnlyCaregiverProfile(profile = {}) {
+  return isCaregiverRole(profile.role) && profile.childAgeGroup === "13-18";
+}
+
+function isProfileComplete(profile = {}) {
+  if (isLinkOnlyCaregiverProfile(profile)) {
+    return true;
+  }
+
+  return Boolean(
+    profile.baselineNutritionTargetId && profile.medicalProfileId,
+  );
+}
+
+function buildNeedsProfileSetup(profile = {}, verified = false) {
+  return verified === true && !isProfileComplete(profile);
+}
+
+function generateLinkingCode(length = 6) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let index = 0; index < length; index += 1) {
+    const randomIndex = crypto.randomInt(0, alphabet.length);
+    code += alphabet[randomIndex];
+  }
+  return code;
+}
+
+function applyUserProfileIdentityFields(
+  target,
+  {
+    uid,
+    fullName,
+    email,
+    phoneNumber,
+    userRole,
+    role,
+    status,
+    emailVerified,
+    phoneVerified,
+  } = {},
+  existingProfile = {},
+) {
+  if (uid) {
+    target.uid = uid;
+  } else if (existingProfile.uid) {
+    target.uid = existingProfile.uid;
+  }
+
+  target.fullName = fullName ?? existingProfile.fullName ?? "";
+  target.email = email ?? existingProfile.email ?? "";
+  target.phoneNumber = phoneNumber ?? existingProfile.phoneNumber ?? "";
+
+  if (status !== undefined) {
+    target.status = status;
+  } else if (existingProfile.status !== undefined) {
+    target.status = existingProfile.status;
+  }
+
+  if (emailVerified !== undefined) {
+    target.emailVerified = emailVerified === true;
+  } else if (existingProfile.emailVerified !== undefined) {
+    target.emailVerified = existingProfile.emailVerified === true;
+  }
+
+  if (phoneVerified !== undefined) {
+    target.phoneVerified = phoneVerified === true;
+  } else if (existingProfile.phoneVerified !== undefined) {
+    target.phoneVerified = existingProfile.phoneVerified === true;
+  }
+
+  const normalizedRole = normalizeStoredRole(userRole ?? role ?? existingProfile.role);
+  if (normalizedRole) {
+    target.role = normalizedRole;
+  }
+
+  if (!existingProfile.createdAt) {
+    target.createdAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  target.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+
+  return target;
+}
+
+
+function normalizeReminderSettings(profile = {}) {
+  const rawSettings =
+    profile.reminderSettings && typeof profile.reminderSettings === "object"
+      ? profile.reminderSettings
+      : {};
+  const rawMealSettings =
+    rawSettings.mealReminders && typeof rawSettings.mealReminders === "object"
+      ? rawSettings.mealReminders
+      : {};
+
+  return {
+    medicationReminders: rawSettings.medicationReminders === true,
+    hydrationAlerts: rawSettings.hydrationAlerts === true,
+    mealReminders: {
+      breakfast: rawMealSettings.breakfast === true,
+      lunch: rawMealSettings.lunch === true,
+      snack: rawMealSettings.snack === true,
+      dinner: rawMealSettings.dinner === true,
+    },
+  };
+}
+
+function normalizeDeviceToken(token) {
+  return String(token || "").trim();
+}
+
+function buildDeviceTokenRecord(token, profile = {}, platform) {
+  const existing =
+    profile.deviceTokens && typeof profile.deviceTokens === "object"
+      ? profile.deviceTokens
+      : {};
+
+  return {
+    ...existing,
+    [token]: {
+      token,
+      platform: String(platform || existing[token]?.platform || "unknown"),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+  };
+}
+
+function deviceTokenEntries(profile = {}) {
+  const raw = profile.deviceTokens;
+  if (!raw || typeof raw !== "object") return [];
+  return Object.values(raw).filter(
+    (entry) => entry && typeof entry.token === "string" && entry.token.trim(),
+  );
+}
+
+async function sendPushNotificationToProfile(profile = {}, message = {}) {
+  const entries = deviceTokenEntries(profile);
+  if (entries.length === 0) {
+    return { successCount: 0, failureCount: 0, responses: [] };
+  }
+
+  const tokens = entries.map((entry) => entry.token);
+  const response = await admin.messaging().sendEachForMulticast({
+    tokens,
+    notification: {
+      title: message.title || "NutriKidney",
+      body: message.body || "You have a new notification.",
+    },
+    data: Object.entries(message.data || {}).reduce((map, [key, value]) => {
+      map[key] = String(value ?? "");
+      return map;
+    }, {}),
+    android: {
+      priority: "high",
+      notification: {
+        channelId: "nutrikidney_reminders",
+      },
+    },
+  });
+
+  return {
+    successCount: response.successCount,
+    failureCount: response.failureCount,
+    responses: response.responses,
+  };
+}
+
+async function resolveReminderSettingsTarget(actingUserId, requestedProfileUserId) {
+  if (!actingUserId) {
+    const error = new Error("Missing userId");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const actingUserRef = db.collection("users").doc(actingUserId);
+  const actingUserDoc = await actingUserRef.get();
+  if (!actingUserDoc.exists) {
+    const error = new Error("Acting user profile not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const actingUser = actingUserDoc.data() || {};
+  const targetUserId = requestedProfileUserId || actingUserId;
+  const isLinkedCaregiverEditingChild =
+    targetUserId !== actingUserId &&
+    isCaregiverRole(actingUser.role) &&
+    actingUser.linkedChildAccount === true &&
+    actingUser.linkedChildUserId === targetUserId;
+
+  if (targetUserId !== actingUserId && !isLinkedCaregiverEditingChild) {
+    const error = new Error("You are not allowed to manage these reminders");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const targetRef = db.collection("users").doc(targetUserId);
+  const targetDoc = await targetRef.get();
+  if (!targetDoc.exists) {
+    const error = new Error("User profile not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const targetProfile = targetDoc.data() || {};
+  const targetIsLinkedAdolescent =
+    normalizeStoredRole(targetProfile.role) === "adolescent" &&
+    targetProfile.caregiverSettings?.caregiverLinked === true;
+
+  const canManage =
+    targetUserId === actingUserId
+      ? !targetIsLinkedAdolescent
+      : isLinkedCaregiverEditingChild;
+
+  if (!canManage) {
+    const error = new Error(
+      "Reminder settings are managed by the linked caregiver",
+    );
+    error.statusCode = 403;
+    throw error;
+  }
+
+  return {
+    actingUser,
+    targetUserId,
+    targetRef,
+    targetProfile,
+  };
+}
+
 async function getUserVerificationState(uid) {
   let authUser = null;
   try {
@@ -160,7 +408,7 @@ async function savePasswordSecret(uid, password) {
 app.post("/signup", async (req, res) => {
   console.log("SIGNUP received:", req.body);
 
-  const { email, phoneNumber, password, fullName } = req.body;
+  const { email, phoneNumber, password, fullName, userRole } = req.body;
 
   try {
     // Validate that we have required fields
@@ -485,18 +733,22 @@ app.post("/api/user/profile-status", async (req, res) => {
 
     const userDoc = await db.collection("users").doc(resolvedUid).get();
     const profile = userDoc.exists ? userDoc.data() || {} : {};
-    const authUser = await auth.getUser(resolvedUid).catch(() => null);
-    const verified = isUserVerified({ authUser, profile });
-    const profileComplete = Boolean(
-      profile.baselineNutritionTargetId && profile.medicalProfileId,
-    );
+    let verified = isProfileVerified(profile);
+
+    // Avoid the slower Auth lookup unless Firestore cannot already answer
+    // whether this app account is verified.
+    if (!verified) {
+      const authUser = await auth.getUser(resolvedUid).catch(() => null);
+      verified = isUserVerified({ authUser, profile });
+    }
+    const profileComplete = isProfileComplete(profile);
 
     return res.status(200).json({
       success: true,
       exists: userDoc.exists,
       verified,
       profileComplete,
-      needsProfileSetup: verified && !profileComplete,
+      needsProfileSetup: buildNeedsProfileSetup(profile, verified),
       uid: resolvedUid,
       profile,
     });
@@ -776,23 +1028,25 @@ app.post("/verify-email-and-create-user", async (req, res) => {
     }
 
     // Create profile in Firestore
-    const profile = {
-      uid: user.uid,
-      fullName,
-      email,
-      status: "verified",
-      emailVerified: true,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-    if (phoneNumber) {
-      profile.phoneNumber = normalizePhoneNumberOrThrow(
-        phoneNumber,
-        "phone number",
-      );
-    }
-    if (userRole) {
-      profile.role = userRole;
-    }
+    const existingProfileDoc = await db.collection("users").doc(user.uid).get();
+    const existingProfile =
+      existingProfileDoc.exists ? existingProfileDoc.data() || {} : {};
+    const profile = applyUserProfileIdentityFields(
+      {},
+      {
+        uid: user.uid,
+        fullName,
+        email,
+        phoneNumber: phoneNumber
+          ? normalizePhoneNumberOrThrow(phoneNumber, "phone number")
+          : "",
+        userRole,
+        status: "verified",
+        emailVerified: true,
+        phoneVerified: existingProfile.phoneVerified ?? false,
+      },
+      existingProfile,
+    );
 
     await db.collection("users").doc(user.uid).set(profile, { merge: true });
     await savePasswordSecret(user.uid, password);
@@ -884,16 +1138,23 @@ app.post("/verify-phone-and-create-user", async (req, res) => {
     }
 
     // Create profile in Firestore
-    const profile = {
-      uid: user.uid,
-      fullName,
-      status: "verified",
-      phoneVerified: true,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-    if (email) profile.email = email;
-    if (phoneNumber) profile.phoneNumber = normalizedPhone;
-    if (userRole) profile.role = userRole;
+    const existingProfileDoc = await db.collection("users").doc(user.uid).get();
+    const existingProfile =
+      existingProfileDoc.exists ? existingProfileDoc.data() || {} : {};
+    const profile = applyUserProfileIdentityFields(
+      {},
+      {
+        uid: user.uid,
+        fullName,
+        email: email || "",
+        phoneNumber: normalizedPhone,
+        userRole,
+        status: "verified",
+        emailVerified: existingProfile.emailVerified ?? false,
+        phoneVerified: true,
+      },
+      existingProfile,
+    );
 
     await db.collection("users").doc(user.uid).set(profile, { merge: true });
     await savePasswordSecret(user.uid, password);
@@ -937,7 +1198,7 @@ app.post("/api/user/create", async (req, res) => {
     password: req.body.password ? "[REDACTED]" : undefined,
   });
 
-  const { email, phoneNumber, password, fullName } = req.body;
+  const { email, phoneNumber, password, fullName, userRole } = req.body;
 
   try {
     if (!fullName || !password) {
@@ -1032,6 +1293,29 @@ app.post("/api/user/create", async (req, res) => {
     const user = await auth.createUser(createPayload);
     console.log("CREATE_USER: Successfully created user:", user.uid);
 
+    const existingProfileDoc = await db.collection("users").doc(user.uid).get();
+    const existingProfile =
+      existingProfileDoc.exists ? existingProfileDoc.data() || {} : {};
+    const profileData = applyUserProfileIdentityFields(
+      {},
+      {
+        uid: user.uid,
+        fullName,
+        email: email || "",
+        phoneNumber: phoneNumber
+          ? normalizePhoneNumberOrThrow(phoneNumber, "phone number")
+          : "",
+        userRole,
+        status: "pendingVerification",
+        emailVerified: false,
+        phoneVerified: false,
+      },
+      existingProfile,
+    );
+
+    await db.collection("users").doc(user.uid).set(profileData, { merge: true });
+    console.log("CREATE_USER: Seeded Firestore profile for UID:", user.uid);
+
     res.status(200).json({
       success: true,
       message: "User created successfully",
@@ -1075,7 +1359,9 @@ app.post("/api/user/create", async (req, res) => {
 });
 
 ////////////////////// SEND EMAIL VERIFICATION //////////////////////
-// Send email verification link to user
+// Email verification links are sent by the Flutter Firebase SDK.
+// Keep this endpoint as a compatibility no-op for older clients so the backend
+// does not try to generate links and fail with auth/internal-error.
 app.post("/api/user/send-email-verification", async (req, res) => {
   console.log("SEND_EMAIL_VERIFICATION received for UID:", req.body.uid);
 
@@ -1097,18 +1383,13 @@ app.post("/api/user/send-email-verification", async (req, res) => {
       });
     }
 
-    // Generate verification link using Firebase REST API
-    const verificationLink = await admin.auth().generateEmailVerificationLink(user.email);
-    console.log("SEND_EMAIL_VERIFICATION: Generated link for:", user.email);
-
-    // In production, send this link via email service
-    // For now, we'll return it (Flutter will show it in dialog or send it)
+    console.log("SEND_EMAIL_VERIFICATION: Client should send Firebase link for:", user.email);
     res.status(200).json({
       success: true,
-      message: "Email verification link generated",
+      message: "Use Firebase client SDK sendEmailVerification() to send the verification link",
       uid: uid,
       email: user.email,
-      verificationLink: verificationLink,
+      clientHandlesEmail: true,
     });
   } catch (error) {
     console.error("SEND_EMAIL_VERIFICATION ERROR:", error.code || error.message);
@@ -1296,25 +1577,22 @@ app.post("/api/user/profile/save", async (req, res) => {
 
     const verificationState = await getUserVerificationState(uid);
 
-    const profileData = {
-      uid,
-      fullName: fullName || "",
-      email: email || "",
-      phoneNumber: phoneNumber || "",
-      status: status || verificationState.status,
-      emailVerified: verificationState.emailVerified,
-      phoneVerified: verificationState.phoneVerified,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-    if (userRole) {
-      profileData.role = userRole;
-    }
-
-    // Ensure createdAt is preserved if user already exists
     const existingDoc = await db.collection("users").doc(uid).get();
-    if (!existingDoc.exists) {
-      profileData.createdAt = admin.firestore.FieldValue.serverTimestamp();
-    }
+    const existingProfile = existingDoc.exists ? existingDoc.data() || {} : {};
+    const profileData = applyUserProfileIdentityFields(
+      {},
+      {
+        uid,
+        fullName: fullName || "",
+        email: email || "",
+        phoneNumber: phoneNumber || "",
+        status: status || verificationState.status,
+        emailVerified: verificationState.emailVerified,
+        phoneVerified: verificationState.phoneVerified,
+        userRole,
+      },
+      existingProfile,
+    );
 
     await db.collection("users").doc(uid).set(profileData, { merge: true });
     
@@ -1348,6 +1626,406 @@ app.post("/api/user/profile/save", async (req, res) => {
   }
 });
 
+app.post("/api/user/caregiver-child-age", async (req, res) => {
+  const { uid, userId, childAgeGroup } = req.body;
+  const resolvedUid = uid || userId;
+
+  try {
+    if (!resolvedUid) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    if (childAgeGroup !== "5-13" && childAgeGroup !== "13-18") {
+      return res.status(400).json({
+        success: false,
+        error: "Child age group must be either 5-13 or 13-18",
+      });
+    }
+
+    const userRef = db.collection("users").doc(resolvedUid);
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+      });
+    }
+
+    const profile = userDoc.data() || {};
+    if (!isCaregiverRole(profile.role)) {
+      return res.status(400).json({
+        success: false,
+        error: "Only caregiver accounts can set a child age group",
+      });
+    }
+
+    const payload = {
+      childAgeGroup,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (childAgeGroup === "5-13") {
+      payload.childProfileCreated = false;
+      payload.linkedChildAccount = false;
+      payload.linkedChildUserId = null;
+      payload.linkStatus = "none";
+      payload.activeLinkingCode = null;
+      payload.linkCodeExpiresAt = null;
+    } else {
+      payload.childProfileCreated = false;
+      payload.linkedChildAccount = false;
+      payload.linkedChildUserId = null;
+      payload.linkStatus = "pending";
+      payload.activeLinkingCode = null;
+      payload.linkCodeExpiresAt = null;
+    }
+
+    await userRef.set(payload, { merge: true });
+
+    return res.status(200).json({
+      success: true,
+      message: "Caregiver child age group saved",
+      childAgeGroup,
+      profileComplete: isProfileComplete({ ...profile, ...payload }),
+      needsProfileSetup: buildNeedsProfileSetup(
+        { ...profile, ...payload },
+        isProfileVerified(profile),
+      ),
+    });
+  } catch (error) {
+    console.error("CAREGIVER_CHILD_AGE ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to save caregiver child age group",
+    });
+  }
+});
+
+app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
+  const { uid, userId } = req.body;
+  const resolvedUid = uid || userId;
+
+  try {
+    if (!resolvedUid) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    const caregiverRef = db.collection("users").doc(resolvedUid);
+    const caregiverDoc = await caregiverRef.get();
+    if (!caregiverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Caregiver profile not found",
+      });
+    }
+
+    const caregiver = caregiverDoc.data() || {};
+    if (!isCaregiverRole(caregiver.role) || caregiver.childAgeGroup !== "13-18") {
+      return res.status(400).json({
+        success: false,
+        error: "Only caregivers with a 13-18 child age group can generate linking codes",
+      });
+    }
+
+    const existingLinkedChild = caregiver.linkedChildUserId;
+    if (caregiver.linkedChildAccount === true && existingLinkedChild) {
+      return res.status(400).json({
+        success: false,
+        error: "This caregiver account is already linked to an adolescent account",
+      });
+    }
+
+    let code = generateLinkingCode();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const existingCodeDoc = await db.collection("caregiverLinkCodes").doc(code).get();
+      if (!existingCodeDoc.exists) {
+        break;
+      }
+      code = generateLinkingCode();
+    }
+
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const expiresAtTimestamp = admin.firestore.Timestamp.fromDate(expiresAt);
+
+    await db.collection("caregiverLinkCodes").doc(code).set({
+      code,
+      caregiverUserId: resolvedUid,
+      status: "active",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: expiresAtTimestamp,
+    });
+
+    await caregiverRef.set(
+      {
+        linkedChildAccount: false,
+        linkedChildUserId: null,
+        linkStatus: "pending",
+        activeLinkingCode: code,
+        linkCodeExpiresAt: expiresAtTimestamp,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      code,
+      expiresAt: expiresAt.toISOString(),
+    });
+  } catch (error) {
+    console.error("GENERATE_CAREGIVER_LINK_CODE ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to generate caregiver linking code",
+    });
+  }
+});
+
+app.post("/api/user/link-caregiver-account", async (req, res) => {
+  const { uid, userId, linkingCode } = req.body;
+  const adolescentUserId = uid || userId;
+  const normalizedCode = String(linkingCode || "").trim().toUpperCase();
+
+  try {
+    if (!adolescentUserId) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    if (!normalizedCode) {
+      return res.status(400).json({
+        success: false,
+        error: "A linking code is required",
+      });
+    }
+
+    const adolescentRef = db.collection("users").doc(adolescentUserId);
+    const adolescentDoc = await adolescentRef.get();
+    if (!adolescentDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Adolescent profile not found",
+      });
+    }
+
+    const adolescent = adolescentDoc.data() || {};
+    if (String(adolescent.role || "").trim().toLowerCase() !== "adolescent") {
+      return res.status(400).json({
+        success: false,
+        error: "Only adolescent accounts can use a caregiver linking code",
+      });
+    }
+
+    const codeRef = db.collection("caregiverLinkCodes").doc(normalizedCode);
+    const codeDoc = await codeRef.get();
+    if (!codeDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Linking code not found",
+      });
+    }
+
+    const codeData = codeDoc.data() || {};
+    const expiresAt = codeData.expiresAt?.toDate?.();
+    if (codeData.status !== "active") {
+      return res.status(400).json({
+        success: false,
+        error: "This linking code is no longer active",
+      });
+    }
+    if (!expiresAt || expiresAt.getTime() <= Date.now()) {
+      await codeRef.set(
+        {
+          status: "expired",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+      return res.status(400).json({
+        success: false,
+        error: "This linking code has expired",
+      });
+    }
+
+    const caregiverUserId = codeData.caregiverUserId;
+    const caregiverRef = db.collection("users").doc(caregiverUserId);
+    const caregiverDoc = await caregiverRef.get();
+    if (!caregiverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Caregiver profile not found",
+      });
+    }
+
+    const caregiver = caregiverDoc.data() || {};
+    if (!isCaregiverRole(caregiver.role) || caregiver.childAgeGroup !== "13-18") {
+      return res.status(400).json({
+        success: false,
+        error: "This caregiver account is not eligible for adolescent linking",
+      });
+    }
+
+    if (
+      caregiver.linkedChildAccount === true &&
+      caregiver.linkedChildUserId &&
+      caregiver.linkedChildUserId !== adolescentUserId
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "This caregiver account is already linked to another adolescent",
+      });
+    }
+
+    const caregiverSettings = {
+      wantsCaregiverLink: true,
+      caregiverLinked: true,
+      caregiverId: caregiverUserId,
+      consentConfirmed: true,
+      linkStatus: "linked",
+    };
+
+    await Promise.all([
+      caregiverRef.set(
+        {
+          linkedChildAccount: true,
+          linkedChildUserId: adolescentUserId,
+          linkStatus: "linked",
+          activeLinkingCode: null,
+          linkCodeExpiresAt: null,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      ),
+      adolescentRef.set(
+        {
+          caregiverSettings,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      ),
+      codeRef.set(
+        {
+          status: "used",
+          linkedAdolescentUserId: adolescentUserId,
+          usedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      ),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: "Caregiver and adolescent accounts linked successfully",
+      caregiverUserId,
+      adolescentUserId,
+      caregiverSettings,
+    });
+  } catch (error) {
+    console.error("LINK_CAREGIVER_ACCOUNT ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to link caregiver account",
+    });
+  }
+});
+
+app.post("/api/user/unlink-caregiver-child", async (req, res) => {
+  const { uid, userId, linkedChildUserId } = req.body;
+  const caregiverUserId = uid || userId;
+
+  try {
+    if (!caregiverUserId) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    const caregiverRef = db.collection("users").doc(caregiverUserId);
+    const caregiverDoc = await caregiverRef.get();
+    if (!caregiverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Caregiver profile not found",
+      });
+    }
+
+    const caregiver = caregiverDoc.data() || {};
+    if (!isCaregiverRole(caregiver.role)) {
+      return res.status(403).json({
+        success: false,
+        error: "Only caregivers can remove a linked child",
+      });
+    }
+
+    const targetChildUserId =
+      linkedChildUserId || caregiver.linkedChildUserId || null;
+    if (!targetChildUserId) {
+      return res.status(400).json({
+        success: false,
+        error: "No linked child account was found",
+      });
+    }
+
+    const adolescentRef = db.collection("users").doc(targetChildUserId);
+    const adolescentDoc = await adolescentRef.get();
+
+    await caregiverRef.set(
+      {
+        linkedChildAccount: false,
+        linkedChildUserId: null,
+        linkStatus: "pending",
+        activeLinkingCode: null,
+        linkCodeExpiresAt: null,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    if (adolescentDoc.exists) {
+      await adolescentRef.set(
+        {
+          caregiverSettings: {
+            wantsCaregiverLink: false,
+            caregiverLinked: false,
+            caregiverId: null,
+            consentConfirmed: true,
+            linkStatus: "none",
+          },
+          editPermissions: {
+            canEditSensitive: true,
+            requiresApproval: false,
+          },
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Linked child removed successfully",
+      caregiverUserId,
+      linkedChildUserId: targetChildUserId,
+    });
+  } catch (error) {
+    console.error("UNLINK_CAREGIVER_CHILD ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to remove linked child",
+    });
+  }
+});
+
 ////////////////////// LOGIN (EMAIL/PASSWORD) //////////////////////
 // Authenticate user with email and password
 app.post("/api/user/login", async (req, res) => {
@@ -1367,7 +2045,11 @@ app.post("/api/user/login", async (req, res) => {
     const user = await auth.getUserByEmail(email);
     
     // Verify password (compare with stored hash if using custom passwords)
-    const userSecret = await db.collection("userSecrets").doc(user.uid).get();
+    const [userSecret, profileSnap] = await Promise.all([
+      db.collection("userSecrets").doc(user.uid).get(),
+      db.collection("users").doc(user.uid).get(),
+    ]);
+
     if (!userSecret.exists) {
       return res.status(401).json({
         success: false,
@@ -1383,13 +2065,11 @@ app.post("/api/user/login", async (req, res) => {
       });
     }
 
-    const profileSnap = await db.collection("users").doc(user.uid).get();
     const profile = profileSnap.exists ? profileSnap.data() || {} : {};
+    const securitySettings = normalizeSecuritySettings(profile);
     const isDbVerified =
       profile.status === "verified" || profile.emailVerified === true;
-    const profileComplete = Boolean(
-      profile.baselineNutritionTargetId && profile.medicalProfileId,
-    );
+    const profileComplete = isProfileComplete(profile);
 
     if (user.email && !isDbVerified && user.emailVerified !== true) {
       return res.status(403).json({
@@ -1402,6 +2082,18 @@ app.post("/api/user/login", async (req, res) => {
       });
     }
 
+    if (
+      securitySettings.mfaMethod === "authenticator" &&
+      securitySettings.authenticatorEnabled &&
+      !securitySettings.hasAuthenticatorSecret
+    ) {
+      return res.status(409).json({
+        success: false,
+        error:
+          "Authenticator MFA is enabled, but no active authenticator secret is stored.",
+      });
+    }
+
     console.log("LOGIN: Successfully authenticated user:", user.uid);
 
     res.status(200).json({
@@ -1411,7 +2103,10 @@ app.post("/api/user/login", async (req, res) => {
       email: user.email,
       displayName: user.displayName,
       profileComplete,
-      needsProfileSetup: !profileComplete,
+      needsProfileSetup: buildNeedsProfileSetup(profile, true),
+      mfaRequired: securitySettings.mfaEnabled,
+      mfaMethod: securitySettings.mfaMethod,
+      securitySettings,
     });
   } catch (error) {
     console.error("LOGIN ERROR:", error.code || error.message);
@@ -1429,6 +2124,472 @@ app.post("/api/user/login", async (req, res) => {
     });
   }
 });
+
+app.post("/api/user/security-settings", async (req, res) => {
+  console.log("SECURITY_SETTINGS received for UID:", req.body.uid);
+
+  const { uid } = req.body;
+
+  try {
+    if (!uid) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID (uid) is required",
+      });
+    }
+
+    const userDoc = await db.collection("users").doc(uid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+      });
+    }
+
+    const profile = userDoc.data() || {};
+    const authUser = await auth.getUser(uid).catch(() => null);
+    const securitySettings = normalizeSecuritySettings({
+      ...profile,
+      phoneNumber: profile.phoneNumber || authUser?.phoneNumber || "",
+      email: profile.email || authUser?.email || "",
+    });
+
+    return res.status(200).json({
+      success: true,
+      securitySettings,
+    });
+  } catch (error) {
+    console.error("SECURITY_SETTINGS ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to load security settings",
+    });
+  }
+});
+
+app.post("/api/user/update-security-settings", async (req, res) => {
+  console.log("UPDATE_SECURITY_SETTINGS received:", {
+    uid: req.body.uid,
+    mfaEnabled: req.body.mfaEnabled,
+    mfaMethod: req.body.mfaMethod,
+  });
+
+  const { uid, mfaEnabled, mfaMethod, mfaCode } = req.body;
+
+  try {
+    if (!uid || typeof mfaEnabled !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        error: "User ID (uid) and MFA enabled state are required",
+      });
+    }
+
+    const userRef = db.collection("users").doc(uid);
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+      });
+    }
+
+    const profile = userDoc.data() || {};
+    const securitySettings = normalizeSecuritySettings(profile);
+    const requestedMethod =
+      mfaEnabled == true
+        ? (mfaMethod == "authenticator"
+            ? mfaMethod
+            : securitySettings.mfaMethod)
+        : "none";
+
+    if (mfaEnabled && requestedMethod === "authenticator" && !securitySettings.hasAuthenticatorSecret) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Complete authenticator enrollment before enabling multi-factor authentication.",
+      });
+    }
+
+    if (
+      mfaEnabled === false &&
+      securitySettings.authenticatorEnabled &&
+      securitySettings.mfaSecret
+    ) {
+      if (!isValidAuthenticatorCode(mfaCode)) {
+        return res.status(400).json({
+          success: false,
+          error: "Enter a valid 6-digit authenticator code to disable MFA.",
+        });
+      }
+
+      if (!verifyTotpCode(securitySettings.mfaSecret, mfaCode)) {
+        return res.status(401).json({
+          success: false,
+          error: "Invalid authenticator code.",
+        });
+      }
+    }
+
+    await userRef.set(
+      {
+        mfaEnabled,
+        mfaSecret: securitySettings.mfaSecret || null,
+        mfaTempSecret: null,
+        securitySettings: {
+          mfaEnabled,
+          mfaMethod: requestedMethod,
+          authenticatorEnabled: mfaEnabled && requestedMethod === "authenticator",
+          emailMfaEnabled: false,
+          mfaEmail: securitySettings.mfaEmail,
+          mfaSecret: securitySettings.mfaSecret || null,
+          mfaTempSecret: null,
+          emailChallengeCodeHash: admin.firestore.FieldValue.delete(),
+          emailChallengeExpiresAt: admin.firestore.FieldValue.delete(),
+          emailChallengePurpose: admin.firestore.FieldValue.delete(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          ...(mfaEnabled
+            ? {
+              mfaVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+            }
+            : {}),
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Security settings updated",
+      securitySettings: normalizeSecuritySettings({
+        ...profile,
+        mfaEnabled,
+        mfaSecret: securitySettings.mfaSecret || null,
+        mfaTempSecret: null,
+        securitySettings: {
+          ...(profile.securitySettings || {}),
+          mfaEnabled,
+          mfaMethod: requestedMethod,
+          authenticatorEnabled: mfaEnabled && requestedMethod === "authenticator",
+          emailMfaEnabled: false,
+          mfaEmail: securitySettings.mfaEmail,
+          mfaSecret: securitySettings.mfaSecret || null,
+          mfaTempSecret: null,
+        },
+      }),
+    });
+  } catch (error) {
+    console.error("UPDATE_SECURITY_SETTINGS ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to update security settings",
+    });
+  }
+});
+
+app.post("/api/user/reminder-settings", async (req, res) => {
+  console.log("REMINDER_SETTINGS received:", req.body);
+
+  const actingUserId = req.body.uid;
+  const requestedProfileUserId = req.body.profileUserId;
+
+  try {
+    const { targetProfile, targetUserId } = await resolveReminderSettingsTarget(
+      actingUserId,
+      requestedProfileUserId,
+    );
+
+    return res.status(200).json({
+      success: true,
+      profileUserId: targetUserId,
+      reminderSettings: normalizeReminderSettings(targetProfile),
+    });
+  } catch (error) {
+    console.error("REMINDER_SETTINGS ERROR:", error.code || error.message);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message || "Failed to load reminder settings",
+    });
+  }
+});
+
+app.post("/api/user/update-reminder-settings", async (req, res) => {
+  console.log("UPDATE_REMINDER_SETTINGS received:", req.body);
+
+  const actingUserId = req.body.uid;
+  const requestedProfileUserId = req.body.profileUserId;
+
+  try {
+    const { targetRef } = await resolveReminderSettingsTarget(
+      actingUserId,
+      requestedProfileUserId,
+    );
+
+    const mealReminders =
+      req.body.mealReminders && typeof req.body.mealReminders === "object"
+        ? req.body.mealReminders
+        : {};
+
+    const reminderSettings = {
+      medicationReminders: req.body.medicationReminders === true,
+      hydrationAlerts: req.body.hydrationAlerts === true,
+      mealReminders: {
+        breakfast: mealReminders.breakfast === true,
+        lunch: mealReminders.lunch === true,
+        snack: mealReminders.snack === true,
+        dinner: mealReminders.dinner === true,
+      },
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    await targetRef.set(
+      {
+        reminderSettings,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Reminder settings updated",
+      reminderSettings: normalizeReminderSettings({ reminderSettings }),
+    });
+  } catch (error) {
+    console.error("UPDATE_REMINDER_SETTINGS ERROR:", error.code || error.message);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message || "Failed to update reminder settings",
+    });
+  }
+});
+
+app.post("/api/user/device-token/register", async (req, res) => {
+  console.log("REGISTER_DEVICE_TOKEN received:", {
+    uid: req.body.uid,
+    platform: req.body.platform,
+    tokenPreview: String(req.body.token || "").slice(0, 16),
+  });
+
+  const { uid, token, platform } = req.body;
+
+  try {
+    if (!uid || !token) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID and device token are required",
+      });
+    }
+
+    const normalizedToken = normalizeDeviceToken(token);
+    if (!normalizedToken) {
+      return res.status(400).json({
+        success: false,
+        error: "Device token is invalid",
+      });
+    }
+
+    const userRef = db.collection("users").doc(uid);
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+      });
+    }
+
+    const profile = userDoc.data() || {};
+    await userRef.set(
+      {
+        deviceTokens: buildDeviceTokenRecord(normalizedToken, profile, platform),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Device token registered",
+    });
+  } catch (error) {
+    console.error("REGISTER_DEVICE_TOKEN ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to register device token",
+    });
+  }
+});
+
+app.post("/api/user/device-token/unregister", async (req, res) => {
+  console.log("UNREGISTER_DEVICE_TOKEN received:", {
+    uid: req.body.uid,
+    tokenPreview: String(req.body.token || "").slice(0, 16),
+  });
+
+  const { uid, token } = req.body;
+
+  try {
+    if (!uid || !token) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID and device token are required",
+      });
+    }
+
+    const normalizedToken = normalizeDeviceToken(token);
+    const userRef = db.collection("users").doc(uid);
+    await userRef.set(
+      {
+        [`deviceTokens.${normalizedToken}`]:
+          admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Device token unregistered",
+    });
+  } catch (error) {
+    console.error("UNREGISTER_DEVICE_TOKEN ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to unregister device token",
+    });
+  }
+});
+
+app.post("/api/user/push-notification/send-test", async (req, res) => {
+  console.log("SEND_TEST_PUSH received:", { uid: req.body.uid });
+
+  const { uid } = req.body;
+
+  try {
+    if (!uid) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    const userDoc = await db.collection("users").doc(uid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+      });
+    }
+
+    const profile = userDoc.data() || {};
+    const result = await sendPushNotificationToProfile(profile, {
+      title: "NutriKidney test",
+      body: "Push notifications are working on this device.",
+      data: {
+        type: "test_notification",
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Test push notification sent",
+      successCount: result.successCount,
+      failureCount: result.failureCount,
+    });
+  } catch (error) {
+    console.error("SEND_TEST_PUSH ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to send test push notification",
+    });
+  }
+});
+
+/**
+ * POST /api/reminders/do-not-remind
+ * Set a "do not remind me" period for the user
+ * Request body: { uid: string, durationMinutes: number }
+ */
+app.post("/api/reminders/do-not-remind", async (req, res) => {
+  const { uid, durationMinutes = 60 } = req.body;
+
+  try {
+    if (!uid) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    if (durationMinutes <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Duration must be greater than 0",
+      });
+    }
+
+    // Calculate the time until reminders should resume
+    const dontRemindUntilMs = Date.now() + durationMinutes * 60 * 1000;
+
+    // Update user profile with "do not remind" timestamp
+    await db.collection("users").doc(uid).update({
+      "reminderSettings.dontRemindUntil": admin.firestore.Timestamp.fromMillis(
+        dontRemindUntilMs
+      ),
+    });
+
+    console.log(`[Reminders] User ${uid} set do-not-remind for ${durationMinutes} minutes`);
+
+    return res.status(200).json({
+      success: true,
+      message: `Reminders disabled for ${durationMinutes} minutes`,
+      dontRemindUntil: new Date(dontRemindUntilMs).toISOString(),
+    });
+  } catch (error) {
+    console.error("Error setting do-not-remind:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to set do-not-remind",
+    });
+  }
+});
+
+/**
+ * POST /api/reminders/clear-do-not-remind
+ * Clear the "do not remind me" period (resume reminders immediately)
+ * Request body: { uid: string }
+ */
+app.post("/api/reminders/clear-do-not-remind", async (req, res) => {
+  const { uid } = req.body;
+
+  try {
+    if (!uid) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    // Clear the "do not remind" timestamp
+    await db.collection("users").doc(uid).update({
+      "reminderSettings.dontRemindUntil": admin.firestore.FieldValue.delete(),
+    });
+
+    console.log(`[Reminders] User ${uid} cleared do-not-remind`);
+
+    return res.status(200).json({
+      success: true,
+      message: "Reminders re-enabled",
+    });
+  } catch (error) {
+    console.error("Error clearing do-not-remind:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to clear do-not-remind",
+    });
+  }
+});
+
 
 ////////////////////// SEND PASSWORD RESET //////////////////////
 // Send password reset email
@@ -1515,6 +2676,94 @@ app.post("/api/user/reset-password", async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || "Failed to reset password",
+    });
+  }
+});
+
+app.post("/api/user/change-password", async (req, res) => {
+  console.log("CHANGE_PASSWORD received:", {
+    uid: req.body.uid,
+    verificationContact: req.body.verificationContact,
+    currentPassword: req.body.currentPassword ? "[REDACTED]" : undefined,
+    newPassword: req.body.newPassword ? "[REDACTED]" : undefined,
+  });
+
+  const { uid, currentPassword, newPassword, verificationContact } = req.body;
+
+  try {
+    if (!uid || !currentPassword || !newPassword || !verificationContact) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "User ID, current password, new password, and verification contact are required",
+      });
+    }
+
+    const userDoc = await db.collection("users").doc(uid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+      });
+    }
+
+    const profile = userDoc.data() || {};
+    const storedEmail = String(profile.email || "").trim().toLowerCase();
+    const storedPhone = String(profile.phoneNumber || "").trim();
+    const typedContact = String(verificationContact || "").trim();
+    const normalizedTypedContact = typedContact.toLowerCase();
+
+    const verificationMatches =
+      (storedEmail && normalizedTypedContact === storedEmail) ||
+      (storedPhone && typedContact === storedPhone);
+
+    if (!verificationMatches) {
+      return res.status(403).json({
+        success: false,
+        error:
+          "Verification contact does not match the linked account contact",
+      });
+    }
+
+    const userSecret = await db.collection("userSecrets").doc(uid).get();
+    if (!userSecret.exists) {
+      return res.status(401).json({
+        success: false,
+        error: "Current password could not be verified",
+      });
+    }
+
+    const { passwordSalt, passwordHash } = userSecret.data() || {};
+    if (
+      !passwordSalt ||
+      !passwordHash ||
+      !verifyPassword(currentPassword, passwordSalt, passwordHash)
+    ) {
+      return res.status(401).json({
+        success: false,
+        error: "Current password is incorrect",
+      });
+    }
+
+    await auth.updateUser(uid, { password: newPassword });
+    await savePasswordSecret(uid, newPassword);
+    await db.collection("users").doc(uid).set(
+      {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Password updated successfully",
+      uid,
+    });
+  } catch (error) {
+    console.error("CHANGE_PASSWORD ERROR:", error.code || error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message || "Failed to change password",
     });
   }
 });
@@ -1634,7 +2883,22 @@ app.post("/api/user/cancel-verification", async (req, res) => {
 const healthRoutes = require("./routes/healthRoutes");
 app.use("/api/health", healthRoutes);
 
+////////////////////// FOOD LOG ROUTES //////////////////////
+const foodLogRoutes = require("./routes/foodLogRoutes");
+app.use("/api/food", foodLogRoutes);
+
+////////////////////// GAMIFICATION ROUTES //////////////////////
+const gamificationRoutes = require("./routes/gamificationRoutes");
+app.use("/api/gamification", gamificationRoutes);
+
+////////////////////// AUTHENTICATOR MFA ROUTES //////////////////////
+const authenticatorMfaRoutes = require("./routes/authenticatorMfaRoutes");
+app.use("/api/user/mfa/authenticator", authenticatorMfaRoutes);
+
 ////////////////////// START SERVER //////////////////////
 app.listen(3000, "0.0.0.0", () => {
   console.log("Server running on port 3000");
+  
+  // Initialize reminder scheduler
+  initializeReminderScheduler();
 });
