@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:nutri_kidney/main/medication_scan_flow.dart';
 import 'package:nutri_kidney/main/health_metrics_widgets.dart';
 import 'package:nutri_kidney/services/api_service.dart';
+import 'package:nutri_kidney/services/notification_service.dart';
 import 'dashboard.dart';
 import 'food_log.dart';
 import 'analytics.dart';
@@ -408,15 +409,15 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                   }
                 },
               ),
-              ListTile(
-                leading: const Icon(
-                  Icons.delete_outline,
-                  color: Colors.redAccent,
-                ),
-                title: const Text('Delete Entry'),
-                onTap: () async {
-                  Navigator.pop(bottomSheetContext);
-                  if (collectionType == 'Medication') {
+              if (collectionType == 'Medication')
+                ListTile(
+                  leading: const Icon(
+                    Icons.delete_outline,
+                    color: Colors.redAccent,
+                  ),
+                  title: const Text('Delete Entry'),
+                  onTap: () async {
+                    Navigator.pop(bottomSheetContext);
                     final medicationId =
                         (_medications[index]['medicationId'] ??
                                 _medications[index]['id'])
@@ -426,6 +427,8 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       setState(() {
                         _medications.removeAt(index);
                       });
+                      await NotificationService
+                          .refreshReminderNotificationsFromDashboard();
                       return;
                     }
 
@@ -443,6 +446,8 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                         _medications.removeAt(index);
                       });
                       await _loadHealthSummary();
+                      await NotificationService
+                          .refreshReminderNotificationsFromDashboard();
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Medication deleted.')),
@@ -455,13 +460,8 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                         ),
                       );
                     }
-                  } else {
-                    setState(() {
-                      _labResults.removeAt(index);
-                    });
-                  }
-                },
-              ),
+                  },
+                ),
               const SizedBox(height: 10),
             ],
           ),
@@ -669,7 +669,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Text(
-                            isEdit ? 'Edit Measurement' : 'Log New Measurement',
+                            isEdit ? 'Edit Measurement' : 'Add Measurement',
                             style: const TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
@@ -897,7 +897,9 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                                   ),
                                 )
                               : Text(
-                                  'Save Measurement',
+                                  isEdit
+                                      ? 'Update Measurement'
+                                      : 'Add Measurement',
                                   style: TextStyle(
                                     color: isFormValid && !isSavingMeasurement
                                         ? Colors.white
@@ -1376,6 +1378,8 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
 
                               Navigator.of(dialogContext).pop();
                               await _loadHealthSummary();
+                              await NotificationService
+                                  .refreshReminderNotificationsFromDashboard();
                               if (!mounted) return;
                               ScaffoldMessenger.of(pageContext).showSnackBar(
                                 const SnackBar(
@@ -1501,39 +1505,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                           style: TextStyle(color: Color(0xFF90A4AE), fontSize: 14),
                         ),
                         const SizedBox(height: 24),
-
-              // --- Log New Measurement Button ---
-              InkWell(
-                onTap: () => _showMeasurementForm(),
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF2FBF7),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: const Color(0xFF00C874),
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: const [
-                      Icon(Icons.add, color: Color(0xFF00C874)),
-                      SizedBox(width: 8),
-                      Text(
-                        'Log New Measurement',
-                        style: TextStyle(
-                          color: Color(0xFF00C874),
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 32),
 
               // --- Vital Signs Section ---
               const Text(
@@ -1664,6 +1635,15 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
 
                   Row(
                     children: [
+                      IconButton(
+                        onPressed: () => _showMeasurementForm(),
+                        tooltip: 'Add Measurement',
+                        icon: const Icon(
+                          Icons.add_circle_outline,
+                          color: Color(0xFF00C874),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
                       // --- History Button ---
                       InkWell(
                         onTap: _showHistorySheet,
@@ -1697,24 +1677,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             ],
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 4),
-                      PopupMenuButton<String>(
-                        icon: const Icon(
-                          Icons.more_vert,
-                          color: Color(0xFF37474F),
-                        ),
-                        onSelected: (value) {
-                          if (value == 'upload_lab_result') {
-                            _showMeasurementForm(initialType: 'Creatinine');
-                          }
-                        },
-                        itemBuilder: (context) => const [
-                          PopupMenuItem(
-                            value: 'upload_lab_result',
-                            child: Text('Upload new lab result'),
-                          ),
-                        ],
                       ),
                     ],
                   ),

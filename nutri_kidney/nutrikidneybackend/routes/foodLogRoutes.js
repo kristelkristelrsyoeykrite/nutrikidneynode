@@ -201,15 +201,6 @@ function serializeFoodLog(doc) {
   };
 }
 
-function isMissingIndexError(error) {
-  const message = String(error?.message || "");
-  return (
-    error?.code === 9 ||
-    message.includes("FAILED_PRECONDITION") ||
-    message.toLowerCase().includes("requires an index")
-  );
-}
-
 function parseLogDateTime(value) {
   if (!value) {
     const error = new Error("loggedAt is required");
@@ -676,48 +667,29 @@ router.post("/logs/list", async (req, res) => {
     const requestedLimit = Number(limit) || 100;
     let logs = [];
 
-    try {
-      let query = db.collection(FOOD_LOG_COLLECTION).where("userId", "==", userId);
-      if (childProfileId) {
-        query = query.where("childProfileId", "==", childProfileId);
+    let query = db.collection(FOOD_LOG_COLLECTION);
+    if (date) {
+      query = query.where("date", "==", date);
+    } else if (dateFrom || dateTo) {
+      if (dateFrom) {
+        query = query.where("date", ">=", dateFrom);
       }
-      if (date) {
-        query = query.where("date", "==", date);
-      } else {
-        if (dateFrom) {
-          query = query.where("date", ">=", dateFrom);
-        }
-        if (dateTo) {
-          query = query.where("date", "<=", dateTo);
-        }
+      if (dateTo) {
+        query = query.where("date", "<=", dateTo);
       }
-
-      const snapshot = await query.limit(requestedLimit).get();
-      logs = snapshot.docs.map(serializeFoodLog);
-    } catch (error) {
-      if (!isMissingIndexError(error)) {
-        throw error;
-      }
-
-      console.warn(
-        "FOOD_LOG_LIST index missing, falling back to in-memory filtering:",
-        error.message,
-      );
-
-      const fallbackSnapshot = await db
-        .collection(FOOD_LOG_COLLECTION)
-        .where("userId", "==", userId)
-        .limit(Math.max(requestedLimit * 5, 500))
-        .get();
-
-      logs = fallbackSnapshot.docs.map(serializeFoodLog).filter((log) => {
-        if (childProfileId && log.childProfileId !== childProfileId) return false;
-        if (date && log.date !== date) return false;
-        if (dateFrom && (!log.date || log.date < dateFrom)) return false;
-        if (dateTo && (!log.date || log.date > dateTo)) return false;
-        return true;
-      });
+    } else {
+      query = query.where("userId", "==", userId);
     }
+
+    const snapshot = await query.get();
+    logs = snapshot.docs.map(serializeFoodLog).filter((log) => {
+      if (log.userId !== userId) return false;
+      if (childProfileId && log.childProfileId !== childProfileId) return false;
+      if (date && log.date !== date) return false;
+      if (dateFrom && (!log.date || log.date < dateFrom)) return false;
+      if (dateTo && (!log.date || log.date > dateTo)) return false;
+      return true;
+    });
 
     logs = logs
       .filter((log) => includeDeleted || !log.deletedAt)

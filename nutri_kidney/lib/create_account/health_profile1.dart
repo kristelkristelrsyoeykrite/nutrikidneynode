@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
-import '../services/auth_service.dart';
-import '../login/login.dart';
 import 'health_profile2.dart';
 
 class HealthProfile1Page extends StatefulWidget {
@@ -29,12 +27,22 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
   String? _dryWeight;
   String? _muac;
   String? _ckdStage;
+  final Set<String> _touchedFields = {};
 
   // REAL DATE VALUES (for backend)
   DateTime? _dob;
   DateTime? _diagnosisDate;
 
   bool get _isAdolescentRole => ApiService.userRole == 'adolescent';
+
+  String get _accountTypeLabel {
+    final role = ApiService.userRole ??
+        ApiService.signupData['userRole']?.toString() ??
+        ApiService.signupData['role']?.toString();
+    if (role == 'adolescent') return 'Adolescent';
+    if (role == 'caregiver' || role == 'parent_caregiver') return 'Caregiver';
+    return 'Profile';
+  }
 
   DateTime _todayDateOnly() {
     final now = DateTime.now();
@@ -85,16 +93,24 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     if (!_isAdolescentRole) return null;
     final text = _ageController.text.trim();
     if (text.isEmpty) {
-      return 'If you selected Adolescent, the age must be 13 or above.';
+      return 'Required';
     }
     final age = int.tryParse(text);
     if (age == null || age < 13) {
-      return 'If you selected Adolescent, the age must be 13 or above.';
+      return 'Required';
     }
     if (age > 18) {
-      return 'Adolescent accounts must be 18 years old or below.';
+      return 'Required';
     }
     return null;
+  }
+
+  bool _hasTouched(String field) {
+    return _touchedFields.contains(field);
+  }
+
+  String? _requiredHint(String field, bool isMissing, [String message = 'Required']) {
+    return _hasTouched(field) && isMissing ? message : null;
   }
 
   @override
@@ -111,8 +127,30 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
         setState(() {});
       });
     }
+    _nameController.addListener(() => _markTouchedWhenNotEmpty('name', _nameController));
+    _heightController.addListener(() => _markTouchedWhenNotEmpty('height', _heightController));
+    _weightController.addListener(() => _markTouchedWhenNotEmpty('weight', _weightController));
     _heightController.addListener(_updateBmi);
     _weightController.addListener(_updateBmi);
+  }
+
+  void _markTouched(String field) {
+    if (_touchedFields.contains(field)) return;
+    setState(() {
+      _touchedFields.add(field);
+    });
+  }
+
+  void _markTouchedWhenNotEmpty(
+    String field,
+    TextEditingController controller,
+  ) {
+    if (controller.text.trim().isEmpty || _touchedFields.contains(field)) {
+      return;
+    }
+    setState(() {
+      _touchedFields.add(field);
+    });
   }
 
   @override
@@ -162,13 +200,8 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
         _appetiteStatus != null;
   }
 
-  Future<void> _leaveSetup() async {
-    await AuthService.signOut();
-    if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (context) => const LoginPage()),
-      (route) => false,
-    );
+  void _returnToPrivacyConsent() {
+    Navigator.of(context).pop();
   }
 
   // FORMAT DATE FOR UI ONLY
@@ -220,11 +253,73 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     }
   }
 
+  Future<void> _continueToStep2() async {
+    if (!_isAgeAllowedForRole()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _isAdolescentRole
+                ? 'If you selected Adolescent, the age must be 13 or above.'
+                : 'Enter a valid age before continuing.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (!_isDobAllowedForRole()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'The date of birth must match an adolescent age of 13 or above.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final data = {
+      "name": _nameController.text,
+      "dob": _dob!.toIso8601String(),
+      "ageYears": int.parse(_ageController.text),
+      "age_years": int.parse(_ageController.text),
+      "sex": _selectedSex,
+      "gender": _selectedSex,
+      "height": double.parse(_heightController.text),
+      "height_cm": double.parse(_heightController.text),
+      "weight": double.parse(_weightController.text),
+      "weight_kg": double.parse(_weightController.text),
+      "bmi": double.parse(_bmiController.text),
+      "diagnosisDate": _diagnosisDate!.toIso8601String(),
+      "kidneyType": _kidneyDiseaseType,
+      "dryWeight": _dryWeight,
+      "muac": _muac,
+      "appetiteStatus": _appetiteStatus,
+      "ckdStage": _ckdStage,
+    };
+
+    try {
+      // Attempt to send step1 data, but don't crash on failure.
+      await ApiService.sendStep1(data);
+    } catch (e) {
+      // Log and continue if backend is unreachable during development.
+      debugPrint('sendStep1 failed: $e');
+    }
+
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const HealthProfile2Page(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return WillPopScope(
       onWillPop: () async {
-        await _leaveSetup();
+        _returnToPrivacyConsent();
         return false;
       },
       child: Scaffold(
@@ -276,6 +371,10 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       ),
                     ),
 
+                    const SizedBox(height: 12),
+
+                    Center(child: _buildAccountTypeBadge()),
+
                     const SizedBox(height: 24),
 
                     // PROGRESS
@@ -312,9 +411,14 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     // NAME
                     _buildTextField(
-                      label: "Enter Child's Full Name",
+                      label: "Enter Child's Full Name (Required)",
                       hint: "Type here",
                       controller: _nameController,
+                      onTap: () => _markTouched('name'),
+                      helperText: _requiredHint(
+                        'name',
+                        _nameController.text.trim().isEmpty,
+                      ),
                     ),
 
                     const SizedBox(height: 16),
@@ -324,14 +428,28 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       children: [
                         Expanded(
                           child: _buildDateField(
-                            label: "Date of Birth",
+                            label: "Date of Birth (Required)",
                             hint: "MM/DD/YYYY",
                             controller: _dobController,
-                            onTap: () => _selectDate(context, "dob"),
+                            onTap: () {
+                              _markTouched('dob');
+                              _selectDate(context, "dob");
+                            },
+                            helperText: _requiredHint(
+                              'dob',
+                              _dob == null,
+                            ),
                           ),
                         ),
                         const SizedBox(width: 16),
-                        Expanded(child: _buildSex()),
+                        Expanded(
+                          child: _buildSex(
+                            helperText: _requiredHint(
+                              'sex',
+                              _selectedSex == null,
+                            ),
+                          ),
+                        ),
                       ],
                     ),
 
@@ -339,12 +457,15 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     _buildTextField(
                       label: "Age (years)",
-                      hint: _isAdolescentRole
-                          ? "Adolescent age must be 13 or above"
-                          : "Enter age in years",
+                      hint: "Calculated from date of birth",
                       controller: _ageController,
                       keyboardType: TextInputType.number,
-                      helperText: _ageHelperText,
+                      readOnly: true,
+                      helperText: (_hasTouched('dob') ? _ageHelperText : null) ??
+                          _requiredHint(
+                            'dob',
+                            _ageController.text.trim().isEmpty,
+                          ),
                     ),
 
                     const SizedBox(height: 16),
@@ -354,19 +475,29 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       children: [
                         Expanded(
                           child: _buildTextField(
-                            label: "Height(cm)",
+                            label: "Height(cm) (Required)",
                             hint: "Height in CM",
                             controller: _heightController,
                             keyboardType: TextInputType.number,
+                            onTap: () => _markTouched('height'),
+                            helperText: _requiredHint(
+                              'height',
+                              _heightController.text.trim().isEmpty,
+                            ),
                           ),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
                           child: _buildTextField(
-                            label: "Weight (kg)",
+                            label: "Weight (kg) (Required)",
                             hint: "Weight in kg",
                             controller: _weightController,
                             keyboardType: TextInputType.number,
+                            onTap: () => _markTouched('weight'),
+                            helperText: _requiredHint(
+                              'weight',
+                              _weightController.text.trim().isEmpty,
+                            ),
                           ),
                         ),
                       ],
@@ -380,6 +511,11 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       controller: _bmiController,
                       keyboardType: TextInputType.number,
                       readOnly: true,
+                      helperText:
+                          (_hasTouched('height') || _hasTouched('weight')) &&
+                                  _bmiController.text.trim().isEmpty
+                              ? "Required"
+                              : null,
                     ),
 
                     const SizedBox(height: 16),
@@ -406,27 +542,42 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     // APPETITE STATUS (NEW)
                     _buildDropdown(
-                      "Appetite Status",
+                      "Appetite Status (Required)",
                       _appetiteStatus,
                       ["Very Good", "Good", "Fair", "Poor", "Very Poor"],
-                      (val) => setState(() => _appetiteStatus = val),
+                      (val) => setState(() {
+                        _touchedFields.add('appetite');
+                        _appetiteStatus = val;
+                      }),
+                      onTap: () => _markTouched('appetite'),
+                      helperText: _requiredHint(
+                        'appetite',
+                        _appetiteStatus == null,
+                      ),
                     ),
 
                     const SizedBox(height: 16),
 
                     // DIAGNOSIS DATE
                     _buildDateField(
-                      label: "Date of Diagnosis",
+                      label: "Date of Diagnosis (Required)",
                       hint: "MM/DD/YYYY",
                       controller: _diagnosisDateController,
-                      onTap: () => _selectDate(context, "diagnosis"),
+                      onTap: () {
+                        _markTouched('diagnosisDate');
+                        _selectDate(context, "diagnosis");
+                      },
+                      helperText: _requiredHint(
+                        'diagnosisDate',
+                        _diagnosisDate == null,
+                      ),
                     ),
 
                     const SizedBox(height: 16),
 
                     // KIDNEY TYPE
                     _buildDropdown(
-                      "Type of Kidney Disease",
+                      "Type of Kidney Disease (Required)",
                       _kidneyDiseaseType,
                       [
                         "Congenital Anomaly",
@@ -434,7 +585,15 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                         "Hereditary Nephropathy",
                         "Other",
                       ],
-                      (val) => setState(() => _kidneyDiseaseType = val),
+                      (val) => setState(() {
+                        _touchedFields.add('kidneyDisease');
+                        _kidneyDiseaseType = val;
+                      }),
+                      onTap: () => _markTouched('kidneyDisease'),
+                      helperText: _requiredHint(
+                        'kidneyDisease',
+                        _kidneyDiseaseType == null,
+                      ),
                     ),
 
                     const SizedBox(height: 16),
@@ -449,102 +608,59 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     const SizedBox(height: 40),
 
-                    // CONTINUE BUTTON (ONLY LOGIC ADDED HERE)
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: _isFormValid
-                            ? () async {
-                                if (!_isAgeAllowedForRole()) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        _isAdolescentRole
-                                            ? 'If you selected Adolescent, the age must be 13 or above.'
-                                            : 'Enter a valid age before continuing.',
-                                      ),
-                                    ),
-                                  );
-                                  return;
-                                }
-
-                                if (!_isDobAllowedForRole()) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'The date of birth must match an adolescent age of 13 or above.',
-                                      ),
-                                    ),
-                                  );
-                                  return;
-                                }
-
-                                final data = {
-                                  "name": _nameController.text,
-                                  "dob": _dob!.toIso8601String(),
-                                  "ageYears": int.parse(_ageController.text),
-                                  "age_years": int.parse(_ageController.text),
-                                  "sex": _selectedSex,
-                                  "gender": _selectedSex,
-                                  "height": double.parse(_heightController.text),
-                                  "height_cm": double.parse(_heightController.text),
-                                  "weight": double.parse(_weightController.text),
-                                  "weight_kg": double.parse(_weightController.text),
-                                  "bmi": double.parse(_bmiController.text),
-                                  "diagnosisDate":
-                                      _diagnosisDate!.toIso8601String(),
-                                  "kidneyType": _kidneyDiseaseType,
-                                  "dryWeight": _dryWeight,
-                                  "muac": _muac,
-                                  "appetiteStatus": _appetiteStatus,
-                                  "ckdStage": _ckdStage,
-                                };
-
-                                try {
-                                  // Attempt to send step1 data, but don't crash on failure.
-                                  await ApiService.sendStep1(data);
-                                } catch (e) {
-                                  // Log and continue — backend may be unreachable during development.
-                                  debugPrint('sendStep1 failed: $e');
-                                }
-
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) =>
-                                        const HealthProfile2Page(),
-                                  ),
-                                );
-                              }
-                            : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF4DB6AC),
-                          disabledBackgroundColor: Colors.grey,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                    // --- Side-by-Side Buttons ---
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SizedBox(
+                            height: 50,
+                            child: TextButton(
+                              onPressed: _returnToPrivacyConsent,
+                              style: TextButton.styleFrom(
+                                backgroundColor: const Color(0xFFE8EDEA),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              child: const Text(
+                                "Back",
+                                style: TextStyle(
+                                  color: Color(0xFF37474F),
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
                           ),
                         ),
-                        child: const Text(
-                          "Continue",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: SizedBox(
+                            height: 50,
+                            child: ElevatedButton(
+                              onPressed:
+                                  _isFormValid ? _continueToStep2 : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF4DB6AC),
+                                disabledBackgroundColor:
+                                    Colors.grey.shade400,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                elevation: 0,
+                              ),
+                              child: const Text(
+                                "Continue",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: TextButton(
-                        onPressed: _leaveSetup,
-                        child: const Text("Back"),
-                      ),
+                      ],
                     ),
 
                     const SizedBox(height: 100),
@@ -561,6 +677,27 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
   // ================= HELPERS (UNCHANGED DESIGN) =================
 
+  Widget _buildAccountTypeBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE8F5F1),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF4DB6AC)),
+      ),
+      child: Text(
+        _accountTypeLabel == 'Profile'
+            ? 'Setting up profile'
+            : 'Setting up $_accountTypeLabel account',
+        style: const TextStyle(
+          color: Color(0xFF37474F),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
   Widget _buildTextField({
     required String label,
     required String hint,
@@ -568,11 +705,12 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     TextInputType keyboardType = TextInputType.text,
     bool readOnly = false,
     String? helperText,
+    VoidCallback? onTap,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label),
+        _buildRequiredLabel(label),
         Container(
           decoration: BoxDecoration(
             color: Colors.white,
@@ -583,6 +721,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
             controller: controller,
             keyboardType: keyboardType,
             readOnly: readOnly,
+            onTap: onTap,
             decoration: InputDecoration(
               hintText: hint,
               border: InputBorder.none,
@@ -610,11 +749,12 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     required String hint,
     required TextEditingController controller,
     required VoidCallback onTap,
+    String? helperText,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label),
+        _buildRequiredLabel(label),
         Container(
           decoration: BoxDecoration(
             color: Colors.white,
@@ -632,6 +772,17 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
             ),
           ),
         ),
+        if (helperText != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            helperText,
+            style: const TextStyle(
+              color: Color(0xFFD32F2F),
+              fontSize: 12,
+              height: 1.3,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -641,11 +792,13 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     String? value,
     List<String> items,
     ValueChanged<String?> onChanged,
+    {String? helperText,
+    VoidCallback? onTap}
   ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label),
+        _buildRequiredLabel(label),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
@@ -657,6 +810,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
             child: DropdownButton<String>(
               value: value,
               isExpanded: true,
+              onTap: onTap,
               items: items
                   .map((e) => DropdownMenuItem(
                         value: e,
@@ -667,28 +821,72 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
             ),
           ),
         ),
+        if (helperText != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            helperText,
+            style: const TextStyle(
+              color: Color(0xFFD32F2F),
+              fontSize: 12,
+              height: 1.3,
+            ),
+          ),
+        ],
       ],
     );
   }
 
-  Widget _buildSex() {
+  Widget _buildSex({String? helperText}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text("Sex"),
+        _buildRequiredLabel("Sex (Required)"),
         RadioListTile(
           title: const Text("Male"),
           value: "Male",
           groupValue: _selectedSex,
-          onChanged: (val) => setState(() => _selectedSex = val.toString()),
+          onChanged: (val) => setState(() {
+            _touchedFields.add('sex');
+            _selectedSex = val.toString();
+          }),
         ),
         RadioListTile(
           title: const Text("Female"),
           value: "Female",
           groupValue: _selectedSex,
-          onChanged: (val) => setState(() => _selectedSex = val.toString()),
+          onChanged: (val) => setState(() {
+            _touchedFields.add('sex');
+            _selectedSex = val.toString();
+          }),
         ),
+        if (helperText != null)
+          Text(
+            helperText,
+            style: const TextStyle(
+              color: Color(0xFFD32F2F),
+              fontSize: 12,
+              height: 1.3,
+            ),
+          ),
       ],
+    );
+  }
+
+  Widget _buildRequiredLabel(String label) {
+    const marker = " (Required)";
+    if (!label.endsWith(marker)) {
+      return Text(label);
+    }
+    return Text.rich(
+      TextSpan(
+        text: label.substring(0, label.length - marker.length),
+        children: const [
+          TextSpan(
+            text: marker,
+            style: TextStyle(color: Color(0xFFD32F2F)),
+          ),
+        ],
+      ),
     );
   }
 }

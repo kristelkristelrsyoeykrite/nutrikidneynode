@@ -9,8 +9,9 @@ import 'profile/edit_profile_page.dart';
 import 'profile/notification_settings_page.dart';
 import 'profile/privacy_security_page.dart';
 import '../login/login.dart';
-import '../../services/auth_service.dart';
-import '../../services/api_service.dart';
+import '../services/auth_service.dart';
+import '../services/api_service.dart';
+import '../services/notification_service.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -166,6 +167,7 @@ class _ProfilePageState extends State<ProfilePage> {
               : {};
           _isLoadingProfile = false;
         });
+        await NotificationService.cacheReminderSettings(_reminderSettings);
       } else {
         setState(() => _isLoadingProfile = false);
       }
@@ -351,7 +353,11 @@ class _ProfilePageState extends State<ProfilePage> {
       final savedSettings = response["reminderSettings"];
       if (savedSettings is Map) {
         _user["reminderSettings"] = Map<String, dynamic>.from(savedSettings);
+        await NotificationService.cacheReminderSettings(
+          Map<String, dynamic>.from(savedSettings),
+        );
       }
+      await NotificationService.refreshReminderNotificationsFromDashboard();
     } catch (error) {
       if (!mounted) return;
       setState(() {

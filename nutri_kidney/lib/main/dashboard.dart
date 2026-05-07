@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:nutri_kidney/services/api_service.dart';
+import 'package:nutri_kidney/services/notification_service.dart';
 import 'food_log.dart';
 import 'analytics.dart';
 import 'health_metrics.dart';
@@ -31,8 +32,8 @@ class _DashboardPageState extends State<DashboardPage> {
   static const Map<String, Map<String, int>> _mealReminderSchedule = {
     "breakfast": {"hour": 8, "minute": 0},
     "lunch": {"hour": 12, "minute": 0},
-    "snack": {"hour": 15, "minute": 30},
-    "dinner": {"hour": 18, "minute": 30},
+    "snack": {"hour": 15, "minute": 0},
+    "dinner": {"hour": 18, "minute": 0},
   };
 
   static const double _defaultSodiumTargetMg = 1500;
@@ -100,6 +101,16 @@ class _DashboardPageState extends State<DashboardPage> {
         _isLoadingDashboard = false;
         _dashboardError = null;
       });
+      try {
+        await NotificationService.syncReminderNotifications(
+          user: _user,
+          medications: _medications,
+          intakeData: _intakeData,
+          gamification: _gamification,
+        );
+      } catch (error) {
+        debugPrint('Reminder sync failed after dashboard load: $error');
+      }
     } catch (e) {
       if (!mounted) return;
 
@@ -256,6 +267,19 @@ class _DashboardPageState extends State<DashboardPage> {
     };
   }
 
+  Map<String, dynamic>? get _streakEndingReminder {
+    if (!_isStreakAtRisk) return null;
+    final scheduled = _nextStreakReminderTime(DateTime.now());
+    if (scheduled == null) return null;
+    return {
+      "kind": "streak",
+      "name": "Streak reminder",
+      "message":
+          "Your $_currentLoggingStreak-day streak ends tonight. Log meals and hydration to keep it going.",
+      "time": scheduled,
+    };
+  }
+
   List<Map<String, dynamic>> get _dashboardReminders {
     final items = <Map<String, dynamic>>[];
     items.addAll(_mealReminderItems);
@@ -274,6 +298,10 @@ class _DashboardPageState extends State<DashboardPage> {
     final hydration = _hydrationReminder;
     if (hydration != null) {
       items.add(hydration);
+    }
+    final streak = _streakEndingReminder;
+    if (streak != null) {
+      items.add(streak);
     }
     items.sort(
       (a, b) => (a["time"] as DateTime).compareTo(b["time"] as DateTime),
@@ -554,6 +582,33 @@ class _DashboardPageState extends State<DashboardPage> {
 
   bool _todayStatusFlag(String key) => _todayLogStatus[key] == true;
 
+  bool get _isStreakAtRisk {
+    if (_currentLoggingStreak < 2) return false;
+    if (_todayLogStatus["isCompleteDay"] == true) return false;
+
+    final lastCompleteLogDate =
+        _gamificationStatus["lastCompleteLogDate"]?.toString() ?? "";
+    if (lastCompleteLogDate.isEmpty) return false;
+
+    final now = DateTime.now();
+    return lastCompleteLogDate == _dateKey(now) ||
+        lastCompleteLogDate == _dateKey(now.subtract(const Duration(days: 1)));
+  }
+
+  DateTime? _nextStreakReminderTime(DateTime now) {
+    final preferred = DateTime(now.year, now.month, now.day, 20, 30);
+    if (preferred.isAfter(now)) return preferred;
+
+    final fallback = now.add(const Duration(minutes: 5));
+    final cutoff = DateTime(now.year, now.month, now.day, 23, 30);
+    if (fallback.isAfter(cutoff)) return null;
+    return fallback;
+  }
+
+  String _dateKey(DateTime dateTime) {
+    return '${dateTime.year.toString().padLeft(4, '0')}-${dateTime.month.toString().padLeft(2, '0')}-${dateTime.day.toString().padLeft(2, '0')}';
+  }
+
   double _progressFor(double value, double target) {
     if (target <= 0) return 0;
     return (value / target).clamp(0, 1).toDouble();
@@ -643,12 +698,16 @@ class _DashboardPageState extends State<DashboardPage> {
                         ? Icons.restaurant_outlined
                         : kind == "hydration"
                             ? Icons.water_drop_outlined
-                            : Icons.medication_outlined,
+                            : kind == "streak"
+                                ? Icons.local_fire_department_outlined
+                                : Icons.medication_outlined,
                     color: kind == "meal"
                         ? const Color(0xFFFFB74D)
                         : kind == "hydration"
                             ? const Color(0xFF64B5F6)
-                            : const Color(0xFF9E86FF),
+                            : kind == "streak"
+                                ? const Color(0xFFFF7043)
+                                : const Color(0xFF9E86FF),
                     title: reminder["name"]?.toString() ?? "Reminder",
                     message: reminder["message"]?.toString() ?? "",
                     time: _relativeReminderText(reminderTime),
@@ -854,7 +913,7 @@ class _DashboardPageState extends State<DashboardPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Good morning,',
+                'Welcome!',
                 style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13),
               ),
               Text(
@@ -1746,17 +1805,23 @@ class _DashboardPageState extends State<DashboardPage> {
                   ? Icons.restaurant_outlined
                   : nextReminderKind == "hydration"
                       ? Icons.water_drop_outlined
-                      : Icons.medication_outlined,
+                      : nextReminderKind == "streak"
+                          ? Icons.local_fire_department_outlined
+                          : Icons.medication_outlined,
               iconColor: nextReminderKind == "meal"
                   ? const Color(0xFFEF6C00)
                   : nextReminderKind == "hydration"
                       ? const Color(0xFF1565C0)
-                      : const Color(0xFF9E86FF),
+                      : nextReminderKind == "streak"
+                          ? const Color(0xFFD84315)
+                          : const Color(0xFF9E86FF),
               bgColor: nextReminderKind == "meal"
                   ? const Color(0xFFFFF3E0)
                   : nextReminderKind == "hydration"
                       ? const Color(0xFFE3F2FD)
-                      : const Color(0xFFF3E5F5),
+                      : nextReminderKind == "streak"
+                          ? const Color(0xFFFBE9E7)
+                          : const Color(0xFFF3E5F5),
               title: nextReminderName,
               subtitle:
                   '${_formatClockTime(nextReminderTime)} - ${_relativeReminderText(nextReminderTime)}${nextReminderMessage.isNotEmpty ? ' - $nextReminderMessage' : ''}',

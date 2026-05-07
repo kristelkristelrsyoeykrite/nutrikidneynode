@@ -217,7 +217,7 @@ class _RegisterPageState extends State<RegisterPage> {
                       child: Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          'Must be at least 8 characters, include a number & special character.',
+                          'Password must be at least 8 characters and include a number and special character.',
                           style: TextStyle(
                             fontSize: 11,
                             color: Color(0xFF90A4AE),
@@ -242,7 +242,16 @@ class _RegisterPageState extends State<RegisterPage> {
                       controller: _confirmPasswordController,
                     ),
 
-                    if (_confirmPasswordController.text.isNotEmpty &&
+                    if (_passwordController.text.isNotEmpty &&
+                        _confirmPasswordController.text.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 6, left: 4),
+                        child: Text(
+                          "Please confirm the password entered.",
+                          style: TextStyle(color: Colors.red, fontSize: 11),
+                        ),
+                      )
+                    else if (_confirmPasswordController.text.isNotEmpty &&
                         _passwordController.text !=
                             _confirmPasswordController.text)
                       const Padding(
@@ -816,12 +825,18 @@ Future<void> _signupUser() async {
   }
   if (!_isPasswordValid(password)) {
     AppLogger.warning('Signup rejected: Weak password', tag: LogTag.signup);
-    _showErrorDialog("Must be at least 8 characters, include a number & special character");
+    _showErrorDialog("Password must be at least 8 characters and include a number and special character.");
     return;
   }
 
   // Validation 4: Check if passwords match
   final confirmPassword = _confirmPasswordController.text;
+  if (confirmPassword.isEmpty) {
+    AppLogger.warning('Signup rejected: Confirm password is empty', tag: LogTag.signup);
+    _showErrorDialog("Please confirm the password entered.");
+    return;
+  }
+
   if (password != confirmPassword) {
     AppLogger.warning('Signup rejected: Passwords do not match', tag: LogTag.signup);
     _showErrorDialog("Passwords do not match");
@@ -1107,8 +1122,9 @@ void _showErrorDialog(String title, [String message = '']) {
               ),
               suffixIcon: isPassword
                   ? IconButton(
+                      tooltip: isVisible ? 'Hide password' : 'Show password',
                       icon: Icon(
-                        isVisible ? Icons.visibility : Icons.visibility_off,
+                        isVisible ? Icons.visibility_off : Icons.visibility,
                         color: const Color(0xFF90A4AE),
                         size: 20,
                       ),

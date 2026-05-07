@@ -78,8 +78,10 @@ Future<void> _loadRememberedLoginState() async {
   Future<void> _restartProfileSetup({
     required String uid,
     String? contact,
+    String? userRole,
   }) async {
     ApiService.setUserId(uid);
+    ApiService.setUserRole(userRole);
     ApiService.clearProfileSetupData();
     await AuthService.saveRememberedSession(uid, false, contact: contact);
 
@@ -160,6 +162,10 @@ Future<void> _loadRememberedLoginState() async {
         await _restartProfileSetup(
           uid: userCredential.user!.uid,
           contact: result['email'] as String?,
+          userRole: profileStatus['userRole']?.toString() ??
+              profileStatus['role']?.toString() ??
+              _profileMapFromResponse(profileStatus)['userRole']?.toString() ??
+              _profileMapFromResponse(profileStatus)['role']?.toString(),
         );
         return;
       }
@@ -241,6 +247,10 @@ Future<void> _loadRememberedLoginState() async {
         await _restartProfileSetup(
           uid: uid,
           contact: enteredEmail,
+          userRole: loginResponse['userRole']?.toString() ??
+              loginResponse['role']?.toString() ??
+              _profileMapFromResponse(loginResponse)['userRole']?.toString() ??
+              _profileMapFromResponse(loginResponse)['role']?.toString(),
         );
         return;
       }
@@ -771,10 +781,13 @@ Future<void> _loadRememberedLoginState() async {
               ),
               suffixIcon: isPassword
                   ? IconButton(
+                      tooltip: _isPasswordVisible
+                          ? 'Hide password'
+                          : 'Show password',
                       icon: Icon(
                         _isPasswordVisible
-                            ? Icons.visibility
-                            : Icons.visibility_off,
+                            ? Icons.visibility_off
+                            : Icons.visibility,
                         color: const Color(0xFF90A4AE),
                         size: 20,
                       ),

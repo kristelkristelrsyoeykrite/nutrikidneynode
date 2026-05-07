@@ -13,11 +13,11 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
   // State variables for dropdowns
   String? _dietPattern;
   String? _activityLevel;
-  String? _measurementSystem;
   String? _processedFoodIntake;
   String? _mealPattern;
   String? _fluidRestrictionStatus;
   String? _hasHypertension;
+  final Set<String> _touchedFields = {};
 
   // Controllers for numeric and text fields
   final TextEditingController _fluidLimitController = TextEditingController();
@@ -27,6 +27,14 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
     super.initState();
     _fluidLimitController.addListener(() {
       setState(() {});
+    });
+    _fluidLimitController.addListener(() {
+      if (_fluidLimitController.text.trim().isNotEmpty &&
+          !_touchedFields.contains('fluidLimit')) {
+        setState(() {
+          _touchedFields.add('fluidLimit');
+        });
+      }
     });
   }
 
@@ -40,13 +48,20 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
   bool get _isFormValid {
     return _dietPattern != null &&
         _activityLevel != null &&
-        _measurementSystem != null &&
         _processedFoodIntake != null &&
         _mealPattern != null &&
         _fluidRestrictionStatus != null &&
         _hasHypertension != null &&
         (_fluidRestrictionStatus != "yes" ||
             _fluidLimitController.text.trim().isNotEmpty);
+  }
+
+  bool _hasTouched(String field) {
+    return _touchedFields.contains(field);
+  }
+
+  String? _requiredHint(String field, bool isMissing, [String message = 'Required']) {
+    return _hasTouched(field) && isMissing ? message : null;
   }
 
   @override
@@ -158,7 +173,7 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
 
                     // Usual Diet Pattern (expanded with 13 options)
                     _buildDropdownField(
-                      label: "Usual Diet Pattern",
+                      label: "Usual Diet Pattern (Required)",
                       hint: "Select Pattern",
                       value: _dietPattern,
                       items: [
@@ -178,25 +193,41 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
                       ],
                       onChanged: (val) {
                         setState(() {
+                          _touchedFields.add('dietPattern');
                           _dietPattern = val;
                         });
                       },
+                      onTap: () => setState(() {
+                        _touchedFields.add('dietPattern');
+                      }),
+                      helperText: _requiredHint(
+                        'dietPattern',
+                        _dietPattern == null,
+                      ),
                     ),
                     const SizedBox(height: 16),
 
                     _buildDropdownField(
-                      label: "Fluid Restriction Status",
+                      label: "Fluid Restriction Status (Required)",
                       hint: "Select Status",
                       value: _fluidRestrictionStatus,
                       items: const ["yes", "no", "not sure"],
                       onChanged: (val) {
                         setState(() {
+                          _touchedFields.add('fluidRestriction');
                           _fluidRestrictionStatus = val;
                           if (val != "yes") {
                             _fluidLimitController.clear();
                           }
                         });
                       },
+                      onTap: () => setState(() {
+                        _touchedFields.add('fluidRestriction');
+                      }),
+                      helperText: _requiredHint(
+                        'fluidRestriction',
+                        _fluidRestrictionStatus == null,
+                      ),
                     ),
                     const SizedBox(height: 16),
 
@@ -205,44 +236,70 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
 
                     // Daily Fluid Limit (numeric input in mL)
                     _buildTextField(
-                      label: "Daily Fluid Limit (mL)",
+                      label: _fluidRestrictionStatus == "yes"
+                          ? "Daily Fluid Limit (mL) (Required)"
+                          : "Daily Fluid Limit (mL)",
                       hint: "e.g., 800 or 1200",
                       controller: _fluidLimitController,
                       keyboardType: TextInputType.number,
+                      onTap: () => setState(() {
+                        _touchedFields.add('fluidLimit');
+                      }),
+                      helperText: _requiredHint(
+                        'fluidLimit',
+                        _fluidRestrictionStatus == "yes" &&
+                            _fluidLimitController.text.trim().isEmpty,
+                      ),
                     ),
                     const SizedBox(height: 16),
 
                     // Processed Food Intake (NEW)
                     _buildDropdownField(
-                      label: "Processed Food Intake",
+                      label: "Processed Food Intake (Required)",
                       hint: "Select Frequency",
                       value: _processedFoodIntake,
                       items: ["Often", "Sometimes", "Rarely"],
                       onChanged: (val) {
                         setState(() {
+                          _touchedFields.add('processedFood');
                           _processedFoodIntake = val;
                         });
                       },
+                      onTap: () => setState(() {
+                        _touchedFields.add('processedFood');
+                      }),
+                      helperText: _requiredHint(
+                        'processedFood',
+                        _processedFoodIntake == null,
+                      ),
                     ),
                     const SizedBox(height: 16),
 
                     // Meal Pattern (NEW)
                     _buildDropdownField(
-                      label: "Meal Pattern",
+                      label: "Meal Pattern (Required)",
                       hint: "Select Pattern",
                       value: _mealPattern,
                       items: ["Regular (3 meals)", "3 meals + snacks", "Irregular"],
                       onChanged: (val) {
                         setState(() {
+                          _touchedFields.add('mealPattern');
                           _mealPattern = val;
                         });
                       },
+                      onTap: () => setState(() {
+                        _touchedFields.add('mealPattern');
+                      }),
+                      helperText: _requiredHint(
+                        'mealPattern',
+                        _mealPattern == null,
+                      ),
                     ),
                     const SizedBox(height: 16),
 
                     // Physical Activity Level
                     _buildDropdownField(
-                      label: "Physical Activity Level",
+                      label: "Physical Activity Level (Required)",
                       hint: "Select Activity Level",
                       value: _activityLevel,
                       items: [
@@ -252,24 +309,20 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
                       ],
                       onChanged: (val) {
                         setState(() {
+                          _touchedFields.add('activityLevel');
                           _activityLevel = val;
                         });
                       },
+                      onTap: () => setState(() {
+                        _touchedFields.add('activityLevel');
+                      }),
+                      helperText: _requiredHint(
+                        'activityLevel',
+                        _activityLevel == null,
+                      ),
                     ),
                     const SizedBox(height: 16),
 
-                    // Preferred Measurement System
-                    _buildDropdownField(
-                      label: "Preferred Measurement System",
-                      hint: "Select System",
-                      value: _measurementSystem,
-                      items: ["Grams", "Ounces/Cups", "Mixed"],
-                      onChanged: (val) {
-                        setState(() {
-                          _measurementSystem = val;
-                        });
-                      },
-                    ),
                     const SizedBox(height: 40),
 
                     // --- Side-by-Side Buttons ---
@@ -320,7 +373,6 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
                                       "mealPattern": _mealPattern,
                                       "physicalActivityLevel": _activityLevel,
                                       "physical_activity_level": _activityLevel,
-                                      "preferredMeasurement": _measurementSystem,
                                     });
 
                                     Navigator.push(
@@ -368,13 +420,32 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
   Widget _buildLabel(String text) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
-      child: Text(
+      child: _buildRequiredLabel(
         text,
-        style: const TextStyle(
+        baseStyle: const TextStyle(
           color: Color(0xFF9E86FF),
           fontWeight: FontWeight.bold,
           fontSize: 11,
         ),
+      ),
+    );
+  }
+
+  Widget _buildRequiredLabel(String label, {TextStyle? baseStyle}) {
+    const marker = " (Required)";
+    if (!label.endsWith(marker)) {
+      return Text(label, style: baseStyle);
+    }
+    return Text.rich(
+      TextSpan(
+        text: label.substring(0, label.length - marker.length),
+        style: baseStyle,
+        children: const [
+          TextSpan(
+            text: marker,
+            style: TextStyle(color: Color(0xFFD32F2F)),
+          ),
+        ],
       ),
     );
   }
@@ -384,6 +455,8 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
     required String hint,
     required TextEditingController controller,
     TextInputType keyboardType = TextInputType.text,
+    String? helperText,
+    VoidCallback? onTap,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -399,6 +472,7 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
           child: TextFormField(
             controller: controller,
             keyboardType: keyboardType,
+            onTap: onTap,
             style: const TextStyle(color: Color(0xFF37474F), fontSize: 13),
             decoration: InputDecoration(
               hintText: hint,
@@ -411,6 +485,7 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
             ),
           ),
         ),
+        if (helperText != null) _buildValidationHint(helperText),
       ],
     );
   }
@@ -421,6 +496,8 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
     required String? value,
     required List<String> items,
     required ValueChanged<String?> onChanged,
+    String? helperText,
+    VoidCallback? onTap,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -438,6 +515,7 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
             child: DropdownButton<String>(
               isExpanded: true,
               value: value,
+              onTap: onTap,
               hint: Text(
                 hint,
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
@@ -454,6 +532,7 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
             ),
           ),
         ),
+        if (helperText != null) _buildValidationHint(helperText),
       ],
     );
   }
@@ -468,7 +547,7 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildLabel("Does the child have high blood pressure (hypertension)?"),
+        _buildLabel("Does the child have high blood pressure (hypertension)? (Required)"),
         const Text(
           "Select the option based on the child's current medical condition or recent clinical advice. This helps the system assess whether sodium-related dietary guidance may be needed.",
           style: TextStyle(
@@ -490,6 +569,9 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
             child: DropdownButton<String>(
               isExpanded: true,
               value: _hasHypertension,
+              onTap: () => setState(() {
+                _touchedFields.add('hypertension');
+              }),
               hint: Text(
                 "Select option",
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
@@ -501,6 +583,7 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
               style: const TextStyle(color: Color(0xFF37474F), fontSize: 13),
               onChanged: (val) {
                 setState(() {
+                  _touchedFields.add('hypertension');
                   _hasHypertension = val;
                 });
               },
@@ -513,7 +596,23 @@ class _HealthProfile3PageState extends State<HealthProfile3Page> {
             ),
           ),
         ),
+        if (_hasTouched('hypertension') && _hasHypertension == null)
+          _buildValidationHint("Required"),
       ],
+    );
+  }
+
+  Widget _buildValidationHint(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Color(0xFFD32F2F),
+          fontSize: 11,
+          height: 1.3,
+        ),
+      ),
     );
   }
 }

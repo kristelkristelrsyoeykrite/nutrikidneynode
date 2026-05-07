@@ -4,6 +4,7 @@ import 'firebase_options.dart';
 import 'login/login.dart';
 import 'main/dashboard.dart';
 import 'services/auth_service.dart';
+import 'services/notification_service.dart';
 import 'services/push_notification_service.dart';
 
 void main() async {
@@ -12,6 +13,7 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
   await PushNotificationService.initialize();
+  await NotificationService.initialize();
   runApp(const NutriKidneyApp());
 }
 
@@ -37,6 +39,7 @@ class _NutriKidneyAppState extends State<NutriKidneyApp> {
     
     if (hasRememberedSession) {
       await PushNotificationService.syncTokenIfPossible();
+      NotificationService.refreshReminderNotificationsFromDashboard();
       // User has a valid remembered session - take them to dashboard
       return const DashboardPage();
     } else {

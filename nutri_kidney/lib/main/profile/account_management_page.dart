@@ -34,6 +34,30 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   bool _showNewPassword = false;
   bool _showConfirmPassword = false;
 
+  bool get _passwordFieldsAreFilled =>
+      _currentPasswordController.text.trim().isNotEmpty &&
+      _newPasswordController.text.isNotEmpty &&
+      _confirmPasswordController.text.isNotEmpty &&
+      _verificationController.text.trim().isNotEmpty;
+
+  bool get _passwordsDoNotMatch =>
+      _newPasswordController.text.isNotEmpty &&
+      _confirmPasswordController.text.isNotEmpty &&
+      _newPasswordController.text != _confirmPasswordController.text;
+
+  bool get _canSubmitPasswordChange =>
+      widget.verificationContact.isNotEmpty &&
+      _passwordFieldsAreFilled &&
+      !_passwordsDoNotMatch;
+
+  String? get _confirmPasswordErrorText =>
+      _passwordsDoNotMatch ? 'Passwords do not match' : null;
+
+  void _handlePasswordFieldChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
   Future<bool> _confirmPasswordUpdateRequest() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -91,10 +115,18 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     _newPasswordController = TextEditingController();
     _confirmPasswordController = TextEditingController();
     _verificationController = TextEditingController();
+    _currentPasswordController.addListener(_handlePasswordFieldChanged);
+    _newPasswordController.addListener(_handlePasswordFieldChanged);
+    _confirmPasswordController.addListener(_handlePasswordFieldChanged);
+    _verificationController.addListener(_handlePasswordFieldChanged);
   }
 
   @override
   void dispose() {
+    _currentPasswordController.removeListener(_handlePasswordFieldChanged);
+    _newPasswordController.removeListener(_handlePasswordFieldChanged);
+    _confirmPasswordController.removeListener(_handlePasswordFieldChanged);
+    _verificationController.removeListener(_handlePasswordFieldChanged);
     _currentPasswordController.dispose();
     _newPasswordController.dispose();
     _confirmPasswordController.dispose();
@@ -110,6 +142,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   }
 
   Future<void> _changePassword() async {
+    if (!_canSubmitPasswordChange) return;
     if (!_formKey.currentState!.validate()) return;
 
     final confirmed = await _confirmPasswordUpdateRequest();
@@ -159,19 +192,41 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     String label, {
     Widget? suffixIcon,
     String? hintText,
+    String? errorText,
+    bool readOnly = false,
   }) {
     return InputDecoration(
       labelText: label,
       hintText: hintText,
+      errorText: errorText,
       filled: true,
-      fillColor: const Color(0xFFF8FBFA),
+      fillColor: readOnly ? const Color(0xFFEFF3F1) : const Color(0xFFF8FBFA),
+      prefixIcon: readOnly
+          ? const Icon(
+              Icons.lock_outline,
+              size: 18,
+              color: Color(0xFF90A4AE),
+            )
+          : null,
+      helperText: readOnly ? 'Read-only' : null,
+      helperStyle: const TextStyle(
+        color: Color(0xFF90A4AE),
+        fontSize: 11,
+      ),
+      labelStyle: TextStyle(
+        color: readOnly ? const Color(0xFF78909C) : null,
+      ),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: Color(0xFFDCE9E4)),
+        borderSide: BorderSide(
+          color: readOnly ? const Color(0xFFCFD8D4) : const Color(0xFFDCE9E4),
+        ),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: Color(0xFFDCE9E4)),
+        borderSide: BorderSide(
+          color: readOnly ? const Color(0xFFCFD8D4) : const Color(0xFFDCE9E4),
+        ),
       ),
       suffixIcon: suffixIcon,
     );
@@ -183,7 +238,12 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       child: TextFormField(
         initialValue: value.isEmpty ? 'Not linked' : value,
         readOnly: true,
-        decoration: _fieldDecoration(label),
+        enableInteractiveSelection: false,
+        style: const TextStyle(
+          color: Color(0xFF78909C),
+          fontWeight: FontWeight.w600,
+        ),
+        decoration: _fieldDecoration(label, readOnly: true),
       ),
     );
   }
@@ -349,6 +409,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
                         obscureText: !_showConfirmPassword,
                         decoration: _fieldDecoration(
                           'Confirm New Password',
+                          errorText: _confirmPasswordErrorText,
                           suffixIcon: IconButton(
                             onPressed: () {
                               setState(() {
@@ -413,10 +474,14 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton(
-                          onPressed: _isSaving ? null : _changePassword,
+                          onPressed: _isSaving || !_canSubmitPasswordChange
+                              ? null
+                              : _changePassword,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF00C874),
+                            disabledBackgroundColor: const Color(0xFFB0BEC5),
                             foregroundColor: Colors.white,
+                            disabledForegroundColor: Colors.white70,
                             padding: const EdgeInsets.symmetric(vertical: 16),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14),

@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../services/api_service.dart';
@@ -67,8 +68,8 @@ Future<bool> showAuthenticatorMfaChallengeDialog(
     barrierDismissible: false,
     builder: (dialogContext) {
       return StatefulBuilder(
-        builder: (context, setDialogState) {
-          return AlertDialog(
+          builder: (context, setDialogState) {
+              return AlertDialog(
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
             ),
@@ -85,9 +86,13 @@ Future<bool> showAuthenticatorMfaChallengeDialog(
                   controller: codeController,
                   enabled: !isSubmitting,
                   keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
                   maxLength: 6,
                   decoration: InputDecoration(
                     labelText: '6-digit code',
+                    counterText: '',
                     errorText: errorText.isEmpty ? null : errorText,
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -180,12 +185,14 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
   String? _errorText;
   String? _infoMessage;
   bool _hasPendingEnrollment = false;
+  bool _codeIsComplete = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _mfaEnabled = widget.initialMfaEnabled;
+    _codeController.addListener(_handleCodeChanged);
     _loadSecuritySettings();
   }
 
@@ -200,8 +207,17 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _codeController.removeListener(_handleCodeChanged);
     _codeController.dispose();
     super.dispose();
+  }
+
+  void _handleCodeChanged() {
+    final isComplete = RegExp(r'^\d{6}$').hasMatch(_codeController.text.trim());
+    if (isComplete == _codeIsComplete) return;
+    setState(() {
+      _codeIsComplete = isComplete;
+    });
   }
 
   Future<void> _loadSecuritySettings() async {
@@ -213,6 +229,11 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
       setState(() {
         _mfaEnabled = settings['mfaEnabled'] == true;
         _hasPendingEnrollment = settings['hasPendingEnrollment'] == true;
+        if (_mfaEnabled) {
+          _otpauthUrl = null;
+          _codeController.clear();
+          _codeIsComplete = false;
+        }
         _isLoading = false;
       });
     } catch (_) {
@@ -283,6 +304,13 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
       }
 
       // For authenticator, the code verification also enables it.
+      setState(() {
+        _mfaEnabled = true;
+        _hasPendingEnrollment = false;
+        _otpauthUrl = null;
+        _codeController.clear();
+        _codeIsComplete = false;
+      });
       await _loadSecuritySettings();
 
       if (!mounted) return;
@@ -326,9 +354,13 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
                   TextField(
                       controller: controller,
                       keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
                       maxLength: 6,
                       decoration: InputDecoration(
                         labelText: '6-digit code',
+                        counterText: '',
                         errorText: errorText.isEmpty ? null : errorText,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
@@ -385,6 +417,15 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
         throw Exception(response['error'] ?? 'Unable to disable MFA.');
       }
 
+      if (!mounted) return;
+      setState(() {
+        _mfaEnabled = false;
+        _hasPendingEnrollment = false;
+        _otpauthUrl = null;
+        _codeController.clear();
+        _codeIsComplete = false;
+      });
+      await _loadSecuritySettings();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Multi-factor authentication disabled.')),
@@ -536,9 +577,13 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
                             TextField(
                               controller: _codeController,
                               keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
                               maxLength: 6,
                               decoration: InputDecoration(
                                 labelText: 'Current 6-digit code',
+                                counterText: '',
                                 errorText: _errorText,
                                 helperText: _infoMessage,
                                 filled: true,
@@ -566,10 +611,15 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
                             SizedBox(
                               width: double.infinity,
                               child: ElevatedButton(
-                                onPressed: _isWorking ? null : _verifyEnrollment,
+                                onPressed: _isWorking || !_codeIsComplete
+                                    ? null
+                                    : _verifyEnrollment,
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF00C874),
+                                  disabledBackgroundColor:
+                                      const Color(0xFFB0BEC5),
                                   foregroundColor: Colors.white,
+                                  disabledForegroundColor: Colors.white70,
                                   padding: const EdgeInsets.symmetric(vertical: 16),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(14),
@@ -584,9 +634,9 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
                                           color: Colors.white,
                                         ),
                                       )
-                                    : Text(
-                                        'Verify And Enable',
-                                        style: const TextStyle(
+                                    : const Text(
+                                        'Verify and Enable',
+                                        style: TextStyle(
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),

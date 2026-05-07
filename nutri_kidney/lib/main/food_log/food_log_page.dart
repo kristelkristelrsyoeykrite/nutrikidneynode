@@ -16,6 +16,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
   bool _isLoadingLogs = false;
   String? _foodLogError;
   int _currentLoggingStreak = 0;
+  final Set<String> _unlockedAwardIds = {};
   final Set<String> _savingLogKeys = {};
   final ImagePicker _imagePicker = ImagePicker();
   Map<String, dynamic>? _imageReviewFoodDetails;
@@ -94,6 +95,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
         });
       }
       await _loadGamificationSummary();
+      await _refreshReminderNotifications();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -109,25 +111,223 @@ class _FoodLogPageState extends State<FoodLogPage> {
     }
   }
 
-  Future<void> _loadGamificationSummary() async {
+  Future<void> _loadGamificationSummary({
+    bool showAchievementPopup = false,
+  }) async {
     try {
+      final previousAwards = Set<String>.from(_unlockedAwardIds);
       final response = await ApiService.getGamificationSummary();
       if (!mounted) return;
       final gamification = response['gamification'];
       final status = gamification is Map ? gamification['status'] : null;
-      final statusMap = status is Map ? Map<String, dynamic>.from(status) : {};
+      final statusMap = status is Map
+          ? Map<String, dynamic>.from(status)
+          : <String, dynamic>{};
       final streak = _intValue(
         statusMap['displayStreak'] ?? statusMap['currentStreak'],
       );
+      final currentAwards = _awardIdsFromStatus(statusMap);
       setState(() {
         _currentLoggingStreak = streak >= 2 ? streak : 0;
+        _unlockedAwardIds
+          ..clear()
+          ..addAll(currentAwards);
       });
+      if (showAchievementPopup) {
+        final newAwards = currentAwards.difference(previousAwards);
+        if (newAwards.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _showAchievementPopup(newAwards.first);
+          });
+        }
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _currentLoggingStreak = 0;
       });
     }
+  }
+
+  Future<void> _refreshReminderNotifications() async {
+    await NotificationService.refreshReminderNotificationsFromDashboard();
+  }
+
+  Set<String> _awardIdsFromStatus(Map<String, dynamic> statusMap) {
+    final unlockedAwards = statusMap['unlockedAwards'];
+    if (unlockedAwards is! List) return {};
+    return unlockedAwards
+        .map((award) => award.toString())
+        .where((award) => award.isNotEmpty)
+        .toSet();
+  }
+
+  _AchievementDetails _achievementDetails(String awardId) {
+    switch (awardId) {
+      case 'seven_day_streak':
+        return const _AchievementDetails(
+          title: '7 Day Streak',
+          message: 'Congratulations! You logged consistently for 7 days.',
+          icon: Icons.local_fire_department,
+          color: Color(0xFFFF8A65),
+        );
+      case 'fourteen_day_streak':
+        return const _AchievementDetails(
+          title: '14 Day Streak',
+          message: 'Amazing work! Two full weeks of steady tracking.',
+          icon: Icons.whatshot,
+          color: Color(0xFFFF7043),
+        );
+      case 'rainbow_eater':
+        return const _AchievementDetails(
+          title: 'Rainbow Eater',
+          message: 'Congratulations! You logged foods from 5 color groups.',
+          icon: Icons.palette_outlined,
+          color: Color(0xFF7E57C2),
+        );
+      case 'hydration_hero':
+        return const _AchievementDetails(
+          title: 'Hydration Hero',
+          message: 'Great job meeting your hydration goal again and again.',
+          icon: Icons.water_drop,
+          color: Color(0xFF64B5F6),
+        );
+      case 'balanced_week':
+        return const _AchievementDetails(
+          title: 'Balanced Week',
+          message: 'Congratulations! Your week stayed within nutrition ranges.',
+          icon: Icons.star_rounded,
+          color: Color(0xFFFFD54F),
+        );
+      default:
+        return const _AchievementDetails(
+          title: 'Achievement Unlocked',
+          message: 'Congratulations! You unlocked a new badge.',
+          icon: Icons.emoji_events,
+          color: Color(0xFF00C874),
+        );
+    }
+  }
+
+  void _showAchievementPopup(String awardId) {
+    final details = _achievementDetails(awardId);
+    showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Achievement unlocked',
+      barrierColor: Colors.black38,
+      transitionDuration: const Duration(milliseconds: 240),
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return const SizedBox.shrink();
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutBack,
+          reverseCurve: Curves.easeIn,
+        );
+        return FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.86, end: 1).animate(curved),
+            child: Center(
+              child: Material(
+                color: Colors.transparent,
+                child: Container(
+                  width: MediaQuery.of(context).size.width * 0.82,
+                  constraints: const BoxConstraints(maxWidth: 360),
+                  padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.12),
+                        blurRadius: 24,
+                        offset: const Offset(0, 12),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 92,
+                        height: 92,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: details.color.withOpacity(0.14),
+                          border: Border.all(
+                            color: details.color.withOpacity(0.35),
+                            width: 2,
+                          ),
+                        ),
+                        child: Icon(
+                          details.icon,
+                          color: details.color,
+                          size: 52,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      const Text(
+                        'Achievement Unlocked',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Color(0xFF00C874),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        details.title,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF37474F),
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        details.message,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF78909C),
+                          fontSize: 14,
+                          height: 1.35,
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00C874),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text(
+                            'Nice!',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   int _intValue(dynamic value) {
@@ -358,6 +558,10 @@ class _FoodLogPageState extends State<FoodLogPage> {
                               setState(() {
                                 _loggedMeals[_selectedMealType]?.add(savedFood);
                               });
+                              await _loadGamificationSummary(
+                                showAchievementPopup: true,
+                              );
+                              await _refreshReminderNotifications();
                               if (context.mounted) {
                                 Navigator.pop(context);
                               }
@@ -595,7 +799,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
         setState(() {
           _loggedMeals[_selectedMealType]?.add(savedFood);
         });
-        await _loadGamificationSummary();
+        await _loadGamificationSummary(showAchievementPopup: true);
+        await _refreshReminderNotifications();
       }
     } finally {
       if (mounted) {
@@ -650,7 +855,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
           foods[index] = savedFood;
         }
       });
-      await _loadGamificationSummary();
+      await _loadGamificationSummary(showAchievementPopup: true);
+      await _refreshReminderNotifications();
     }
   }
 
@@ -661,6 +867,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
           _loggedMeals[_selectedMealType]?.remove(food);
         });
       }
+      await _refreshReminderNotifications();
       return;
     }
 
@@ -675,6 +882,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
             ?.removeWhere((item) => item.id == food.id);
       });
       await _loadGamificationSummary();
+      await _refreshReminderNotifications();
     }
   }
 
@@ -1881,7 +2089,10 @@ class _FoodLogPageState extends State<FoodLogPage> {
                                                 ?.add(savedFood);
                                           }
                                         });
-                                        await _loadGamificationSummary();
+                                        await _loadGamificationSummary(
+                                          showAchievementPopup: !isEditing,
+                                        );
+                                        await _refreshReminderNotifications();
                                       }
                                       if (dialogContext.mounted) {
                                         Navigator.pop(dialogContext);
@@ -2557,6 +2768,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
         _imageReviewSelectedServing = null;
         _imageReviewQuantityController.text = '1';
       });
+      await _loadGamificationSummary(showAchievementPopup: true);
+      await _refreshReminderNotifications();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3152,4 +3365,18 @@ class _FoodLogPageState extends State<FoodLogPage> {
       ],
     );
   }
+}
+
+class _AchievementDetails {
+  final String title;
+  final String message;
+  final IconData icon;
+  final Color color;
+
+  const _AchievementDetails({
+    required this.title,
+    required this.message,
+    required this.icon,
+    required this.color,
+  });
 }

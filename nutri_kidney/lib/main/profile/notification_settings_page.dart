@@ -2,7 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/api_service.dart';
-import '../../services/push_notification_service.dart';
+import '../../services/notification_service.dart';
 
 class NotificationSettingsPage extends StatefulWidget {
   final String? profileUserId;
@@ -54,8 +54,38 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
     _lunchReminders = widget.initialLunchReminders;
     _snackReminders = widget.initialSnackReminders;
     _dinnerReminders = widget.initialDinnerReminders;
+    _loadCachedReminderSettings();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _ensureNotificationPermission();
+    });
+  }
+
+  Future<void> _loadCachedReminderSettings() async {
+    final cached = await NotificationService.cachedReminderSettings();
+    if (!mounted || cached.isEmpty) return;
+    final mealSettings = cached['mealReminders'];
+    final meals = mealSettings is Map
+        ? Map<String, dynamic>.from(mealSettings)
+        : <String, dynamic>{};
+    setState(() {
+      if (cached.containsKey('medicationReminders')) {
+        _medicationReminders = cached['medicationReminders'] == true;
+      }
+      if (cached.containsKey('hydrationAlerts')) {
+        _hydrationAlerts = cached['hydrationAlerts'] == true;
+      }
+      if (meals.containsKey('breakfast')) {
+        _breakfastReminders = meals['breakfast'] == true;
+      }
+      if (meals.containsKey('lunch')) {
+        _lunchReminders = meals['lunch'] == true;
+      }
+      if (meals.containsKey('snack')) {
+        _snackReminders = meals['snack'] == true;
+      }
+      if (meals.containsKey('dinner')) {
+        _dinnerReminders = meals['dinner'] == true;
+      }
     });
   }
 
@@ -63,7 +93,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
     if (_permissionChecked) return;
     _permissionChecked = true;
 
-    final granted = await PushNotificationService.requestPermissionsIfNeeded();
+    final granted = await NotificationService.requestPermissionsIfNeeded();
     if (!mounted) return;
 
     if (!granted) {
@@ -75,6 +105,93 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
         ),
       );
     }
+
+    await _promptForExactAlarmPermissionIfNeeded();
+  }
+
+  Future<void> _promptForExactAlarmPermissionIfNeeded() async {
+    final exactAllowed = await NotificationService.canScheduleExactAlarms();
+    if (!mounted || exactAllowed) return;
+
+    final shouldOpenSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Text('Allow exact reminders?'),
+          content: const Text(
+            'Android needs a separate alarm permission so meal, hydration, and medication reminders can arrive on time.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Not now'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00C874),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldOpenSettings == true) {
+      await NotificationService.openExactAlarmSettings();
+    }
+  }
+
+  Future<void> _syncVisibleReminderSettings() async {
+    var medications = widget.medications;
+    Map<String, dynamic>? intakeData;
+    Map<String, dynamic>? gamification;
+
+    try {
+      final response = await ApiService.getDashboardSummary();
+      if (response['success'] == true) {
+        final dashboardMedications = response['medications'];
+        if (_medicationReminders && dashboardMedications is List) {
+          medications = dashboardMedications
+              .whereType<Map>()
+              .map((medication) => Map<String, dynamic>.from(medication))
+              .toList(growable: false);
+        }
+        final dashboardIntakeData = response['intakeData'];
+        final dashboardGamification = response['gamification'];
+        intakeData = dashboardIntakeData is Map
+            ? Map<String, dynamic>.from(dashboardIntakeData)
+            : null;
+        gamification = dashboardGamification is Map
+            ? Map<String, dynamic>.from(dashboardGamification)
+            : null;
+      }
+    } catch (error) {
+      debugPrint('Unable to refresh dashboard data for reminders: $error');
+    }
+
+    return NotificationService.syncReminderNotifications(
+      user: {
+        'reminderSettings': {
+          'medicationReminders': _medicationReminders,
+          'hydrationAlerts': _hydrationAlerts,
+          'mealReminders': {
+            'breakfast': _breakfastReminders,
+            'lunch': _lunchReminders,
+            'snack': _snackReminders,
+            'dinner': _dinnerReminders,
+          },
+        },
+      },
+      medications: medications,
+      intakeData: intakeData,
+      gamification: gamification,
+    );
   }
 
   Future<void> _saveReminderSettings({
@@ -85,13 +202,6 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
     required bool snackReminder,
     required bool dinnerReminder,
   }) async {
-    final previousMedication = _medicationReminders;
-    final previousHydration = _hydrationAlerts;
-    final previousBreakfast = _breakfastReminders;
-    final previousLunch = _lunchReminders;
-    final previousSnack = _snackReminders;
-    final previousDinner = _dinnerReminders;
-
     setState(() {
       _medicationReminders = medicationReminders;
       _hydrationAlerts = hydrationAlerts;
@@ -103,6 +213,16 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
     });
 
     try {
+      await NotificationService.replaceCachedReminderSettings(
+        medicationReminders: medicationReminders,
+        hydrationAlerts: hydrationAlerts,
+        breakfastReminder: breakfastReminder,
+        lunchReminder: lunchReminder,
+        snackReminder: snackReminder,
+        dinnerReminder: dinnerReminder,
+      );
+      await _syncVisibleReminderSettings();
+
       final response = await ApiService.updateReminderSettings(
         profileUserId: widget.profileUserId,
         medicationReminders: medicationReminders,
@@ -120,18 +240,20 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
               'Unable to update reminder settings.',
         );
       }
+      final savedSettings = response["reminderSettings"];
+      if (savedSettings is Map) {
+        await NotificationService.cacheReminderSettings(
+          Map<String, dynamic>.from(savedSettings),
+        );
+      }
     } catch (error) {
       if (!mounted) return;
-      setState(() {
-        _medicationReminders = previousMedication;
-        _hydrationAlerts = previousHydration;
-        _breakfastReminders = previousBreakfast;
-        _lunchReminders = previousLunch;
-        _snackReminders = previousSnack;
-        _dinnerReminders = previousDinner;
-      });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to update reminders: $error')),
+        SnackBar(
+          content: Text(
+            'Reminder setting saved on this device. Server sync failed: $error',
+          ),
+        ),
       );
     } finally {
       if (mounted) {
@@ -232,17 +354,15 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
                   onPressed: _isSaving
                       ? null
                       : () async {
-                          final response =
-                              await PushNotificationService
-                                  .sendTestPushNotification();
+                          final sent =
+                              await NotificationService.showTestNotification();
                           if (!mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
                               content: Text(
-                                response['success'] == true
-                                    ? 'Push test sent. Check your phone notification tray.'
-                                    : (response['error']?.toString() ??
-                                        'Unable to send push test.'),
+                                sent
+                                    ? 'Test sent. One appears now and another should appear in about 10 seconds.'
+                                    : 'Notification permission is off. Allow notifications in Android settings first.',
                               ),
                             ),
                           );

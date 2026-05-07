@@ -782,9 +782,14 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
 
                     // Result Date Picker (Functioning as DatePicker but styled like Dropdown)
                     _buildDatePickerField(
-                      label: "Result Date",
+                      label: _hasStep4LabDataWithoutDate()
+                          ? "Result Date (Required)"
+                          : "Result Date",
                       hint: "Enter the date of release",
                       controller: _resultDateController,
+                      helperText: _hasStep4LabDataWithoutDate()
+                          ? "Required"
+                          : null,
                     ),
                     const SizedBox(height: 16),
 
@@ -918,13 +923,9 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                           child: SizedBox(
                             height: 50,
                             child: ElevatedButton(
-                              onPressed: () {
-                                if (_hasStep4LabDataWithoutDate()) {
-                                  _showMissingLabDateMessage();
-                                  return;
-                                }
-                                _showProceedDialog(); // Show confirmation dialog
-                              },
+                              onPressed: _hasStep4LabDataWithoutDate()
+                                  ? null
+                                  : _showProceedDialog,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(
                                   0xFF00BFA5,
@@ -1573,13 +1574,32 @@ void _showProceedDialog() {
   Widget _buildLabel(String text) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
-      child: Text(
+      child: _buildRequiredLabel(
         text,
-        style: const TextStyle(
+        baseStyle: const TextStyle(
           color: Color(0xFF9E86FF),
           fontWeight: FontWeight.bold,
           fontSize: 11,
         ),
+      ),
+    );
+  }
+
+  Widget _buildRequiredLabel(String label, {TextStyle? baseStyle}) {
+    const marker = " (Required)";
+    if (!label.endsWith(marker)) {
+      return Text(label, style: baseStyle);
+    }
+    return Text.rich(
+      TextSpan(
+        text: label.substring(0, label.length - marker.length),
+        style: baseStyle,
+        children: const [
+          TextSpan(
+            text: marker,
+            style: TextStyle(color: Color(0xFFD32F2F)),
+          ),
+        ],
       ),
     );
   }
@@ -1645,6 +1665,7 @@ void _showProceedDialog() {
     required String label,
     required String hint,
     required TextEditingController controller,
+    String? helperText,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1684,7 +1705,22 @@ void _showProceedDialog() {
             ),
           ),
         ),
+        if (helperText != null) _buildValidationHint(helperText),
       ],
+    );
+  }
+
+  Widget _buildValidationHint(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Color(0xFFD32F2F),
+          fontSize: 11,
+          height: 1.3,
+        ),
+      ),
     );
   }
 

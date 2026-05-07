@@ -7,6 +7,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../firebase_options.dart';
 import 'api_service.dart';
+import 'notification_service.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -20,6 +21,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 }
 
 class PushNotificationService {
+  static const String _snoozeActionId = 'snooze_5_minutes';
+  static const String _dontRemindActionId = 'dont_remind_again';
   static final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   static final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
@@ -97,7 +100,10 @@ class PushNotificationService {
         initSettings,
         onDidReceiveNotificationResponse: (details) async {
           debugPrint('[Push] Local notification tapped: ${details.payload}');
+          await NotificationService.handleNotificationResponse(details);
         },
+        onDidReceiveBackgroundNotificationResponse:
+            notificationActionBackgroundHandler,
       );
       debugPrint('[Push] Local notifications initialized');
     } catch (error) {
@@ -115,6 +121,7 @@ class PushNotificationService {
 
     final title = message.notification?.title ?? message.data['title'] ?? 'Notification';
     final body = message.notification?.body ?? message.data['body'] ?? '';
+    final payload = _payloadForMessage(message);
 
     debugPrint('[Push] Displaying foreground notification: $title');
 
@@ -132,6 +139,28 @@ class PushNotificationService {
             priority: Priority.high,
             showWhen: true,
             icon: null, // Use default icon
+            visibility: NotificationVisibility.public,
+            category: AndroidNotificationCategory.reminder,
+            timeoutAfter: 60 * 60 * 1000,
+            styleInformation: BigTextStyleInformation(
+              body,
+              contentTitle: title,
+              summaryText: 'Reminder',
+            ),
+            actions: _isReminderPayload(payload)
+                ? const <AndroidNotificationAction>[
+                    AndroidNotificationAction(
+                      _snoozeActionId,
+                      'Remind me in 5 mins',
+                      showsUserInterface: true,
+                    ),
+                    AndroidNotificationAction(
+                      _dontRemindActionId,
+                      'Don\'t remind me again',
+                      showsUserInterface: true,
+                    ),
+                  ]
+                : null,
           ),
           iOS: const DarwinNotificationDetails(
             presentAlert: true,
@@ -139,7 +168,7 @@ class PushNotificationService {
             presentSound: true,
           ),
         ),
-        payload: message.data.toString(),
+        payload: payload,
       );
       debugPrint('[Push] Foreground notification displayed successfully');
     } catch (error) {
@@ -257,6 +286,28 @@ class PushNotificationService {
     return currentUserId != null &&
         currentUserId.isNotEmpty &&
         messageUserId == currentUserId;
+  }
+
+  static String _payloadForMessage(RemoteMessage message) {
+    final explicitPayload = message.data['payload']?.toString();
+    if (explicitPayload != null && explicitPayload.isNotEmpty) {
+      return explicitPayload;
+    }
+
+    final now = DateTime.now();
+    final date =
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final type = message.data['type']?.toString() ?? '';
+    if (type == 'meal_reminder') return 'meal:food_log:$date';
+    if (type == 'hydration_reminder') return 'hydration:$date:push';
+    if (type == 'medication_reminder') return 'medication:medication:$date:push';
+    return message.data.toString();
+  }
+
+  static bool _isReminderPayload(String payload) {
+    return payload.startsWith('meal:') ||
+        payload.startsWith('hydration:') ||
+        payload.startsWith('medication:');
   }
 
   static String _tokenPreview(String? token) {

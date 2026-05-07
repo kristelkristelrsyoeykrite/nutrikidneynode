@@ -33,6 +33,7 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
   List<Map<String, dynamic>> _medications = [];
   final ImagePicker _imagePicker = ImagePicker();
   bool _isScanningPrescription = false;
+  bool _showValidationHints = false;
   final Set<String> _selectedAllergies = {};
 
   final TextEditingController _allergiesController = TextEditingController();
@@ -609,6 +610,8 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        _buildLabel("Allergies (Required)"),
+        const SizedBox(height: 8),
         Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -635,12 +638,15 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
             );
           }).toList(),
         ),
+        if (_needsAllergySelectionHint)
+          _buildValidationHint("Required"),
         if (_selectedAllergies.contains('Other')) ...[
           const SizedBox(height: 12),
           _buildLargeTextField(
-            label: "Other allergy details",
+            label: "Other allergy details (Required)",
             hint: "Enter other allergies",
             controller: _allergiesController,
+            errorText: _needsOtherAllergyHint ? "Required" : null,
           ),
         ],
       ],
@@ -1128,7 +1134,57 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
 
   // --- Validation Logic ---
   bool get _isFormValid {
-    return _dialysisType != null;
+    final hasRequiredTreatmentFrequency =
+        _dialysisType == "None" || _treatmentFrequency != null;
+    final hasAllergyInput =
+        _selectedAllergies.isNotEmpty &&
+        (!_selectedAllergies.contains('Other') ||
+            _allergiesController.text.trim().isNotEmpty);
+
+    return _dialysisType != null &&
+        hasRequiredTreatmentFrequency &&
+        hasAllergyInput;
+  }
+
+  bool get _needsDialysisSelectionHint =>
+      _showValidationHints && _dialysisType == null;
+
+  bool get _needsTreatmentFrequencyHint =>
+      _dialysisType != null &&
+      _dialysisType != "None" &&
+      _treatmentFrequency == null;
+
+  bool get _needsAllergySelectionHint =>
+      _showValidationHints && _selectedAllergies.isEmpty;
+
+  bool get _needsOtherAllergyHint =>
+      _selectedAllergies.contains('Other') &&
+      _allergiesController.text.trim().isEmpty;
+
+  bool get _canTapContinue =>
+      !_needsTreatmentFrequencyHint && !_needsOtherAllergyHint;
+
+  Future<void> _continueToStep3() async {
+    setState(() {
+      _showValidationHints = true;
+    });
+
+    if (!_isFormValid) return;
+
+    await ApiService.sendStep2({
+      "isOnDialysis": _dialysisType != null && _dialysisType != "None",
+      "dialysisType": _dialysisType,
+      "treatmentFrequency": _treatmentFrequency,
+      "allergies": _selectedAllergyPayload(),
+    });
+
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const HealthProfile3Page(),
+      ),
+    );
   }
 
   @override
@@ -1239,15 +1295,19 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                     // --- Form Fields ---
 
                     // Dialysis Radio Buttons
-                    _buildLabel("Is the child on dialysis?"),
+                    _buildLabel("Is the child on dialysis? (Required)"),
                     _buildRadioOption("None"),
                     _buildRadioOption("Peritoneal Dialysis"),
                     _buildRadioOption("Hemodialysis"),
+                    if (_needsDialysisSelectionHint)
+                      _buildValidationHint("Required"),
                     const SizedBox(height: 16),
 
                     // Treatment Frequency Dropdown
                     _buildDropdownField(
-                      label: "Treatment frequency:",
+                      label: _dialysisType != null && _dialysisType != "None"
+                          ? "Treatment frequency: (Required)"
+                          : "Treatment frequency:",
                       hint: "Once Every Week",
                       value: _treatmentFrequency,
                       items: [
@@ -1258,6 +1318,10 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                         "Other",
                       ],
                       enabled: _dialysisType != null && _dialysisType != "None",
+                      helperText: null,
+                      errorText: _needsTreatmentFrequencyHint
+                          ? "Required"
+                          : null,
                       onChanged: (val) {
                         setState(() {
                           _treatmentFrequency = val;
@@ -1304,23 +1368,8 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                           child: SizedBox(
                             height: 50,
                             child: ElevatedButton(
-                              onPressed: _isFormValid
-                                ? () async {
-                                    await ApiService.sendStep2({
-                                      "isOnDialysis": _dialysisType != null && _dialysisType != "None",
-                                      "dialysisType": _dialysisType,
-                                      "treatmentFrequency": _treatmentFrequency,
-                                      "allergies": _selectedAllergyPayload(),
-                                    });
-
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => const HealthProfile3Page(),
-                                      ),
-                                    );
-                                  }
-                                : null,
+                              onPressed:
+                                  _canTapContinue ? _continueToStep3 : null,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF4DB6AC),
                                 disabledBackgroundColor: Colors.grey.shade400,
@@ -1360,13 +1409,32 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
   Widget _buildLabel(String text) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
-      child: Text(
+      child: _buildRequiredLabel(
         text,
-        style: const TextStyle(
-          color: Color(0xFF9E86FF),
-          fontWeight: FontWeight.bold,
-          fontSize: 11,
-        ),
+        baseStyle: const TextStyle(
+            color: Color(0xFF9E86FF),
+            fontWeight: FontWeight.bold,
+            fontSize: 11,
+          ),
+      ),
+    );
+  }
+
+  Widget _buildRequiredLabel(String label, {TextStyle? baseStyle}) {
+    const marker = " (Required)";
+    if (!label.endsWith(marker)) {
+      return Text(label, style: baseStyle);
+    }
+    return Text.rich(
+      TextSpan(
+        text: label.substring(0, label.length - marker.length),
+        style: baseStyle,
+        children: const [
+          TextSpan(
+            text: marker,
+            style: TextStyle(color: Color(0xFFD32F2F)),
+          ),
+        ],
       ),
     );
   }
@@ -1437,6 +1505,20 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
     );
   }
 
+  Widget _buildValidationHint(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Color(0xFFD32F2F),
+          fontSize: 11,
+          height: 1.3,
+        ),
+      ),
+    );
+  }
+
   Widget _buildRadioOption(String title) {
     return SizedBox(
       height: 32,
@@ -1471,6 +1553,7 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
     required String label,
     required String hint,
     required TextEditingController controller,
+    String? errorText,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1491,6 +1574,8 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
               hintText: hint,
               hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 11),
               border: InputBorder.none,
+              errorText: errorText,
+              errorStyle: const TextStyle(fontSize: 11, height: 1.3),
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 12,
                 vertical: 12,
@@ -1509,6 +1594,8 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
     required List<String> items,
     required ValueChanged<String?> onChanged,
     bool enabled = true,
+    String? helperText,
+    String? errorText,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1542,6 +1629,20 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
             ),
           ),
         ),
+        if (errorText != null)
+          _buildValidationHint(errorText)
+        else if (helperText != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              helperText,
+              style: const TextStyle(
+                color: Color(0xFF90A4AE),
+                fontSize: 11,
+                height: 1.3,
+              ),
+            ),
+          ),
       ],
     );
   }
