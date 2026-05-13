@@ -728,13 +728,10 @@ async function runReminderScheduler() {
       `[Reminders] Scheduler running at ${new Date().toISOString()}`
     );
 
-    // Run all reminder checks in parallel
-    await Promise.all([
-      checkMealReminders(),
-      checkMedicationReminders(),
-      checkMissedMedicationReminders(),
-      checkHydrationReminders(),
-    ]);
+    // Only backend-generate alerts that are tied to an actual scheduled dose.
+    // Meal, hydration, and generic medication reminders are scheduled locally
+    // by the Flutter app; sending them here caused extra "unscheduled" pushes.
+    await checkMissedMedicationReminders();
 
     console.log("[Reminders] Scheduler check complete");
   } catch (error) {
