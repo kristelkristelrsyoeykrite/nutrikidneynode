@@ -11,7 +11,137 @@ function registerRecordRoutes(router, deps) {
     archiveCurrentRecord,
     archiveAndDeleteExtraCurrentRecords,
     recalculateNutritionArtifacts,
+    encryptHealthProfile,
+    encryptHealthDocument,
   } = deps;
+
+  function isCaregiverRole(role) {
+    const normalized = String(role || "").trim().toLowerCase();
+    return normalized === "parent_caregiver" || normalized === "caregiver";
+  }
+
+  function isManagedChild(user, profileUserId) {
+    if (!profileUserId) return false;
+    const linkedChildren = Array.isArray(user.linkedChildren)
+      ? user.linkedChildren
+      : [];
+    return linkedChildren.some((child) => {
+      const childId = child?.userId || child?.uid || child?.id;
+      return String(childId || "") === String(profileUserId);
+    });
+  }
+
+  async function resolveWritableProfileUserId(userId, profileUserId) {
+    if (!profileUserId || String(profileUserId) === String(userId)) {
+      return userId;
+    }
+
+    const viewerDoc = await db.collection("users").doc(userId).get();
+    if (!viewerDoc.exists) return userId;
+
+    const viewer = viewerDoc.data() || {};
+    if (isCaregiverRole(viewer.role) && isManagedChild(viewer, profileUserId)) {
+      return profileUserId;
+    }
+
+    return userId;
+  }
+
+  function buildLabMetricDeleteUpdates(metricType) {
+    const metric = String(metricType).trim().toLowerCase();
+    const updates = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (metric === "creatinine") updates.creatinine = null;
+    else if (metric === "potassium") updates.potassium = null;
+    else if (metric === "phosphorus") {
+      updates.phosphorus = null;
+      updates.phosphorus_status = null;
+    } else if (metric === "sodium") {
+      updates.sodium = null;
+      updates.sodium_status = null;
+    } else if (metric === "calcium") updates.calcium = null;
+    else if (metric === "egfr") {
+      updates.egfr = null;
+      updates.eGFR = null;
+    } else {
+      throw new Error("Unsupported lab result type");
+    }
+    return { metric, updates };
+  }
+
+  function hasRemainingLabMetric(labResult) {
+    return [
+      "creatinine",
+      "potassium",
+      "phosphorus",
+      "sodium",
+      "calcium",
+      "egfr",
+      "eGFR",
+    ].some((field) => {
+      const value = labResult[field];
+      return value !== undefined && value !== null && value !== "";
+    });
+  }
+
+  async function clearArchivedLabMetricCopies({
+    labResultId,
+    labResult,
+    updates,
+    labUserId,
+  }) {
+    const archiveCandidates = uniqueDocumentsById([
+      ...(await getDocumentsByField(
+        "historicalLabResults",
+        "originalId",
+        labResultId,
+      )),
+      ...(await getDocumentsByField(
+        "historicalLabResults",
+        "sourceId",
+        labResultId,
+      )),
+      ...(await getDocumentsByField(
+        "historicalLabResults",
+        "labResultId",
+        labResultId,
+      )),
+      ...(labResult?.date
+        ? await getDocumentsByField("historicalLabResults", "userId", labUserId)
+        : []),
+    ]);
+
+    await Promise.all(
+      archiveCandidates.map(async (archive) => {
+        if (
+          archive.userId &&
+          archive.userId !== labUserId &&
+          archive.originalUserId !== labUserId
+        ) {
+          return;
+        }
+        if (
+          archive.id !== labResultId &&
+          archive.originalId !== labResultId &&
+          archive.sourceId !== labResultId &&
+          archive.labResultId !== labResultId &&
+          labResult?.date &&
+          archive.date !== labResult.date
+        ) {
+          return;
+        }
+
+        const archiveRef = db.collection("historicalLabResults").doc(archive.id);
+        const nextArchive = { ...archive, ...updates };
+        if (hasRemainingLabMetric(nextArchive)) {
+          await archiveRef.set(encryptHealthDocument(updates), { merge: true });
+        } else {
+          await archiveRef.delete();
+        }
+      }),
+    );
+  }
 
   router.post("/save-measurement", async (req, res) => {
     console.log("Save measurement requested:", req.body);
@@ -19,6 +149,7 @@ function registerRecordRoutes(router, deps) {
     try {
       const {
         userId,
+        profileUserId,
         metricType,
         value,
         date,
@@ -31,7 +162,11 @@ function registerRecordRoutes(router, deps) {
         throw new Error("Missing measurement value");
       }
 
-      const userDoc = await db.collection("users").doc(userId).get();
+      const profileOwnerId = await resolveWritableProfileUserId(
+        userId,
+        profileUserId,
+      );
+      const userDoc = await db.collection("users").doc(profileOwnerId).get();
       if (!userDoc.exists) {
         return res.status(404).json({
           success: false,
@@ -42,7 +177,7 @@ function registerRecordRoutes(router, deps) {
       const user = userDoc.data() || {};
       const anthropometricRecords = sortByNewest(
         uniqueDocumentsById([
-          ...(await getUserDocuments("anthropometrics", userId)),
+          ...(await getUserDocuments("anthropometrics", profileOwnerId)),
           ...(await getDocumentsByField(
             "anthropometrics",
             "medicalProfileId",
@@ -53,7 +188,7 @@ function registerRecordRoutes(router, deps) {
       const currentAnthropometrics = anthropometricRecords[0] || null;
       const metric = String(metricType).trim().toLowerCase();
       const payload = {
-        userId,
+        userId: profileOwnerId,
         medicalProfileId: user.medicalProfileId || null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
@@ -123,7 +258,7 @@ function registerRecordRoutes(router, deps) {
       }
 
       if (payload.bmi !== undefined) {
-        await db.collection("users").doc(userId).set(
+        await db.collection("users").doc(profileOwnerId).set(
           {
             bmi: payload.bmi,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -134,7 +269,7 @@ function registerRecordRoutes(router, deps) {
 
       const recalculation =
         recalculateNutritionTargets === true
-          ? await recalculateNutritionArtifacts(userId)
+          ? await recalculateNutritionArtifacts(profileOwnerId)
           : null;
 
       return res.status(200).json({
@@ -156,8 +291,11 @@ function registerRecordRoutes(router, deps) {
     console.log("Save lab result requested:", req.body);
 
     try {
-      const { userId, uid, labResultId, metricType, value, resultDate } = req.body;
-      const labUserId = userId || uid;
+      const { userId, uid, profileUserId, labResultId, metricType, value, resultDate } = req.body;
+      const labUserId = await resolveWritableProfileUserId(
+        userId || uid,
+        profileUserId,
+      );
 
       if (!labUserId) throw new Error("Missing userId");
       if (!metricType) throw new Error("Missing lab metric type");
@@ -259,14 +397,16 @@ function registerRecordRoutes(router, deps) {
         });
         docRef = db.collection("labResults").doc(currentLabResult.id);
         if (labResultId) {
-          await docRef.set(labResultPayload, { merge: true });
+          await docRef.set(encryptHealthDocument(labResultPayload), { merge: true });
         } else {
           labResultPayload.createdAt = admin.firestore.FieldValue.serverTimestamp();
-          await docRef.set(labResultPayload);
+          await docRef.set(encryptHealthDocument(labResultPayload));
         }
       } else {
         labResultPayload.createdAt = admin.firestore.FieldValue.serverTimestamp();
-        docRef = await db.collection("labResults").add(labResultPayload);
+        docRef = await db
+          .collection("labResults")
+          .add(encryptHealthDocument(labResultPayload));
       }
 
       await db.collection("users").doc(labUserId).set(
@@ -283,6 +423,105 @@ function registerRecordRoutes(router, deps) {
       });
     } catch (error) {
       console.error("SAVE_LAB_RESULT ERROR:", error.message);
+      return res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
+  router.post("/delete-lab-result", async (req, res) => {
+    console.log("Delete lab result requested:", req.body);
+
+    try {
+      const { userId, uid, profileUserId, labResultId, metricType } = req.body;
+      const labUserId = await resolveWritableProfileUserId(
+        userId || uid,
+        profileUserId,
+      );
+
+      if (!labUserId) throw new Error("Missing userId");
+      if (!labResultId) throw new Error("Missing lab result ID");
+      if (!metricType) throw new Error("Missing lab metric type");
+
+      const userDoc = await db.collection("users").doc(labUserId).get();
+      const user = userDoc.exists ? userDoc.data() || {} : {};
+      let collectionName = "labResults";
+      let docRef = db.collection(collectionName).doc(labResultId);
+      let doc = await docRef.get();
+      if (!doc.exists) {
+        collectionName = "historicalLabResults";
+        docRef = db.collection(collectionName).doc(labResultId);
+        doc = await docRef.get();
+      }
+      if (!doc.exists) {
+        if (user.labResultId === labResultId) {
+          await db.collection("users").doc(labUserId).set(
+            {
+              labResultId: admin.firestore.FieldValue.delete(),
+            },
+            { merge: true },
+          );
+        }
+        return res.status(200).json({
+          success: true,
+          labResultId,
+          deletedMetric: String(metricType).trim().toLowerCase(),
+          alreadyDeleted: true,
+        });
+      }
+
+      const labResult =
+        (await getDocumentData(collectionName, labResultId)) || {
+          id: doc.id,
+          ...doc.data(),
+        };
+      const isLinkedFromProfile = user.labResultId === labResultId;
+      if (
+        labResult.userId &&
+        labResult.userId !== labUserId &&
+        !isLinkedFromProfile
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: "Lab result does not belong to this user",
+        });
+      }
+
+      const { metric, updates } = buildLabMetricDeleteUpdates(metricType);
+
+      const nextLabResult = { ...labResult, ...updates };
+      const hasRemainingMetric = hasRemainingLabMetric(nextLabResult);
+
+      if (hasRemainingMetric) {
+        await docRef.set(encryptHealthDocument(updates), { merge: true });
+      } else {
+        await docRef.delete();
+        if (user.labResultId === labResultId) {
+          await db.collection("users").doc(labUserId).set(
+            {
+              labResultId: admin.firestore.FieldValue.delete(),
+            },
+            { merge: true },
+          );
+        }
+      }
+
+      await clearArchivedLabMetricCopies({
+        labResultId,
+        labResult,
+        updates,
+        labUserId,
+      });
+
+      return res.status(200).json({
+        success: true,
+        labResultId,
+        deletedMetric: metric,
+        deletedDocument: !hasRemainingMetric,
+      });
+    } catch (error) {
+      console.error("DELETE_LAB_RESULT ERROR:", error.message);
       return res.status(400).json({
         success: false,
         error: error.message,

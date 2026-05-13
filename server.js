@@ -2,7 +2,41 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const dns = require("dns").promises;
+const fs = require("fs");
+const path = require("path");
+
+function loadLocalEnv() {
+  const envPath = path.join(__dirname, ".env");
+  if (!fs.existsSync(envPath)) return;
+
+  const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const equalsIndex = trimmed.indexOf("=");
+    if (equalsIndex <= 0) continue;
+
+    const key = trimmed.slice(0, equalsIndex).trim();
+    let value = trimmed.slice(equalsIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadLocalEnv();
+
 const { admin, db, auth } = require("./firebase/admin");
+const {
+  encryptHealthProfile,
+  decryptHealthProfile,
+} = require("./utils/encryption");
 const {
   isValidAuthenticatorCode,
   normalizeSecuritySettings,
@@ -102,7 +136,7 @@ async function isCompletedVerifiedUser(uid) {
     return false;
   }
 
-  const profile = userDoc.data() || {};
+  const profile = decryptHealthProfile(userDoc.data() || {});
   return isProfileVerified(profile);
 }
 
@@ -138,8 +172,32 @@ function isLinkOnlyCaregiverProfile(profile = {}) {
   return isCaregiverRole(profile.role) && profile.childAgeGroup === "13-18";
 }
 
+function hasManagedChildProfile(profile = {}) {
+  if (!isCaregiverRole(profile.role)) return false;
+  if (Array.isArray(profile.linkedChildren) && profile.linkedChildren.length > 0) {
+    return true;
+  }
+  return Boolean(
+    profile.childProfileCreated === true ||
+      profile.activeDirectChildProfileId ||
+      profile.linkedChildUserId,
+  );
+}
+
+function hasAcceptedPrivacyConsent(profile = {}) {
+  return (
+    profile.privacyConsentAccepted === true ||
+    profile.dataPrivacyConsentAccepted === true ||
+    profile.consentAccepted === true
+  );
+}
+
 function isProfileComplete(profile = {}) {
-  if (isLinkOnlyCaregiverProfile(profile)) {
+  if (
+    isCaregiverRole(profile.role) ||
+    isLinkOnlyCaregiverProfile(profile) ||
+    hasManagedChildProfile(profile)
+  ) {
     return true;
   }
 
@@ -383,18 +441,12 @@ async function resolveReminderSettingsTarget(actingUserId, requestedProfileUserI
   }
 
   const targetProfile = targetDoc.data() || {};
-  const targetIsLinkedAdolescent =
-    normalizeStoredRole(targetProfile.role) === "adolescent" &&
-    targetProfile.caregiverSettings?.caregiverLinked === true;
-
   const canManage =
-    targetUserId === actingUserId
-      ? !targetIsLinkedAdolescent
-      : isLinkedCaregiverEditingChild;
+    targetUserId === actingUserId || isLinkedCaregiverEditingChild;
 
   if (!canManage) {
     const error = new Error(
-      "Reminder settings are managed by the linked caregiver",
+      "You are not allowed to manage these reminders",
     );
     error.statusCode = 403;
     throw error;
@@ -415,7 +467,9 @@ async function getUserVerificationState(uid) {
   } catch (_) {}
 
   const userDoc = await db.collection("users").doc(uid).get();
-  const profile = userDoc.exists ? userDoc.data() || {} : {};
+  const profile = userDoc.exists
+    ? decryptHealthProfile(userDoc.data() || {})
+    : {};
 
   const emailVerified =
     authUser?.emailVerified === true || profile.emailVerified === true;
@@ -601,7 +655,9 @@ app.post("/check-user", async (req, res) => {
       try {
         const existingPhoneUser = await auth.getUserByPhoneNumber(normalizedPhone);
         const userDoc = await db.collection("users").doc(existingPhoneUser.uid).get();
-        const profile = userDoc.exists ? userDoc.data() || {} : {};
+        const profile = userDoc.exists
+          ? decryptHealthProfile(userDoc.data() || {})
+          : {};
         if (isUserVerified({ authUser: existingPhoneUser, profile })) {
           console.log("CHECK_USER: Verified phone found - already exists");
           return res.status(200).json({
@@ -702,7 +758,9 @@ app.post("/verify-phone-password", async (req, res) => {
     }
 
     const userDoc = await db.collection("users").doc(user.uid).get();
-    const profile = userDoc.exists ? userDoc.data() || {} : {};
+    const profile = userDoc.exists
+      ? decryptHealthProfile(userDoc.data() || {})
+      : {};
     if (!isUserVerified({ authUser: user, profile })) {
       return res.status(200).json({
         success: true,
@@ -776,7 +834,9 @@ app.post("/api/user/profile-status", async (req, res) => {
     }
 
     const userDoc = await db.collection("users").doc(resolvedUid).get();
-    const profile = userDoc.exists ? userDoc.data() || {} : {};
+    const profile = userDoc.exists
+      ? decryptHealthProfile(userDoc.data() || {})
+      : {};
     let verified = isProfileVerified(profile);
 
     // Avoid the slower Auth lookup unless Firestore cannot already answer
@@ -1074,7 +1134,9 @@ app.post("/verify-email-and-create-user", async (req, res) => {
     // Create profile in Firestore
     const existingProfileDoc = await db.collection("users").doc(user.uid).get();
     const existingProfile =
-      existingProfileDoc.exists ? existingProfileDoc.data() || {} : {};
+      existingProfileDoc.exists
+        ? decryptHealthProfile(existingProfileDoc.data() || {})
+        : {};
     const profile = applyUserProfileIdentityFields(
       {},
       {
@@ -1092,7 +1154,10 @@ app.post("/verify-email-and-create-user", async (req, res) => {
       existingProfile,
     );
 
-    await db.collection("users").doc(user.uid).set(profile, { merge: true });
+    await db
+      .collection("users")
+      .doc(user.uid)
+      .set(encryptHealthProfile(profile), { merge: true });
     await savePasswordSecret(user.uid, password);
 
     console.log("VERIFY_EMAIL_AND_CREATE_USER: Profile created/updated for UID:", user.uid);
@@ -1184,7 +1249,9 @@ app.post("/verify-phone-and-create-user", async (req, res) => {
     // Create profile in Firestore
     const existingProfileDoc = await db.collection("users").doc(user.uid).get();
     const existingProfile =
-      existingProfileDoc.exists ? existingProfileDoc.data() || {} : {};
+      existingProfileDoc.exists
+        ? decryptHealthProfile(existingProfileDoc.data() || {})
+        : {};
     const profile = applyUserProfileIdentityFields(
       {},
       {
@@ -1242,7 +1309,14 @@ app.post("/api/user/create", async (req, res) => {
     password: req.body.password ? "[REDACTED]" : undefined,
   });
 
-  const { email, phoneNumber, password, fullName, userRole } = req.body;
+  const {
+    email,
+    phoneNumber,
+    password,
+    fullName,
+    userRole,
+    privacyConsentAccepted,
+  } = req.body;
 
   try {
     if (!fullName || !password) {
@@ -1339,7 +1413,9 @@ app.post("/api/user/create", async (req, res) => {
 
     const existingProfileDoc = await db.collection("users").doc(user.uid).get();
     const existingProfile =
-      existingProfileDoc.exists ? existingProfileDoc.data() || {} : {};
+      existingProfileDoc.exists
+        ? decryptHealthProfile(existingProfileDoc.data() || {})
+        : {};
     const profileData = applyUserProfileIdentityFields(
       {},
       {
@@ -1356,8 +1432,16 @@ app.post("/api/user/create", async (req, res) => {
       },
       existingProfile,
     );
+    if (privacyConsentAccepted === true) {
+      profileData.privacyConsentAccepted = true;
+      profileData.privacyConsentAcceptedAt =
+        admin.firestore.FieldValue.serverTimestamp();
+    }
 
-    await db.collection("users").doc(user.uid).set(profileData, { merge: true });
+    await db
+      .collection("users")
+      .doc(user.uid)
+      .set(encryptHealthProfile(profileData), { merge: true });
     console.log("CREATE_USER: Seeded Firestore profile for UID:", user.uid);
 
     res.status(200).json({
@@ -1622,7 +1706,9 @@ app.post("/api/user/profile/save", async (req, res) => {
     const verificationState = await getUserVerificationState(uid);
 
     const existingDoc = await db.collection("users").doc(uid).get();
-    const existingProfile = existingDoc.exists ? existingDoc.data() || {} : {};
+    const existingProfile = existingDoc.exists
+      ? decryptHealthProfile(existingDoc.data() || {})
+      : {};
     const profileData = applyUserProfileIdentityFields(
       {},
       {
@@ -1638,7 +1724,10 @@ app.post("/api/user/profile/save", async (req, res) => {
       existingProfile,
     );
 
-    await db.collection("users").doc(uid).set(profileData, { merge: true });
+    await db
+      .collection("users")
+      .doc(uid)
+      .set(encryptHealthProfile(profileData), { merge: true });
     
     // Also save password secret if needed
     if (req.body.password) {
@@ -1682,10 +1771,15 @@ app.post("/api/user/caregiver-child-age", async (req, res) => {
       });
     }
 
-    if (childAgeGroup !== "5-13" && childAgeGroup !== "13-18") {
+    if (
+      childAgeGroup !== "5-12" &&
+      childAgeGroup !== "5-13" &&
+      childAgeGroup !== "13-18" &&
+      childAgeGroup !== "13-18-direct"
+    ) {
       return res.status(400).json({
         success: false,
-        error: "Child age group must be either 5-13 or 13-18",
+        error: "Child age group must be either 5-12 or 13-18",
       });
     }
 
@@ -1698,7 +1792,7 @@ app.post("/api/user/caregiver-child-age", async (req, res) => {
       });
     }
 
-    const profile = userDoc.data() || {};
+    const profile = decryptHealthProfile(userDoc.data() || {});
     if (!isCaregiverRole(profile.role)) {
       return res.status(400).json({
         success: false,
@@ -1707,31 +1801,24 @@ app.post("/api/user/caregiver-child-age", async (req, res) => {
     }
 
     const payload = {
-      childAgeGroup,
+      pendingChildAgeGroup: childAgeGroup,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
-
-    if (childAgeGroup === "5-13") {
-      payload.childProfileCreated = false;
-      payload.linkedChildAccount = false;
-      payload.linkedChildUserId = null;
-      payload.linkStatus = "none";
-      payload.activeLinkingCode = null;
-      payload.linkCodeExpiresAt = null;
-    } else {
-      payload.childProfileCreated = false;
-      payload.linkedChildAccount = false;
-      payload.linkedChildUserId = null;
-      payload.linkStatus = "pending";
-      payload.activeLinkingCode = null;
-      payload.linkCodeExpiresAt = null;
+    const linkedChildren = Array.isArray(profile.linkedChildren)
+      ? profile.linkedChildren
+      : [];
+    if (linkedChildren.length >= 3) {
+      return res.status(400).json({
+        success: false,
+        error: "This caregiver account can manage up to 3 child profiles",
+      });
     }
 
     await userRef.set(payload, { merge: true });
 
     return res.status(200).json({
       success: true,
-      message: "Caregiver child age group saved",
+      message: "Caregiver child profile setup staged",
       childAgeGroup,
       profileComplete: isProfileComplete({ ...profile, ...payload }),
       needsProfileSetup: buildNeedsProfileSetup(
@@ -1770,18 +1857,22 @@ app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
     }
 
     const caregiver = caregiverDoc.data() || {};
-    if (!isCaregiverRole(caregiver.role) || caregiver.childAgeGroup !== "13-18") {
+    if (!isCaregiverRole(caregiver.role)) {
       return res.status(400).json({
         success: false,
-        error: "Only caregivers with a 13-18 child age group can generate linking codes",
+        error: "Only caregiver accounts can generate linking codes",
       });
     }
 
-    const existingLinkedChild = caregiver.linkedChildUserId;
-    if (caregiver.linkedChildAccount === true && existingLinkedChild) {
+    const linkedChildren = Array.isArray(caregiver.linkedChildren)
+      ? caregiver.linkedChildren
+      : caregiver.linkedChildUserId
+        ? [{ userId: caregiver.linkedChildUserId }]
+        : [];
+    if (linkedChildren.length >= 3) {
       return res.status(400).json({
         success: false,
-        error: "This caregiver account is already linked to an adolescent account",
+        error: "This caregiver account can manage up to 3 child accounts",
       });
     }
 
@@ -1793,6 +1884,14 @@ app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
       }
       code = generateLinkingCode();
     }
+    const linkedAccountChild =
+      linkedChildren.find((child) => child?.type !== "direct") || null;
+    const existingLinkedChildUserId =
+      linkedAccountChild?.userId ||
+      linkedAccountChild?.uid ||
+      linkedAccountChild?.id ||
+      caregiver.linkedChildUserId ||
+      null;
 
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
     const expiresAtTimestamp = admin.firestore.Timestamp.fromDate(expiresAt);
@@ -1807,8 +1906,8 @@ app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
 
     await caregiverRef.set(
       {
-        linkedChildAccount: false,
-        linkedChildUserId: null,
+        linkedChildAccount: Boolean(existingLinkedChildUserId),
+        linkedChildUserId: existingLinkedChildUserId,
         linkStatus: "pending",
         activeLinkingCode: code,
         linkCodeExpiresAt: expiresAtTimestamp,
@@ -1910,23 +2009,40 @@ app.post("/api/user/link-caregiver-account", async (req, res) => {
     }
 
     const caregiver = caregiverDoc.data() || {};
-    if (!isCaregiverRole(caregiver.role) || caregiver.childAgeGroup !== "13-18") {
+    if (!isCaregiverRole(caregiver.role)) {
       return res.status(400).json({
         success: false,
         error: "This caregiver account is not eligible for adolescent linking",
       });
     }
 
-    if (
-      caregiver.linkedChildAccount === true &&
-      caregiver.linkedChildUserId &&
-      caregiver.linkedChildUserId !== adolescentUserId
-    ) {
+    const linkedChildren = Array.isArray(caregiver.linkedChildren)
+      ? caregiver.linkedChildren
+      : caregiver.linkedChildUserId
+        ? [{ userId: caregiver.linkedChildUserId }]
+        : [];
+    const alreadyLinked = linkedChildren.some(
+      (child) => child?.userId === adolescentUserId || child?.uid === adolescentUserId,
+    );
+    if (!alreadyLinked && linkedChildren.length >= 3) {
       return res.status(400).json({
         success: false,
-        error: "This caregiver account is already linked to another adolescent",
+        error: "This caregiver account can manage up to 3 child accounts",
       });
     }
+
+    const nextLinkedChildren = alreadyLinked
+      ? linkedChildren
+      : [
+          ...linkedChildren,
+          {
+            userId: adolescentUserId,
+            name: adolescent.fullName || adolescent.name || "Adolescent",
+            email: adolescent.email || null,
+            linkedAt: new Date().toISOString(),
+            relationship: "adolescent",
+          },
+        ];
 
     const caregiverSettings = {
       wantsCaregiverLink: true,
@@ -1941,6 +2057,7 @@ app.post("/api/user/link-caregiver-account", async (req, res) => {
         {
           linkedChildAccount: true,
           linkedChildUserId: adolescentUserId,
+          linkedChildren: nextLinkedChildren,
           linkStatus: "linked",
           activeLinkingCode: null,
           linkCodeExpiresAt: null,
@@ -2022,12 +2139,23 @@ app.post("/api/user/unlink-caregiver-child", async (req, res) => {
 
     const adolescentRef = db.collection("users").doc(targetChildUserId);
     const adolescentDoc = await adolescentRef.get();
+    const nextLinkedChildren = Array.isArray(caregiver.linkedChildren)
+      ? caregiver.linkedChildren.filter((child) => {
+          const childId = child?.userId || child?.uid || child?.id;
+          return String(childId || "") !== String(targetChildUserId);
+        })
+      : [];
 
     await caregiverRef.set(
       {
-        linkedChildAccount: false,
-        linkedChildUserId: null,
-        linkStatus: "pending",
+        linkedChildAccount: nextLinkedChildren.length > 0,
+        linkedChildUserId:
+          nextLinkedChildren[0]?.userId ||
+          nextLinkedChildren[0]?.uid ||
+          nextLinkedChildren[0]?.id ||
+          null,
+        linkedChildren: nextLinkedChildren,
+        linkStatus: nextLinkedChildren.length > 0 ? "linked" : "pending",
         activeLinkingCode: null,
         linkCodeExpiresAt: null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2070,6 +2198,226 @@ app.post("/api/user/unlink-caregiver-child", async (req, res) => {
   }
 });
 
+app.post("/api/user/privacy-consent", async (req, res) => {
+  const { uid, accepted } = req.body;
+
+  try {
+    if (!uid) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    await db.collection("users").doc(uid).set(
+      {
+        privacyConsentAccepted: accepted === true,
+        dataPrivacyConsentAccepted: accepted === true,
+        privacyConsentAcceptedAt:
+          accepted === true
+            ? admin.firestore.FieldValue.serverTimestamp()
+            : admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      privacyConsentAccepted: accepted === true,
+    });
+  } catch (error) {
+    console.error("PRIVACY_CONSENT ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to update privacy consent",
+    });
+  }
+});
+
+app.post("/api/user/archive-direct-child-profile", async (req, res) => {
+  const { uid, userId, childProfileId } = req.body;
+  const caregiverUserId = uid || userId;
+
+  try {
+    if (!caregiverUserId) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+      });
+    }
+
+    const caregiverRef = db.collection("users").doc(caregiverUserId);
+    const caregiverDoc = await caregiverRef.get();
+    if (!caregiverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Caregiver profile not found",
+      });
+    }
+
+    const caregiver = caregiverDoc.data() || {};
+    if (!isCaregiverRole(caregiver.role)) {
+      return res.status(403).json({
+        success: false,
+        error: "Only caregivers can archive directly managed profiles",
+      });
+    }
+
+    const linkedChildren = Array.isArray(caregiver.linkedChildren)
+      ? caregiver.linkedChildren
+      : [];
+    const targetChildId =
+      childProfileId ||
+      caregiver.activeDirectChildProfileId ||
+      linkedChildren.find((child) => child?.type === "direct")?.userId ||
+      linkedChildren.find((child) => child?.type === "direct")?.uid ||
+      linkedChildren.find((child) => child?.type === "direct")?.id ||
+      null;
+
+    if (!targetChildId) {
+      return res.status(400).json({
+        success: false,
+        error: "Child profile ID is required",
+      });
+    }
+
+    const targetChild = linkedChildren.find((child) => {
+      const id = child?.userId || child?.uid || child?.id;
+      return String(id || "") === String(targetChildId);
+    });
+
+    if (!targetChild) {
+      return res.status(404).json({
+        success: false,
+        error: "Child profile was not found under this caregiver",
+      });
+    }
+    if (targetChild.type !== "direct") {
+      return res.status(400).json({
+        success: false,
+        error: "Linked adolescent accounts can only be unlinked, not deleted",
+      });
+    }
+
+    const remainingChildren = linkedChildren.filter((child) => {
+      const id = child?.userId || child?.uid || child?.id;
+      return String(id || "") !== String(targetChildId);
+    });
+    const remainingLinkedAccount = remainingChildren.find(
+      (child) =>
+        child?.relationship === "adolescent" ||
+        child?.type === "linked" ||
+        child?.type === "adolescent",
+    );
+    const remainingDirectChild = remainingChildren.find(
+      (child) => child?.type === "direct",
+    );
+
+    const childDoc = await db.collection("users").doc(targetChildId).get();
+    const childProfile = childDoc.exists ? childDoc.data() || {} : {};
+
+    async function deleteDocById(collectionName, docId) {
+      if (!docId) return 0;
+      await db.collection(collectionName).doc(docId).delete();
+      return 1;
+    }
+
+    async function deleteWhere(collectionName, field, value) {
+      if (!value) return 0;
+      const snapshot = await db
+        .collection(collectionName)
+        .where(field, "==", value)
+        .get();
+      if (snapshot.empty) return 0;
+      let deleted = 0;
+      for (let index = 0; index < snapshot.docs.length; index += 400) {
+        const batch = db.batch();
+        for (const doc of snapshot.docs.slice(index, index + 400)) {
+          batch.delete(doc.ref);
+          deleted += 1;
+        }
+        await batch.commit();
+      }
+      return deleted;
+    }
+
+    const childCollections = [
+      "medicalProfile",
+      "anthropometrics",
+      "historicalAnthropometrics",
+      "labResults",
+      "historicalLabResults",
+      "nutritionTargets",
+      "phase2DecisionSupport",
+      "medications",
+      "foodLogs",
+      "dailyIntakeSummaries",
+      "analyticsSummaries",
+      "reminderSettings",
+    ];
+    for (const collectionName of childCollections) {
+      await deleteWhere(collectionName, "userId", targetChildId);
+      await deleteWhere(collectionName, "uid", targetChildId);
+      await deleteWhere(collectionName, "childProfileId", targetChildId);
+    }
+
+    await deleteDocById("medicalProfile", childProfile.medicalProfileId);
+    await deleteDocById("nutritionTargets", childProfile.baselineNutritionTargetId);
+    await deleteDocById(
+      "phase2DecisionSupport",
+      childProfile.phase2DecisionSupportId,
+    );
+    await deleteDocById("labResults", childProfile.labResultId);
+    if (Array.isArray(childProfile.medicationIds)) {
+      for (const medicationId of childProfile.medicationIds) {
+        await deleteDocById("medications", medicationId);
+      }
+    }
+    await db.collection("users").doc(targetChildId).delete();
+
+    await caregiverRef.set(
+      {
+        childProfileArchived: true,
+        childProfileArchivedAt: admin.firestore.FieldValue.serverTimestamp(),
+        childProfileCreated: remainingChildren.length > 0,
+        activeDirectChildProfileId:
+          remainingDirectChild?.userId ||
+          remainingDirectChild?.uid ||
+          remainingDirectChild?.id ||
+          null,
+        linkedChildAccount: Boolean(remainingLinkedAccount),
+        linkedChildUserId:
+          remainingLinkedAccount?.userId ||
+          remainingLinkedAccount?.uid ||
+          remainingLinkedAccount?.id ||
+          null,
+        linkedChildren: remainingChildren,
+        childAgeGroup:
+          remainingDirectChild?.childAgeGroup || caregiver.childAgeGroup || null,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Directly managed child profile deleted successfully",
+      caregiverUserId,
+      childProfileId: targetChildId,
+    });
+  } catch (error) {
+    console.error(
+      "ARCHIVE_DIRECT_CHILD_PROFILE ERROR:",
+      error.code || error.message,
+    );
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to archive child profile",
+    });
+  }
+});
+
 ////////////////////// LOGIN (EMAIL/PASSWORD) //////////////////////
 // Authenticate user with email and password
 app.post("/api/user/login", async (req, res) => {
@@ -2094,6 +2442,13 @@ app.post("/api/user/login", async (req, res) => {
       db.collection("users").doc(user.uid).get(),
     ]);
 
+    if (!profileSnap.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Account not found. Please create an account first.",
+      });
+    }
+
     if (!userSecret.exists) {
       return res.status(401).json({
         success: false,
@@ -2109,7 +2464,7 @@ app.post("/api/user/login", async (req, res) => {
       });
     }
 
-    const profile = profileSnap.exists ? profileSnap.data() || {} : {};
+    const profile = decryptHealthProfile(profileSnap.data() || {});
     const securitySettings = normalizeSecuritySettings(profile);
     const isDbVerified =
       profile.status === "verified" || profile.emailVerified === true;
@@ -2190,7 +2545,7 @@ app.post("/api/user/security-settings", async (req, res) => {
       });
     }
 
-    const profile = userDoc.data() || {};
+    const profile = decryptHealthProfile(userDoc.data() || {});
     const authUser = await auth.getUser(uid).catch(() => null);
     const securitySettings = normalizeSecuritySettings({
       ...profile,
@@ -2237,7 +2592,7 @@ app.post("/api/user/update-security-settings", async (req, res) => {
       });
     }
 
-    const profile = userDoc.data() || {};
+    const profile = decryptHealthProfile(userDoc.data() || {});
     const securitySettings = normalizeSecuritySettings(profile);
     const requestedMethod =
       mfaEnabled == true
@@ -2442,7 +2797,7 @@ app.post("/api/user/device-token/register", async (req, res) => {
       });
     }
 
-    const profile = userDoc.data() || {};
+    const profile = decryptHealthProfile(userDoc.data() || {});
     const removedFromOtherUsers = await removeDeviceTokenFromOtherUsers(
       normalizedToken,
       uid,
@@ -2530,7 +2885,7 @@ app.post("/api/user/push-notification/send-test", async (req, res) => {
       });
     }
 
-    const profile = userDoc.data() || {};
+    const profile = decryptHealthProfile(userDoc.data() || {});
     const result = await sendPushNotificationToProfile(profile, {
       title: "NutriKidney test",
       body: "Push notifications are working on this device.",
@@ -2756,9 +3111,12 @@ app.post("/api/user/change-password", async (req, res) => {
       });
     }
 
-    const profile = userDoc.data() || {};
-    const storedEmail = String(profile.email || "").trim().toLowerCase();
-    const storedPhone = String(profile.phoneNumber || "").trim();
+    const profile = decryptHealthProfile(userDoc.data() || {});
+    const authUser = await auth.getUser(uid).catch(() => null);
+    const storedEmail = String(profile.email || authUser?.email || "")
+      .trim()
+      .toLowerCase();
+    const storedPhone = String(profile.phoneNumber || authUser?.phoneNumber || "").trim();
     const typedContact = String(verificationContact || "").trim();
     const normalizedTypedContact = typedContact.toLowerCase();
 
@@ -2931,6 +3289,10 @@ app.post("/api/user/cancel-verification", async (req, res) => {
 ////////////////////// HEALTH ROUTES //////////////////////
 const healthRoutes = require("./routes/healthRoutes");
 app.use("/api/health", healthRoutes);
+
+////////////////////// ENCRYPTED HEALTH PROFILE ROUTES //////////////////////
+const encryptedHealthProfileRoutes = require("./routes/encryptedHealthProfileRoutes");
+app.use("/api/encrypted-health-profile", encryptedHealthProfileRoutes);
 
 ////////////////////// FOOD LOG ROUTES //////////////////////
 const foodLogRoutes = require("./routes/foodLogRoutes");

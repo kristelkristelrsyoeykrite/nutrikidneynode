@@ -13,6 +13,9 @@ function registerProfileRoutes(router, deps) {
     archiveCurrentRecord,
     archiveAndDeleteExtraCurrentRecords,
     recalculateNutritionArtifacts,
+    encryptHealthProfile,
+    decryptHealthProfile,
+    encryptHealthDocument,
   } = deps;
 
   function normalizeTextToken(value) {
@@ -123,6 +126,32 @@ function registerProfileRoutes(router, deps) {
     return normalized === "parent_caregiver" || normalized === "caregiver";
   }
 
+  function isAdolescentAccountRole(role) {
+    return String(role || "").trim().toLowerCase() === "adolescent";
+  }
+
+  function isDirectManagedChildEntry(child = {}) {
+    if (child?.type === "direct") return true;
+    if (
+      child?.relationship === "adolescent" ||
+      child?.type === "linked" ||
+      child?.type === "adolescent"
+    ) {
+      return false;
+    }
+    const childAgeGroup = String(child?.childAgeGroup || "");
+    if (
+      childAgeGroup === "5-12" ||
+      childAgeGroup === "5-13" ||
+      childAgeGroup === "13-18-direct"
+    ) {
+      return true;
+    }
+    const age = Number(child?.age ?? child?.ageYears);
+    if (Number.isFinite(age)) return age < 13;
+    return true;
+  }
+
   function applyUserProfileCoreFields(target, source = {}) {
     const ageValue = source.ageYears ?? source.age_years;
     const sexValue = source.sex ?? source.gender;
@@ -152,7 +181,15 @@ function registerProfileRoutes(router, deps) {
   }
 
   router.post("/update-profile", async (req, res) => {
-    console.log("Update profile requested:", req.body);
+    console.log("Update profile requested:", {
+      userId: req.body.userId || req.body.uid || null,
+      profileUserId: req.body.profileUserId || req.body.targetUserId || null,
+      hasSensitiveFields: Boolean(
+        req.body.childFullName ||
+          req.body.dateOfBirth ||
+          req.body.allergies,
+      ),
+    });
 
     try {
       const {
@@ -214,11 +251,19 @@ function registerProfileRoutes(router, deps) {
       }
 
       const actingUser = actingUserDoc.data() || {};
+      const linkedChildren = Array.isArray(actingUser.linkedChildren)
+        ? actingUser.linkedChildren
+        : [];
+      const isManagedLinkedChild = linkedChildren.some((child) => {
+        const childId = child?.userId || child?.uid || child?.id;
+        return String(childId || "") === String(requestedProfileUserId);
+      });
       const isLinkedCaregiverEditingChild =
         requestedProfileUserId !== actingUserId &&
         isCaregiverRole(actingUser.role) &&
         actingUser.linkedChildAccount === true &&
-        actingUser.linkedChildUserId === requestedProfileUserId;
+        (actingUser.linkedChildUserId === requestedProfileUserId ||
+          isManagedLinkedChild);
 
       if (requestedProfileUserId !== actingUserId && !isLinkedCaregiverEditingChild) {
         return res.status(403).json({
@@ -237,8 +282,8 @@ function registerProfileRoutes(router, deps) {
         });
       }
 
-      const existingUser = userDoc.data() || {};
-      const roleValue = existingUser.role || req.body.userRole || null;
+      const existingUser = decryptHealthProfile(userDoc.data() || {});
+      const roleValue = existingUser.role || null;
       const ageValue = ageYears ?? age_years;
       const sexValue = sex ?? gender;
       const heightValue = height_cm ?? height;
@@ -257,7 +302,7 @@ function registerProfileRoutes(router, deps) {
       const hypertensionValue = hasHypertension ?? has_hypertension;
       const allergiesValue = normalizeAllergiesInput(req.body.allergies);
       const isLinkedAdolescent =
-        roleValue === "adolescent" &&
+        isAdolescentAccountRole(roleValue) &&
         existingUser.caregiverSettings?.caregiverLinked === true;
       let caregiverSettingsValue = sanitizeCaregiverSettings(
         caregiverSettings,
@@ -300,8 +345,23 @@ function registerProfileRoutes(router, deps) {
         editPermissions: editPermissionsValue,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+      if (existingUser.role) {
+        userPayload.role = existingUser.role;
+      }
+      if (existingUser.userRole) {
+        userPayload.userRole = existingUser.userRole;
+      }
+      if (existingUser.securitySettings !== undefined) {
+        userPayload.securitySettings = existingUser.securitySettings;
+      }
+      if (existingUser.mfaEnabled !== undefined) {
+        userPayload.mfaEnabled = existingUser.mfaEnabled;
+      }
+      if (existingUser.mfaMethod !== undefined) {
+        userPayload.mfaMethod = existingUser.mfaMethod;
+      }
 
-      await userRef.set(userPayload, { merge: true });
+      await userRef.set(encryptHealthProfile(userPayload), { merge: true });
 
       let medicalProfileId = existingUser.medicalProfileId;
       const medicalProfilePayload = cleanObject({
@@ -337,10 +397,10 @@ function registerProfileRoutes(router, deps) {
         await db
           .collection("medicalProfile")
           .doc(medicalProfileId)
-          .set(medicalProfilePayload, { merge: true });
+          .set(encryptHealthDocument(medicalProfilePayload), { merge: true });
       } else {
         const medicalDoc = await db.collection("medicalProfile").add({
-          ...medicalProfilePayload,
+          ...encryptHealthDocument(medicalProfilePayload),
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
         medicalProfileId = medicalDoc.id;
@@ -426,6 +486,52 @@ function registerProfileRoutes(router, deps) {
     const { userId, step1, step2, step3, step4, userRole } = req.body;
 
     try {
+      const actingUserDoc = await db.collection("users").doc(userId).get();
+      const actingUser = actingUserDoc.exists
+        ? decryptHealthProfile(actingUserDoc.data() || {})
+        : {};
+      const linkedChildren = Array.isArray(actingUser.linkedChildren)
+        ? actingUser.linkedChildren
+        : [];
+      const stagedChildAgeGroupRaw =
+        req.body.caregiverChildAgeGroup || actingUser.pendingChildAgeGroup;
+      const stagedChildAgeGroup =
+        stagedChildAgeGroupRaw === "5-13" ? "5-13" : "5-12";
+      const shouldCreateCaregiverChild =
+        !req.body.childProfileId &&
+        !req.body.profileUserId &&
+        isCaregiverRole(actingUser.role) &&
+        Boolean(stagedChildAgeGroupRaw);
+      let requestedProfileUserId =
+        req.body.childProfileId || req.body.profileUserId || userId;
+
+      if (shouldCreateCaregiverChild) {
+        if (linkedChildren.length >= 3) {
+          return res.status(400).json({
+            success: false,
+            error: "This caregiver account can manage up to 3 child profiles",
+          });
+        }
+        requestedProfileUserId = db.collection("users").doc().id;
+      }
+
+      const isCaregiverChildSetup =
+        shouldCreateCaregiverChild ||
+        (requestedProfileUserId !== userId &&
+          isCaregiverRole(actingUser.role) &&
+          linkedChildren.some((child) => {
+            const childId = child?.userId || child?.uid || child?.id;
+            return String(childId || "") === String(requestedProfileUserId);
+          }));
+
+      if (requestedProfileUserId !== userId && !isCaregiverChildSetup) {
+        return res.status(403).json({
+          success: false,
+          error: "You are not allowed to create this child profile",
+        });
+      }
+
+      const profileUserId = requestedProfileUserId;
       const ageYears = step1?.age_years ?? step1?.ageYears;
       const sex = step1?.sex ?? step1?.gender;
       const heightCm = step1?.height_cm ?? step1?.height;
@@ -455,9 +561,11 @@ function registerProfileRoutes(router, deps) {
         {},
       );
 
-      const existingUserDoc = await db.collection("users").doc(userId).get();
+      const existingUserDoc = await db.collection("users").doc(profileUserId).get();
       const existingUser =
-        existingUserDoc.exists ? existingUserDoc.data() || {} : {};
+        existingUserDoc.exists
+          ? decryptHealthProfile(existingUserDoc.data() || {})
+          : {};
       if (existingUser.baselineNutritionTargetId) {
         const existingTargetDoc = await db
           .collection("nutritionTargets")
@@ -481,7 +589,8 @@ function registerProfileRoutes(router, deps) {
           success: true,
           message:
             "Profile already completed. Existing nutrition targets returned.",
-          userId,
+          userId: profileUserId,
+          ...(isCaregiverChildSetup ? { caregiverUserId: userId } : {}),
           medicalProfileId: existingUser.medicalProfileId,
           nutritionTargetId: existingUser.baselineNutritionTargetId,
           baselineTargets: existingTargets,
@@ -491,9 +600,15 @@ function registerProfileRoutes(router, deps) {
       }
 
       const userPayload = {
-        uid: userId,
+        uid: profileUserId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
+      const caregiverUserId = isCaregiverChildSetup
+        ? userId
+        : existingUser.caregiverUserId;
+      if (caregiverUserId) {
+        userPayload.caregiverUserId = caregiverUserId;
+      }
       if (!existingUser.createdAt) {
         userPayload.createdAt = admin.firestore.FieldValue.serverTimestamp();
       }
@@ -506,8 +621,16 @@ function registerProfileRoutes(router, deps) {
         bmi,
         preferredMeasurement: step3?.preferredMeasurement,
       });
-      if (userRole) userPayload.role = userRole;
-      if (userRole === "adolescent") {
+      if (isCaregiverChildSetup) {
+        const childAgeGroup =
+          stagedChildAgeGroup || existingUser.childAgeGroup || "5-12";
+        userPayload.role = "managed_child";
+        userPayload.childAgeGroup = childAgeGroup;
+        userPayload.profileComplete = true;
+      } else if (userRole) {
+        userPayload.role = userRole;
+      }
+      if (!isCaregiverChildSetup && userRole === "adolescent") {
         userPayload.caregiverSettings = caregiverSettings;
         userPayload.editPermissions = buildEditPermissions(
           userRole,
@@ -515,17 +638,13 @@ function registerProfileRoutes(router, deps) {
           step1?.editPermissions || {},
         );
       }
-      if (
-        (userRole === "parent_caregiver" || userRole === "caregiver") &&
-        existingUser.childAgeGroup === "5-13"
-      ) {
-        userPayload.childProfileCreated = true;
-      }
-
-      await db.collection("users").doc(userId).set(userPayload, { merge: true });
+      await db
+        .collection("users")
+        .doc(profileUserId)
+        .set(encryptHealthProfile(userPayload), { merge: true });
 
       const medicalProfilePayload = {
-        userId,
+        userId: profileUserId,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       };
 
@@ -586,7 +705,7 @@ function registerProfileRoutes(router, deps) {
 
       const medicalProfileDoc = await db
         .collection("medicalProfile")
-        .add(medicalProfilePayload);
+        .add(encryptHealthDocument(medicalProfilePayload));
 
       const medicalProfileId = medicalProfileDoc.id;
       console.log("Medical Profile created:", medicalProfileId);
@@ -618,7 +737,7 @@ function registerProfileRoutes(router, deps) {
           if (!medicationName) continue;
 
           const medicationPayload = cleanObject({
-            userId,
+            userId: profileUserId,
             medicalProfileId,
             name: medicationName,
             medicationName,
@@ -640,13 +759,13 @@ function registerProfileRoutes(router, deps) {
 
           const medicationDoc = await db
             .collection("medications")
-            .add(medicationPayload);
+            .add(encryptHealthDocument(medicationPayload));
           medicationIds.push(medicationDoc.id);
         }
       }
 
       const anthropometricPayload = {
-        userId,
+        userId: profileUserId,
         medicalProfileId,
         date: admin.firestore.FieldValue.serverTimestamp(),
       };
@@ -684,7 +803,7 @@ function registerProfileRoutes(router, deps) {
       let labResultDoc = null;
       if (hasLabResultData) {
         const labResultPayload = {
-          userId,
+          userId: profileUserId,
           medicalProfileId,
           testName: "Blood Test",
           date: step4?.resultDate ?? null,
@@ -699,7 +818,9 @@ function registerProfileRoutes(router, deps) {
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         };
 
-        labResultDoc = await db.collection("labResults").add(labResultPayload);
+        labResultDoc = await db
+          .collection("labResults")
+          .add(encryptHealthDocument(labResultPayload));
         console.log("Lab Result created:", labResultDoc.id);
       }
 
@@ -720,11 +841,11 @@ function registerProfileRoutes(router, deps) {
       });
 
       const nutritionTargetDoc = await db.collection("nutritionTargets").add({
-        userId,
+        userId: profileUserId,
         medicalProfileId,
         source: "profile_baseline",
         generatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        ...baselineTargets,
+        ...encryptHealthDocument(baselineTargets),
       });
 
       console.log("Baseline nutrition targets created:", nutritionTargetDoc.id);
@@ -763,12 +884,14 @@ function registerProfileRoutes(router, deps) {
       const phase2DecisionSupportDoc = await db
         .collection("phase2DecisionSupport")
         .add({
-          userId,
-          medicalProfileId,
-          labResultId: labResultDoc?.id || null,
-          source: "phase2_decision_support",
-          generatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          ...phase2DecisionSupport,
+          ...encryptHealthDocument({
+            userId: profileUserId,
+            medicalProfileId,
+            labResultId: labResultDoc?.id || null,
+            source: "phase2_decision_support",
+            generatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            ...phase2DecisionSupport,
+          }),
         });
 
       console.log(
@@ -776,7 +899,7 @@ function registerProfileRoutes(router, deps) {
         phase2DecisionSupportDoc.id,
       );
 
-      await db.collection("users").doc(userId).update({
+      await db.collection("users").doc(profileUserId).update({
         medicalProfileId,
         baselineNutritionTargetId: nutritionTargetDoc.id,
         phase2DecisionSupportId: phase2DecisionSupportDoc.id,
@@ -784,12 +907,59 @@ function registerProfileRoutes(router, deps) {
         medicationIds,
       });
 
-      console.log("FINAL SUBMIT: All collections created for user:", userId);
+      if (isCaregiverChildSetup) {
+        const childEntry = {
+          id: profileUserId,
+          userId: profileUserId,
+          type: "direct",
+          childAgeGroup:
+            stagedChildAgeGroup || existingUser.childAgeGroup || "5-12",
+          ckdStage: step1?.ckdStage || null,
+          age: ageYears ?? null,
+          profileComplete: true,
+        };
+        const hasExistingEntry = linkedChildren.some((child) => {
+          const childId = child?.userId || child?.uid || child?.id;
+          return String(childId || "") === String(profileUserId);
+        });
+        const nextLinkedChildren = hasExistingEntry
+          ? linkedChildren.map((child) => {
+              const childId = child?.userId || child?.uid || child?.id;
+              if (String(childId || "") !== String(profileUserId)) return child;
+              return { ...child, ...childEntry };
+            })
+          : [...linkedChildren, childEntry];
+        const linkedAccountChild = nextLinkedChildren.find(
+          (child) => !isDirectManagedChildEntry(child),
+        );
+
+        await db.collection("users").doc(userId).set(
+          {
+            childProfileCreated: true,
+            activeDirectChildProfileId: profileUserId,
+            pendingChildAgeGroup: admin.firestore.FieldValue.delete(),
+            linkedChildAccount: Boolean(linkedAccountChild),
+            linkedChildUserId:
+              linkedAccountChild?.userId ||
+              linkedAccountChild?.uid ||
+              linkedAccountChild?.id ||
+              null,
+            linkedChildren: nextLinkedChildren,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
+
+      console.log("FINAL SUBMIT: All collections created for user:", profileUserId);
 
       res.status(200).json({
         success: true,
         message: "All data saved successfully to database",
-        userId,
+        userId: profileUserId,
+        ...(isCaregiverChildSetup
+          ? { caregiverUserId: userId, childProfileId: profileUserId }
+          : {}),
         medicalProfileId,
         nutritionTargetId: nutritionTargetDoc.id,
         medicationIds,

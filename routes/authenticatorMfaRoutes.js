@@ -13,11 +13,21 @@ const router = express.Router();
 
 function isProfileCompleteForMfa(profile = {}) {
   const normalizedRole = String(profile.role || "").trim().toLowerCase();
-  const isLinkOnlyCaregiver =
-    (normalizedRole === "caregiver" || normalizedRole === "parent_caregiver") &&
-    profile.childAgeGroup === "13-18";
+  const isCaregiver =
+    normalizedRole === "caregiver" || normalizedRole === "parent_caregiver";
+  const isLinkOnlyCaregiver = isCaregiver && profile.childAgeGroup === "13-18";
+  const hasManagedChild =
+    isCaregiver &&
+    (profile.childProfileCreated === true ||
+      Boolean(profile.activeDirectChildProfileId) ||
+      Boolean(profile.linkedChildUserId) ||
+      (Array.isArray(profile.linkedChildren) && profile.linkedChildren.length > 0));
+  const hasAcceptedPrivacyConsent =
+    profile.privacyConsentAccepted === true ||
+    profile.dataPrivacyConsentAccepted === true ||
+    profile.consentAccepted === true;
 
-  if (isLinkOnlyCaregiver) {
+  if (hasAcceptedPrivacyConsent || isLinkOnlyCaregiver || hasManagedChild) {
     return true;
   }
 

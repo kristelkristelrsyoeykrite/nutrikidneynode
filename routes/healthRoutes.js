@@ -7,6 +7,12 @@ const prescriptionOcrBridge = require("../services/prescriptionOcrBridgeService"
 const { registerSummaryRoutes } = require("./health/registerSummaryRoutes");
 const { registerRecordRoutes } = require("./health/registerRecordRoutes");
 const { registerProfileRoutes } = require("./health/registerProfileRoutes");
+const {
+  encryptHealthProfile,
+  decryptHealthProfile,
+  encryptHealthDocument,
+  decryptHealthDocument,
+} = require("../utils/encryption");
 
 //////////////////// STEP 1 - Just collect data ////////////////////
 router.post("/step1", async (req, res) => {
@@ -259,7 +265,9 @@ router.post("/medications/confirm", async (req, res) => {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    const docRef = await db.collection("medications").add(medicationPayload);
+    const docRef = await db
+      .collection("medications")
+      .add(encryptHealthDocument(medicationPayload));
 
     return res.status(200).json({
       success: true,
@@ -409,7 +417,7 @@ router.put("/medications/:medicationId", async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    await docRef.set(medicationPayload, { merge: true });
+    await docRef.set(encryptHealthDocument(medicationPayload), { merge: true });
 
     return res.status(200).json({
       success: true,
@@ -418,6 +426,169 @@ router.put("/medications/:medicationId", async (req, res) => {
     });
   } catch (error) {
     console.error("MEDICATION_REST_UPDATE ERROR:", error.message);
+    return res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * MARK MEDICATION AS TAKEN (per dose)
+ *
+ * For single-dose reminders (once a day): mark as taken for today.
+ * For multiple times per day: mark as taken for the provided HH:mm dose time.
+ *
+ * This writes a per-day/per-time intake log so missed doses can still be identified.
+ */
+router.post("/medications/mark-taken", async (req, res) => {
+  console.log("Mark medication taken requested:", req.body);
+
+  try {
+    const { userId, uid, profileUserId, childProfileId, medicationId, time } =
+      req.body || {};
+
+    const medicationUserId = profileUserId || childProfileId || userId || uid;
+    if (!medicationUserId || !medicationId) {
+      throw new Error("Missing userId and/or medicationId");
+    }
+
+    const medRef = db.collection("medications").doc(String(medicationId));
+    const medDoc = await medRef.get();
+    if (!medDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Medication not found",
+      });
+    }
+
+    const medication = decryptHealthDocument(medDoc.data() || {});
+    const scheduledTimes = Array.isArray(medication.scheduled_times)
+      ? medication.scheduled_times
+      : [];
+    const startTime = String(medication.start_time || "").trim();
+    const candidateTimes =
+      scheduledTimes.length > 0 ? scheduledTimes : startTime ? [startTime] : [];
+
+    if (candidateTimes.length === 0) {
+      throw new Error("Medication has no scheduled time(s) to mark as taken.");
+    }
+
+    const today = todayDateKey();
+
+    const doseTimesToMark =
+      candidateTimes.length <= 1
+        ? candidateTimes
+        : time
+          ? [time]
+          : [];
+
+    if (doseTimesToMark.length === 0) {
+      throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
+    }
+
+    const writes = doseTimesToMark.map((doseTime) => {
+      const timeText = String(doseTime || "").trim();
+      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+      return db
+        .collection("medicationIntakeLogs")
+        .doc(docId)
+        .set(
+          {
+            id: docId,
+            userId: medicationUserId,
+            medicationId,
+            date: today,
+            time: timeText,
+            takenAt: admin.firestore.FieldValue.serverTimestamp(),
+            source: "manual_mark_taken",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+    });
+
+    await Promise.all(writes);
+
+    return res.status(200).json({
+      success: true,
+      message: "Medication marked as taken",
+      medicationId,
+      date: today,
+      times: doseTimesToMark,
+    });
+  } catch (error) {
+    console.error("MEDICATION_MARK_TAKEN ERROR:", error.message);
+    return res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+router.post("/medications/mark-untaken", async (req, res) => {
+  console.log("Mark medication untaken requested:", req.body);
+
+  try {
+    const { userId, uid, profileUserId, childProfileId, medicationId, time } =
+      req.body || {};
+
+    const medicationUserId = profileUserId || childProfileId || userId || uid;
+    if (!medicationUserId || !medicationId) {
+      throw new Error("Missing userId and/or medicationId");
+    }
+
+    const medRef = db.collection("medications").doc(String(medicationId));
+    const medDoc = await medRef.get();
+    if (!medDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Medication not found",
+      });
+    }
+
+    const medication = decryptHealthDocument(medDoc.data() || {});
+    const scheduledTimes = Array.isArray(medication.scheduled_times)
+      ? medication.scheduled_times
+      : [];
+    const startTime = String(medication.start_time || "").trim();
+    const candidateTimes =
+      scheduledTimes.length > 0 ? scheduledTimes : startTime ? [startTime] : [];
+
+    if (candidateTimes.length === 0) {
+      throw new Error("Medication has no scheduled time(s) to mark as untaken.");
+    }
+
+    const today = todayDateKey();
+
+    const doseTimesToUnmark =
+      candidateTimes.length <= 1
+        ? candidateTimes
+        : time
+          ? [time]
+          : [];
+
+    if (doseTimesToUnmark.length === 0) {
+      throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
+    }
+
+    const writes = doseTimesToUnmark.map((doseTime) => {
+      const timeText = String(doseTime || "").trim();
+      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+      return db.collection("medicationIntakeLogs").doc(docId).delete();
+    });
+
+    await Promise.all(writes);
+
+    return res.status(200).json({
+      success: true,
+      message: "Medication marked as untaken",
+      medicationId,
+      date: today,
+      times: doseTimesToUnmark,
+    });
+  } catch (error) {
+    console.error("MEDICATION_MARK_UNTAKEN ERROR:", error.message);
     return res.status(400).json({
       success: false,
       error: error.message,
@@ -484,6 +655,8 @@ router.post("/save-medication", async (req, res) => {
     const {
       userId,
       uid,
+      profileUserId,
+      childProfileId,
       medication_name,
       medicationName,
       name,
@@ -505,7 +678,7 @@ router.post("/save-medication", async (req, res) => {
     } = req.body;
 
     const medicationNameValue = medication_name || medicationName || name;
-    const medicationUserId = userId || uid;
+    const medicationUserId = profileUserId || childProfileId || userId || uid;
 
     if (!medicationUserId || !medicationNameValue || !frequency_type || !start_time) {
       throw new Error("Missing required medication fields");
@@ -539,7 +712,9 @@ router.post("/save-medication", async (req, res) => {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    const docRef = await db.collection("medications").add(medicationPayload);
+    const docRef = await db
+      .collection("medications")
+      .add(encryptHealthDocument(medicationPayload));
 
     res.status(200).json({
       success: true,
@@ -562,6 +737,8 @@ router.post("/update-medication", async (req, res) => {
     const {
       userId,
       uid,
+      profileUserId,
+      childProfileId,
       medicationId,
       medication_name,
       medicationName,
@@ -582,7 +759,7 @@ router.post("/update-medication", async (req, res) => {
       status,
     } = req.body;
 
-    const medicationUserId = userId || uid;
+    const medicationUserId = profileUserId || childProfileId || userId || uid;
     const medicationNameValue = medication_name || medicationName || name;
 
     if (!medicationUserId || !medicationId) {
@@ -635,7 +812,7 @@ router.post("/update-medication", async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    await docRef.set(medicationPayload, { merge: true });
+    await docRef.set(encryptHealthDocument(medicationPayload), { merge: true });
 
     res.status(200).json({
       success: true,
@@ -655,8 +832,8 @@ router.post("/delete-medication", async (req, res) => {
   console.log("Delete medication requested:", req.body);
 
   try {
-    const { userId, uid, medicationId } = req.body;
-    const medicationUserId = userId || uid;
+    const { userId, uid, profileUserId, childProfileId, medicationId } = req.body;
+    const medicationUserId = profileUserId || childProfileId || userId || uid;
 
     if (!medicationUserId || !medicationId) {
       throw new Error("Missing required medication delete fields");
@@ -713,7 +890,9 @@ async function getDocumentData(collectionName, id) {
   if (!id) return null;
 
   const snapshot = await db.collection(collectionName).doc(id).get();
-  return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null;
+  return snapshot.exists
+    ? decryptHealthDocument({ id: snapshot.id, ...snapshot.data() })
+    : null;
 }
 
 async function getFirstUserDocument(collectionName, userId) {
@@ -726,7 +905,7 @@ async function getFirstUserDocument(collectionName, userId) {
   if (snapshot.empty) return null;
 
   const doc = snapshot.docs[0];
-  return { id: doc.id, ...doc.data() };
+  return decryptHealthDocument({ id: doc.id, ...doc.data() });
 }
 
 async function getUserDocuments(collectionName, userId, limit = 20) {
@@ -742,7 +921,9 @@ async function getDocumentsByField(collectionName, fieldName, value, limit = 20)
     .limit(limit)
     .get();
 
-  return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  return snapshot.docs.map((doc) =>
+    decryptHealthDocument({ id: doc.id, ...doc.data() }),
+  );
 }
 
 async function getDocumentsByIds(collectionName, ids = []) {
@@ -830,6 +1011,48 @@ function buildCandidateProfileIds(userId, user = {}) {
   )];
 }
 
+async function getFoodLogDocsForProfileDate(childProfileId, date) {
+  const snapshots = await Promise.all([
+    db
+      .collection("foodLogs")
+      .where("childProfileId", "==", childProfileId)
+      .where("date", "==", date)
+      .get(),
+    db
+      .collection("foodLogs")
+      .where("userId", "==", childProfileId)
+      .where("date", "==", date)
+      .get(),
+  ]);
+  const docsById = new Map();
+  snapshots.forEach((snapshot) => {
+    snapshot.docs.forEach((doc) => docsById.set(doc.id, doc));
+  });
+  return [...docsById.values()];
+}
+
+async function getFoodLogDocsForProfileRange(childProfileId, startDate, endDate) {
+  const snapshots = await Promise.all([
+    db
+      .collection("foodLogs")
+      .where("childProfileId", "==", childProfileId)
+      .where("date", ">=", startDate)
+      .where("date", "<=", endDate)
+      .get(),
+    db
+      .collection("foodLogs")
+      .where("userId", "==", childProfileId)
+      .where("date", ">=", startDate)
+      .where("date", "<=", endDate)
+      .get(),
+  ]);
+  const docsById = new Map();
+  snapshots.forEach((snapshot) => {
+    snapshot.docs.forEach((doc) => docsById.set(doc.id, doc));
+  });
+  return [...docsById.values()];
+}
+
 function extractWaterMlFromLog(data = {}) {
   const explicitWaterMl = Number(data.waterMl ?? data.water_ml ?? data.fluid_ml);
   if (Number.isFinite(explicitWaterMl) && explicitWaterMl > 0) {
@@ -905,14 +1128,24 @@ async function getDailyIntakeData(userId, requestedDate, user = {}) {
     const summaryId = `${childProfileId}_${date}`;
     const summary = await getDocumentData("dailyIntakeSummaries", summaryId);
     if (summary) {
-      const intakeSnapshot = await db
-        .collection("foodLogs")
-        .where("childProfileId", "==", childProfileId)
-        .where("date", "==", date)
-        .get();
-      const foodLogs = intakeSnapshot.docs
+      const intakeDocs = await getFoodLogDocsForProfileDate(childProfileId, date);
+      const foodLogs = intakeDocs
         .filter((doc) => !(doc.data() || {}).deletedAt)
         .map(serializeIntakeLog);
+      const totals = {
+        calories: 0,
+        protein: 0,
+        carbohydrate: 0,
+        fat: 0,
+        sodium: 0,
+        potassium: 0,
+        phosphorus: 0,
+      };
+      foodLogs.forEach((log) => {
+        for (const nutrient of Object.keys(totals)) {
+          totals[nutrient] += numberOrZero(log[nutrient]);
+        }
+      });
       let waterMl = numberOrZero(
         summary.waterMl ?? summary.water_ml ?? summary.fluid_ml,
       );
@@ -930,6 +1163,8 @@ async function getDailyIntakeData(userId, requestedDate, user = {}) {
         water_ml: waterMl,
         fluid_ml: waterMl,
         foodLogs,
+        totals: foodLogs.length > 0 ? totals : summary.totals,
+        mealCount: foodLogs.length > 0 ? foodLogs.length : summary.mealCount,
         source: "dailyIntakeSummaries",
       };
     }
@@ -937,16 +1172,12 @@ async function getDailyIntakeData(userId, requestedDate, user = {}) {
 
   const snapshots = await Promise.all(
     candidateProfileIds.map((childProfileId) =>
-      db
-        .collection("foodLogs")
-        .where("childProfileId", "==", childProfileId)
-        .where("date", "==", date)
-        .get(),
+      getFoodLogDocsForProfileDate(childProfileId, date),
     ),
   );
   const dedupedDocs = new Map();
-  snapshots.forEach((snapshot) => {
-    snapshot.docs.forEach((doc) => {
+  snapshots.forEach((docs) => {
+    docs.forEach((doc) => {
       dedupedDocs.set(doc.id, doc);
     });
   });
@@ -1064,15 +1295,14 @@ async function getDailyIntakeSummariesForRange(userId, user, startDate, endDate)
   if (summaries.length === 0) {
     console.log(`No dailyIntakeSummaries found for range ${startDate}-${endDate}, building from food logs`);
     for (const childProfileId of candidateProfileIds) {
-      const logsSnapshot = await db
-        .collection("foodLogs")
-        .where("childProfileId", "==", childProfileId)
-        .where("date", ">=", startDate)
-        .where("date", "<=", endDate)
-        .get();
+      const logDocs = await getFoodLogDocsForProfileRange(
+        childProfileId,
+        startDate,
+        endDate,
+      );
 
       const logsByDate = {};
-      logsSnapshot.docs.forEach((doc) => {
+      logDocs.forEach((doc) => {
         const data = doc.data();
         if (!data.deletedAt) {
           const date = data.date || "";
@@ -1261,7 +1491,7 @@ async function archiveCurrentRecord(record, historicalCollectionName) {
 
   const archiveRef = await db
     .collection(historicalCollectionName)
-    .add(archivePayload);
+    .add(encryptHealthDocument(archivePayload));
 
   return archiveRef.id;
 }
@@ -1288,7 +1518,7 @@ async function recalculateNutritionArtifacts(userId) {
     throw new Error("User profile not found for nutrition recalculation");
   }
 
-  const user = { id: userDoc.id, ...userDoc.data() };
+  const user = { id: userDoc.id, ...decryptHealthProfile(userDoc.data() || {}) };
   const medicalProfile = await getDocumentData(
     "medicalProfile",
     user.medicalProfileId,
@@ -1345,10 +1575,10 @@ async function recalculateNutritionArtifacts(userId) {
     await db
       .collection("nutritionTargets")
       .doc(nutritionTargetId)
-      .set(nutritionPayload, { merge: true });
+      .set(encryptHealthDocument(nutritionPayload), { merge: true });
   } else {
     const nutritionDoc = await db.collection("nutritionTargets").add({
-      ...nutritionPayload,
+      ...encryptHealthDocument(nutritionPayload),
       generatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     nutritionTargetId = nutritionDoc.id;
@@ -1400,10 +1630,10 @@ async function recalculateNutritionArtifacts(userId) {
     await db
       .collection("phase2DecisionSupport")
       .doc(phase2DecisionSupportId)
-      .set(phase2Payload, { merge: true });
+      .set(encryptHealthDocument(phase2Payload), { merge: true });
   } else {
     const phase2Doc = await db.collection("phase2DecisionSupport").add({
-      ...phase2Payload,
+      ...encryptHealthDocument(phase2Payload),
       generatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     phase2DecisionSupportId = phase2Doc.id;
@@ -1444,6 +1674,7 @@ registerSummaryRoutes(router, {
   aggregateDailySummaries,
   analyticsSummaryDocumentId,
   analyticsPeriodLabel,
+  decryptHealthProfile,
 });
 
 registerRecordRoutes(router, {
@@ -1458,6 +1689,10 @@ registerRecordRoutes(router, {
   archiveCurrentRecord,
   archiveAndDeleteExtraCurrentRecords,
   recalculateNutritionArtifacts,
+  encryptHealthProfile,
+  decryptHealthProfile,
+  encryptHealthDocument,
+  decryptHealthDocument,
 });
 
 registerProfileRoutes(router, {
@@ -1474,6 +1709,68 @@ registerProfileRoutes(router, {
   archiveCurrentRecord,
   archiveAndDeleteExtraCurrentRecords,
   recalculateNutritionArtifacts,
+  encryptHealthProfile,
+  decryptHealthProfile,
+  encryptHealthDocument,
+  decryptHealthDocument,
+});
+
+/**
+ * TEST ENDPOINT - Create a missed medication reminder manually
+ * For testing and debugging the missed medication reminder system
+ */
+router.post("/test-missed-medication", async (req, res) => {
+  console.log("TEST: Creating missed medication reminder...");
+  
+  try {
+    const { userId, uid } = req.body;
+    const medicationUserId = userId || uid;
+
+    if (!medicationUserId) {
+      return res.status(400).json({
+        success: false,
+        error: "userId or uid is required",
+      });
+    }
+
+    // Create a missed medication notification
+    const missedNotification = {
+      userId: medicationUserId,
+      type: "missed_medication_reminder",
+      title: "Missed Medication Reminder",
+      body: "You missed your medication reminder 1 hour ago. Please take your medication if possible.",
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      isMissed: true,
+      priority: "high",
+      color: "red",
+      read: false,
+    };
+
+    // Store in notifications collection
+    const notifRef = await db.collection("notifications").add(missedNotification);
+    
+    // Add to upcoming reminders
+    await db.collection("upcomingReminders").add({
+      ...missedNotification,
+      scheduledTime: admin.firestore.FieldValue.serverTimestamp(),
+      isMissed: true,
+      dueTime: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log("TEST: Created missed medication reminder for user:", medicationUserId);
+
+    return res.status(200).json({
+      success: true,
+      message: "Test missed medication reminder created successfully",
+      notificationId: notifRef.id,
+    });
+  } catch (error) {
+    console.error("TEST_MISSED_MEDICATION ERROR:", error.message);
+    return res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
 });
 
 module.exports = router;
