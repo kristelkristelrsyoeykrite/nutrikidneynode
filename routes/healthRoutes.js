@@ -445,6 +445,12 @@ router.post("/medications/mark-taken", async (req, res) => {
   console.log("Mark medication taken requested:", req.body);
 
   try {
+    const {
+      ensureDoseRecordsForDate,
+      markDoseTaken,
+      todayDateKey,
+      parseClockTime,
+    } = require("../utils/medicationDoseRecords");
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
 
@@ -476,6 +482,14 @@ router.post("/medications/mark-taken", async (req, res) => {
 
     const today = todayDateKey();
 
+    // Ensure today's dose records exist. Never overwrites final statuses.
+    await ensureDoseRecordsForDate({
+      userId: medicationUserId,
+      medicationId,
+      medicationDoc: medDoc.data() || {},
+      dateKey: today,
+    });
+
     const doseTimesToMark =
       candidateTimes.length <= 1
         ? candidateTimes
@@ -487,10 +501,23 @@ router.post("/medications/mark-taken", async (req, res) => {
       throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
     }
 
-    const writes = doseTimesToMark.map((doseTime) => {
+    const writes = doseTimesToMark.map(async (doseTime) => {
       const timeText = String(doseTime || "").trim();
+      const parsed = parseClockTime(timeText);
+      if (!parsed) {
+        throw new Error("Invalid dose time format. Expected HH:mm.");
+      }
+
+      const doseUpdate = await markDoseTaken({
+        userId: medicationUserId,
+        medicationId,
+        expectedDate: today,
+        expectedTime: parsed.text,
+      });
+
+      // Backward compatibility: keep intake logs for existing dashboard logic.
       const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
-      return db
+      await db
         .collection("medicationIntakeLogs")
         .doc(docId)
         .set(
@@ -506,9 +533,11 @@ router.post("/medications/mark-taken", async (req, res) => {
           },
           { merge: true },
         );
+
+      return doseUpdate;
     });
 
-    await Promise.all(writes);
+    const results = await Promise.all(writes);
 
     return res.status(200).json({
       success: true,
@@ -516,6 +545,7 @@ router.post("/medications/mark-taken", async (req, res) => {
       medicationId,
       date: today,
       times: doseTimesToMark,
+      doseRecords: results,
     });
   } catch (error) {
     console.error("MEDICATION_MARK_TAKEN ERROR:", error.message);
@@ -530,6 +560,13 @@ router.post("/medications/mark-untaken", async (req, res) => {
   console.log("Mark medication untaken requested:", req.body);
 
   try {
+    const {
+      ensureDoseRecordsForDate,
+      undoDoseTaken,
+      todayDateKey,
+      parseClockTime,
+    } = require("../utils/medicationDoseRecords");
+
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
 
@@ -556,36 +593,61 @@ router.post("/medications/mark-untaken", async (req, res) => {
       scheduledTimes.length > 0 ? scheduledTimes : startTime ? [startTime] : [];
 
     if (candidateTimes.length === 0) {
-      throw new Error("Medication has no scheduled time(s) to mark as untaken.");
+      throw new Error("Medication has no scheduled time(s) to undo.");
     }
 
     const today = todayDateKey();
 
-    const doseTimesToUnmark =
+    // Ensure today's dose records exist (idempotent).
+    await ensureDoseRecordsForDate({
+      userId: medicationUserId,
+      medicationId,
+      medicationDoc: medDoc.data() || {},
+      dateKey: today,
+    });
+
+    const doseTimesToUndo =
       candidateTimes.length <= 1
         ? candidateTimes
         : time
           ? [time]
           : [];
 
-    if (doseTimesToUnmark.length === 0) {
+    if (doseTimesToUndo.length === 0) {
       throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
     }
 
-    const writes = doseTimesToUnmark.map((doseTime) => {
-      const timeText = String(doseTime || "").trim();
-      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
-      return db.collection("medicationIntakeLogs").doc(docId).delete();
-    });
+    const results = await Promise.all(
+      doseTimesToUndo.map(async (doseTime) => {
+        const timeText = String(doseTime || "").trim();
+        const parsed = parseClockTime(timeText);
+        if (!parsed) {
+          throw new Error("Invalid dose time format. Expected HH:mm.");
+        }
 
-    await Promise.all(writes);
+        const undoResult = await undoDoseTaken({
+          userId: medicationUserId,
+          medicationId,
+          expectedDate: today,
+          expectedTime: parsed.text,
+        });
+
+        if (undoResult.changed) {
+          const intakeLogId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+          await db.collection("medicationIntakeLogs").doc(intakeLogId).delete();
+        }
+
+        return undoResult;
+      }),
+    );
 
     return res.status(200).json({
       success: true,
-      message: "Medication marked as untaken",
+      message: "Medication dose undo processed",
       medicationId,
       date: today,
-      times: doseTimesToUnmark,
+      times: doseTimesToUndo,
+      doseRecords: results,
     });
   } catch (error) {
     console.error("MEDICATION_MARK_UNTAKEN ERROR:", error.message);
@@ -1723,6 +1785,13 @@ router.post("/test-missed-medication", async (req, res) => {
   console.log("TEST: Creating missed medication reminder...");
   
   try {
+    if (process.env.ALLOW_TEST_ENDPOINTS !== "true") {
+      return res.status(403).json({
+        success: false,
+        error: "Test endpoints are disabled.",
+      });
+    }
+
     const { userId, uid } = req.body;
     const medicationUserId = userId || uid;
 

@@ -3,6 +3,10 @@ function registerSummaryRoutes(router, deps) {
     getGamificationSummary,
     recomputeGamificationForDate,
   } = require("../../services/gamificationService");
+  const {
+    ensureDoseRecordsForDate,
+    getDoseRecordsForDate,
+  } = require("../../utils/medicationDoseRecords");
 
   const {
     admin,
@@ -339,6 +343,24 @@ function registerSummaryRoutes(router, deps) {
       );
       const today = todayDateKey();
       const now = new Date();
+
+      // Ensure today's dose records exist for all medications (idempotent).
+      await Promise.all(
+        medications.map((medication) =>
+          ensureDoseRecordsForDate({
+            userId: dataUserId,
+            medicationId: medication.id,
+            medicationDoc: medication,
+            dateKey: today,
+          }),
+        ),
+      );
+
+      const allDoseRecords = await getDoseRecordsForDate({
+        userId: dataUserId,
+        dateKey: today,
+      });
+
       const medicationsWithDoseStatus = await Promise.all(
         medications.map(async (medication) => {
           const times = medicationScheduleTimes(medication);
@@ -346,40 +368,39 @@ function registerSummaryRoutes(router, deps) {
             return { ...medication, takenTimesToday: [], nextDoseTime: null };
           }
 
-          const logIds = times.map(
-            (timeText) => `${dataUserId}_${medication.id}_${today}_${timeText}`,
-          );
-          const logs = await Promise.all(
-            logIds.map((id) =>
-              db.collection("medicationIntakeLogs").doc(id).get(),
-            ),
-          );
+          const doseRecords = allDoseRecords
+            .filter((r) => String(r.medicationId) === String(medication.id))
+            .sort((a, b) => String(a.expectedTime || "").localeCompare(String(b.expectedTime || "")));
 
-          const takenTimesToday = [];
-          for (let i = 0; i < logs.length; i += 1) {
-            if (logs[i].exists) {
-              takenTimesToday.push(times[i]);
-            }
-          }
+          const takenTimesToday = doseRecords
+            .filter((r) => String(r.status) === "taken")
+            .map((r) => r.expectedTime)
+            .filter(Boolean);
 
-          const nextDoseTime = nextUpcomingDoseTime({
-            times,
-            takenTimes: takenTimesToday,
-            now,
+          const missedCountToday = doseRecords.filter((r) => String(r.status) === "missed").length;
+
+          const pendingFuture = doseRecords.filter((r) => {
+            if (String(r.status) !== "pending") return false;
+            const dt = r.expectedDateTime?.toDate?.();
+            return dt ? dt.getTime() > now.getTime() : false;
           });
-
-          const missedCountToday = countMissedDoses({
-            times,
-            takenTimes: takenTimesToday,
-            now,
-            graceMinutes: 5,
+          pendingFuture.sort((a, b) => {
+            const aDt = a.expectedDateTime?.toDate?.()?.getTime?.() || 0;
+            const bDt = b.expectedDateTime?.toDate?.()?.getTime?.() || 0;
+            return aDt - bDt;
           });
+          const nextDoseTime = pendingFuture.length > 0 ? pendingFuture[0].expectedTime : null;
 
           return {
             ...medication,
             takenTimesToday,
             nextDoseTime,
             missedCountToday,
+            doseRecordsToday: doseRecords.map((r) => ({
+              expectedTime: r.expectedTime,
+              status: r.status,
+              takenAt: r.takenAt || null,
+            })),
           };
         }),
       );
@@ -630,6 +651,23 @@ function registerSummaryRoutes(router, deps) {
 
       const today = todayDateKey();
       const now = new Date();
+
+      await Promise.all(
+        medications.map((medication) =>
+          ensureDoseRecordsForDate({
+            userId: dataUserId,
+            medicationId: medication.id,
+            medicationDoc: medication,
+            dateKey: today,
+          }),
+        ),
+      );
+
+      const allDoseRecords = await getDoseRecordsForDate({
+        userId: dataUserId,
+        dateKey: today,
+      });
+
       const medicationsWithDoseStatus = await Promise.all(
         medications.map(async (medication) => {
           const times = medicationScheduleTimes(medication);
@@ -637,40 +675,39 @@ function registerSummaryRoutes(router, deps) {
             return { ...medication, takenTimesToday: [], nextDoseTime: null };
           }
 
-          const logIds = times.map(
-            (timeText) => `${dataUserId}_${medication.id}_${today}_${timeText}`,
-          );
-          const logs = await Promise.all(
-            logIds.map((id) =>
-              db.collection("medicationIntakeLogs").doc(id).get(),
-            ),
-          );
+          const doseRecords = allDoseRecords
+            .filter((r) => String(r.medicationId) === String(medication.id))
+            .sort((a, b) => String(a.expectedTime || "").localeCompare(String(b.expectedTime || "")));
 
-          const takenTimesToday = [];
-          for (let i = 0; i < logs.length; i += 1) {
-            if (logs[i].exists) {
-              takenTimesToday.push(times[i]);
-            }
-          }
+          const takenTimesToday = doseRecords
+            .filter((r) => String(r.status) === "taken")
+            .map((r) => r.expectedTime)
+            .filter(Boolean);
 
-          const nextDoseTime = nextUpcomingDoseTime({
-            times,
-            takenTimes: takenTimesToday,
-            now,
+          const missedCountToday = doseRecords.filter((r) => String(r.status) === "missed").length;
+
+          const pendingFuture = doseRecords.filter((r) => {
+            if (String(r.status) !== "pending") return false;
+            const dt = r.expectedDateTime?.toDate?.();
+            return dt ? dt.getTime() > now.getTime() : false;
           });
-
-          const missedCountToday = countMissedDoses({
-            times,
-            takenTimes: takenTimesToday,
-            now,
-            graceMinutes: 5,
+          pendingFuture.sort((a, b) => {
+            const aDt = a.expectedDateTime?.toDate?.()?.getTime?.() || 0;
+            const bDt = b.expectedDateTime?.toDate?.()?.getTime?.() || 0;
+            return aDt - bDt;
           });
+          const nextDoseTime = pendingFuture.length > 0 ? pendingFuture[0].expectedTime : null;
 
           return {
             ...medication,
             takenTimesToday,
             nextDoseTime,
             missedCountToday,
+            doseRecordsToday: doseRecords.map((r) => ({
+              expectedTime: r.expectedTime,
+              status: r.status,
+              takenAt: r.takenAt || null,
+            })),
           };
         }),
       );
