@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart'; // For the iOS style switches
 import 'dashboard.dart';
+import 'terms_of_service_page.dart';
+import 'help_page.dart';
 import 'food_log.dart';
 import 'analytics.dart';
 import 'health_metrics.dart';
@@ -133,8 +135,11 @@ class _ProfilePageState extends State<ProfilePage> {
       Map<String, dynamic> gamificationStatus = {};
       if (response["success"] == true) {
         try {
-          final gamificationResponse = await ApiService.getGamificationSummary();
-          final gamification = _asStringMap(gamificationResponse["gamification"]);
+          final gamificationResponse =
+              await ApiService.getGamificationSummary();
+          final gamification = _asStringMap(
+            gamificationResponse["gamification"],
+          );
           gamificationStatus = _asStringMap(gamification["status"]);
         } catch (_) {
           gamificationStatus = {};
@@ -187,7 +192,7 @@ class _ProfilePageState extends State<ProfilePage> {
     return value
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
-      .toList();
+        .toList();
   }
 
   bool _hasAward(String awardId) => _unlockedAwardIds.contains(awardId);
@@ -373,9 +378,9 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _showReminderSettingsLockedMessage() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(_reminderSettingsLockReason)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(_reminderSettingsLockReason)));
   }
 
   Future<void> _openAccountManagement() async {
@@ -651,20 +656,21 @@ class _ProfilePageState extends State<ProfilePage> {
                 'Caregiver Access',
                 subtitle: _isAdolescentRole
                     ? (_caregiverLinked
-                        ? 'Linked caregiver'
-                        : (_caregiverLinkStatus == 'pending'
-                            ? 'Link pending'
-                            : 'No caregiver linked'))
+                          ? 'Linked caregiver'
+                          : (_caregiverLinkStatus == 'pending'
+                                ? 'Link pending'
+                                : 'No caregiver linked'))
                     : (_isCaregiverViewer
-                        ? (_caregiverDashboardState["linkedChildAccount"] == true
-                            ? 'Linked adolescent account'
-                            : 'No adolescent linked')
-                        : 'Available for adolescent accounts'),
+                          ? (_caregiverDashboardState["linkedChildAccount"] ==
+                                    true
+                                ? 'Linked adolescent account'
+                                : 'No adolescent linked')
+                          : 'Available for adolescent accounts'),
                 onTap: _isAdolescentRole
                     ? _showCaregiverSettingsDialog
                     : (_isCaregiverViewer
-                        ? _showCaregiverLinkManagementDialog
-                        : () => _showFeatureDialog('Caregiver Access')),
+                          ? _showCaregiverLinkManagementDialog
+                          : () => _showFeatureDialog('Caregiver Access')),
               ),
               _buildSettingTile(
                 Icons.insert_drive_file_outlined,
@@ -695,7 +701,24 @@ class _ProfilePageState extends State<ProfilePage> {
               _buildSettingTile(
                 Icons.description_outlined,
                 'Terms of Service',
-                onTap: () => _showFeatureDialog('Terms of Service'),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const TermsOfServicePage(),
+                    ),
+                  );
+                },
+              ),
+              _buildSettingTile(
+                Icons.help_outline,
+                'Help Center',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const HelpPage()),
+                  );
+                },
               ),
 
               const SizedBox(height: 40),
@@ -843,7 +866,9 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                     InkWell(
-                      onTap: _canOpenEditProfile ? _openEditProfile : _openEditProfile,
+                      onTap: _canOpenEditProfile
+                          ? _openEditProfile
+                          : _openEditProfile,
                       borderRadius: BorderRadius.circular(12),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
@@ -947,10 +972,10 @@ class _ProfilePageState extends State<ProfilePage> {
               title: 'Rainbow Eater',
               subtitle: 'Ate 5 different colored\nfoods',
               iconWidget: _achievementIcon(
-                        icon: Icons.palette_outlined,
-                        color: const Color(0xFF7E57C2),
-                        isLocked: !_hasAward('rainbow_eater'),
-                      ),
+                icon: Icons.palette_outlined,
+                color: const Color(0xFF7E57C2),
+                isLocked: !_hasAward('rainbow_eater'),
+              ),
               isLocked: !_hasAward('rainbow_eater'),
             ),
             _buildAchievementCard(
@@ -1094,15 +1119,14 @@ class _ProfilePageState extends State<ProfilePage> {
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (context) => AnalyticsPage(allowDataExport: _allowDataExport),
+                builder: (context) =>
+                    AnalyticsPage(allowDataExport: _allowDataExport),
               ),
             );
           else if (index == 2)
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(
-                builder: (context) => const AnalyticsPage(),
-              ),
+              MaterialPageRoute(builder: (context) => const AnalyticsPage()),
             );
           else if (index == 3)
             Navigator.pushReplacement(
@@ -1171,14 +1195,20 @@ class _ProfilePageState extends State<ProfilePage> {
                   const SizedBox(height: 8),
                   const Text(
                     'Enable this to allow NutriKidney to generate downloadable PDF health reports from your nutrition, hydration, and health metrics. These reports are useful for sharing with your doctor, dietitian, or caregiver to review your health trends.',
-                    style: TextStyle(color: Color(0xFF546E7A), fontSize: 13, height: 1.4),
+                    style: TextStyle(
+                      color: Color(0xFF546E7A),
+                      fontSize: 13,
+                      height: 1.4,
+                    ),
                   ),
                   const SizedBox(height: 16),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     activeColor: Color(0xFF00C874),
                     title: const Text('Allow Data Export'),
-                    subtitle: const Text('Shows the Export PDF option in Analytics.'),
+                    subtitle: const Text(
+                      'Shows the Export PDF option in Analytics.',
+                    ),
                     value: _allowDataExport,
                     onChanged: (value) async {
                       setDialogState(() => _allowDataExport = value);
@@ -1207,9 +1237,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         });
                         ScaffoldMessenger.of(this.context).showSnackBar(
                           SnackBar(
-                            content: Text(
-                              'Failed to update preference: $e',
-                            ),
+                            content: Text('Failed to update preference: $e'),
                           ),
                         );
                       }
@@ -1258,8 +1286,8 @@ class _ProfilePageState extends State<ProfilePage> {
             final statusText = caregiverLinked
                 ? 'A caregiver is linked. Sensitive medical changes are protected.'
                 : wantsCaregiverLink
-                    ? 'Caregiver linking is requested. The pairing flow should complete with a code.'
-                    : 'No caregiver is linked. The adolescent confirms sensitive actions directly.';
+                ? 'Caregiver linking is requested. The pairing flow should complete with a code.'
+                : 'No caregiver is linked. The adolescent confirms sensitive actions directly.';
             final caregiverIdText = caregiverId?.trim() ?? "";
 
             return AlertDialog(
@@ -1324,7 +1352,9 @@ class _ProfilePageState extends State<ProfilePage> {
                                   consentConfirmed = value ?? false;
                                 });
                               },
-                        title: const Text('Consent confirmed without caregiver'),
+                        title: const Text(
+                          'Consent confirmed without caregiver',
+                        ),
                         subtitle: const Text(
                           'Required when no caregiver is linked.',
                         ),
@@ -1407,11 +1437,11 @@ class _ProfilePageState extends State<ProfilePage> {
                   onPressed: isSaving
                       ? null
                       : () async {
-                          final linkingCode =
-                              linkingCodeValue.trim().toUpperCase();
+                          final linkingCode = linkingCodeValue
+                              .trim()
+                              .toUpperCase();
                           final noSettingsChanged =
-                              wantsCaregiverLink ==
-                                  initialWantsCaregiverLink &&
+                              wantsCaregiverLink == initialWantsCaregiverLink &&
                               consentConfirmed == initialConsentConfirmed &&
                               caregiverLinked == initialCaregiverLinked &&
                               caregiverId == initialCaregiverId &&
@@ -1420,7 +1450,9 @@ class _ProfilePageState extends State<ProfilePage> {
                             Navigator.of(dialogContext).pop();
                             ScaffoldMessenger.of(pageContext).showSnackBar(
                               const SnackBar(
-                                content: Text('No caregiver settings changes to save.'),
+                                content: Text(
+                                  'No caregiver settings changes to save.',
+                                ),
                               ),
                             );
                             return;
@@ -1441,15 +1473,13 @@ class _ProfilePageState extends State<ProfilePage> {
 
                           setDialogState(() => isSaving = true);
                           try {
-                            if (
-                              wantsCaregiverLink &&
-                              !caregiverLinked &&
-                              linkingCode.isNotEmpty
-                            ) {
+                            if (wantsCaregiverLink &&
+                                !caregiverLinked &&
+                                linkingCode.isNotEmpty) {
                               final linkResponse =
                                   await ApiService.linkCaregiverWithCode(
-                                linkingCode: linkingCode,
-                              );
+                                    linkingCode: linkingCode,
+                                  );
                               if (!mounted) return;
                               if (linkResponse["success"] == true) {
                                 Navigator.of(dialogContext).pop();
@@ -1457,7 +1487,9 @@ class _ProfilePageState extends State<ProfilePage> {
                                 if (!mounted) return;
                                 ScaffoldMessenger.of(pageContext).showSnackBar(
                                   const SnackBar(
-                                    content: Text('Caregiver linked successfully.'),
+                                    content: Text(
+                                      'Caregiver linked successfully.',
+                                    ),
                                   ),
                                 );
                               } else {
@@ -1477,9 +1509,12 @@ class _ProfilePageState extends State<ProfilePage> {
                               "caregiverSettings": {
                                 "wantsCaregiverLink": wantsCaregiverLink,
                                 "caregiverLinked": caregiverLinked,
-                                "caregiverId": caregiverLinked ? caregiverId : null,
-                                "consentConfirmed":
-                                    caregiverLinked ? true : consentConfirmed,
+                                "caregiverId": caregiverLinked
+                                    ? caregiverId
+                                    : null,
+                                "consentConfirmed": caregiverLinked
+                                    ? true
+                                    : consentConfirmed,
                                 "linkStatus": caregiverLinked
                                     ? "linked"
                                     : (wantsCaregiverLink ? "pending" : "none"),
@@ -1539,8 +1574,8 @@ class _ProfilePageState extends State<ProfilePage> {
     bool isRemoving = false;
     final linkedChildAccount =
         _caregiverDashboardState["linkedChildAccount"] == true;
-    final linkedChildUserId =
-        _caregiverDashboardState["linkedChildUserId"]?.toString();
+    final linkedChildUserId = _caregiverDashboardState["linkedChildUserId"]
+        ?.toString();
 
     await showDialog<void>(
       context: context,
@@ -1594,8 +1629,8 @@ class _ProfilePageState extends State<ProfilePage> {
                             try {
                               final response =
                                   await ApiService.unlinkCaregiverChild(
-                                linkedChildUserId: linkedChildUserId,
-                              );
+                                    linkedChildUserId: linkedChildUserId,
+                                  );
                               if (!mounted) return;
                               if (response["success"] == true) {
                                 Navigator.of(dialogContext).pop();
