@@ -6,6 +6,7 @@ function registerSummaryRoutes(router, deps) {
   const {
     ensureDoseRecordsForDate,
     getDoseRecordsForDate,
+    markOverdueDosesMissed,
   } = require("../../utils/medicationDoseRecords");
 
   const {
@@ -356,6 +357,19 @@ function registerSummaryRoutes(router, deps) {
         ),
       );
 
+      // Mark overdue pending doses as missed on-demand (keeps UI correct even if
+      // the background scheduler is sleeping/offline).
+      await Promise.all(
+        medications.map((medication) =>
+          markOverdueDosesMissed({
+            userId: dataUserId,
+            medicationId: medication.id,
+            expectedDate: today,
+            nowMs: now.getTime(),
+          }),
+        ),
+      );
+
       const allDoseRecords = await getDoseRecordsForDate({
         userId: dataUserId,
         dateKey: today,
@@ -659,6 +673,17 @@ function registerSummaryRoutes(router, deps) {
             medicationId: medication.id,
             medicationDoc: medication,
             dateKey: today,
+          }),
+        ),
+      );
+
+      await Promise.all(
+        medications.map((medication) =>
+          markOverdueDosesMissed({
+            userId: dataUserId,
+            medicationId: medication.id,
+            expectedDate: today,
+            nowMs: now.getTime(),
           }),
         ),
       );
