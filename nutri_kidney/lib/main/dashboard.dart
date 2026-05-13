@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:nutri_kidney/create_account/profile_setup_intro.dart';
 import 'package:nutri_kidney/services/api_service.dart';
-import 'package:nutri_kidney/services/notification_service.dart';
+import 'adolescent_dashboard.dart';
+import 'caregiver_dashboard.dart';
 import 'food_log.dart';
 import 'analytics.dart';
 import 'health_metrics.dart';
@@ -17,6 +20,7 @@ class DashboardPage extends StatefulWidget {
 class _DashboardPageState extends State<DashboardPage> {
   int _currentIndex = 0;
   bool _isLoadingDashboard = true;
+  bool _dashboardRequestInFlight = false;
   String? _dashboardError;
   Map<String, dynamic> _viewer = {};
   Map<String, dynamic> _user = {};
@@ -29,6 +33,8 @@ class _DashboardPageState extends State<DashboardPage> {
   Map<String, dynamic>? _medicationData;
   Map<String, dynamic> _gamification = {};
   List<Map<String, dynamic>> _medications = [];
+  List<Map<String, dynamic>> _missedMedications = [];
+  String? _selectedManagedChildId;
   static const Map<String, Map<String, int>> _mealReminderSchedule = {
     "breakfast": {"hour": 8, "minute": 0},
     "lunch": {"hour": 12, "minute": 0},
@@ -49,6 +55,13 @@ class _DashboardPageState extends State<DashboardPage> {
   bool get _hasNutritionData => _todayMealCount > 0;
 
   Map<String, dynamic> get _reminderSettings {
+    if (_isCaregiverViewer) {
+      final viewerSettings = _viewer["reminderSettings"];
+      if (viewerSettings is Map<String, dynamic>) return viewerSettings;
+      if (viewerSettings is Map) {
+        return viewerSettings.map((key, value) => MapEntry(key.toString(), value));
+      }
+    }
     final settings = _user["reminderSettings"];
     if (settings is Map<String, dynamic>) return settings;
     if (settings is Map) {
@@ -69,12 +82,22 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
-    _loadDashboardSummary();
+    _loadDashboardSummary(
+      profileUserId: ApiService.selectedManagedChildProfileId,
+    );
   }
 
-  Future<void> _loadDashboardSummary() async {
+  Future<void> _loadDashboardSummary({
+    String? profileUserId,
+    bool forceRefresh = false,
+  }) async {
+    if (_dashboardRequestInFlight) return;
+    _dashboardRequestInFlight = true;
     try {
-      final response = await ApiService.getDashboardSummary();
+      final response = await ApiService.getDashboardSummary(
+        profileUserId: profileUserId,
+        forceRefresh: forceRefresh,
+      );
 
       if (!mounted) return;
 
@@ -82,6 +105,8 @@ class _DashboardPageState extends State<DashboardPage> {
         throw Exception(response["error"] ?? "Failed to load dashboard");
       }
 
+      String? selectedManagedId;
+      String? responseOwnerId;
       setState(() {
         _viewer = _asStringMap(response["viewer"]);
         _user = _asStringMap(response["user"]);
@@ -98,18 +123,53 @@ class _DashboardPageState extends State<DashboardPage> {
         _gamification = _asStringMap(response["gamification"]);
         _medicationData = _nullableStringMap(response["medicationData"]);
         _medications = _asStringMapList(response["medications"]);
+        responseOwnerId = response["dashboardOwnerId"]?.toString();
+        if (_isCaregiverViewer) {
+          final children = _managedChildren;
+          final childIds = children
+              .map((child) => child["id"])
+              .whereType<String>()
+              .toSet();
+          final activeDirectChildId =
+              _caregiverDashboardState["activeDirectChildProfileId"]
+                  ?.toString();
+          final restoredId =
+              profileUserId ?? ApiService.selectedManagedChildProfileId;
+          final candidates = [
+            restoredId,
+            responseOwnerId,
+            activeDirectChildId,
+            if (children.isNotEmpty) children.first["id"],
+          ];
+          selectedManagedId = candidates.firstWhere(
+            (id) => id != null && childIds.contains(id),
+            orElse: () => null,
+          );
+          if (selectedManagedId != null) {
+            _selectedManagedChildId = selectedManagedId;
+            ApiService.setSelectedManagedChildProfileId(selectedManagedId);
+          } else {
+            _selectedManagedChildId = null;
+            ApiService.setSelectedManagedChildProfileId(null);
+          }
+        }
         _isLoadingDashboard = false;
         _dashboardError = null;
       });
-      try {
-        await NotificationService.syncReminderNotifications(
-          user: _user,
-          medications: _medications,
-          intakeData: _intakeData,
-          gamification: _gamification,
+      if (_isCaregiverViewer &&
+          profileUserId == null &&
+          selectedManagedId != null &&
+          selectedManagedId != responseOwnerId) {
+        if (!mounted) return;
+        setState(() {
+          _isLoadingDashboard = true;
+          _dashboardError = null;
+        });
+        _dashboardRequestInFlight = false;
+        await _loadDashboardSummary(
+          profileUserId: selectedManagedId,
+          forceRefresh: true,
         );
-      } catch (error) {
-        debugPrint('Reminder sync failed after dashboard load: $error');
       }
     } catch (e) {
       if (!mounted) return;
@@ -118,7 +178,78 @@ class _DashboardPageState extends State<DashboardPage> {
         _isLoadingDashboard = false;
         _dashboardError = e.toString();
       });
+    } finally {
+      _dashboardRequestInFlight = false;
+      // Load missed medication reminders
+      await _loadMissedMedicationReminders();
     }
+  }
+
+  Future<void> _loadMissedMedicationReminders() async {
+    try {
+      final targetUserId =
+          _selectedManagedProfileUserId ??
+          _user["id"]?.toString() ??
+          _user["uid"]?.toString() ??
+          ApiService.userId;
+      if (targetUserId == null || targetUserId.isEmpty) return;
+
+      final snapshot = await FirebaseFirestore.instance
+          .collection("notifications")
+          .where("userId", isEqualTo: targetUserId)
+          .where("type", isEqualTo: "missed_medication_reminder")
+          .where("isMissed", isEqualTo: true)
+          .where("read", isEqualTo: false)
+          .limit(20)
+          .get();
+
+      if (!mounted) return;
+
+      final missedMedications = snapshot.docs
+          .map((doc) => {
+                ...doc.data() as Map<String, dynamic>,
+                "id": doc.id,
+              })
+          .toList()
+        ..sort(
+          (a, b) =>
+              _dateTimeFrom(b["timestamp"]).compareTo(_dateTimeFrom(a["timestamp"])),
+        );
+
+      setState(() {
+        _missedMedications = missedMedications.take(10).toList();
+      });
+    } catch (e) {
+      debugPrint("Error loading missed medications: $e");
+    }
+  }
+
+  Future<void> _selectManagedChild(String? childId) async {
+    if (childId == null || childId == _selectedManagedChildId) return;
+    setState(() {
+      _selectedManagedChildId = childId;
+      _isLoadingDashboard = true;
+      _dashboardError = null;
+    });
+    ApiService.setSelectedManagedChildProfileId(childId);
+    await _loadDashboardSummary(profileUserId: childId);
+  }
+
+  Future<void> _openFoodLogAndRefresh() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FoodLogPage(
+          profileUserId: _selectedManagedProfileUserId,
+          caregiverNoChildEmptyState:
+              _isCaregiverViewer && _managedChildren.isEmpty,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _loadDashboardSummary(
+      profileUserId: _selectedManagedProfileUserId,
+    );
   }
 
   Map<String, dynamic> _asStringMap(dynamic value) {
@@ -154,6 +285,13 @@ class _DashboardPageState extends State<DashboardPage> {
 
   String _optionalText(dynamic value) {
     return value?.toString().trim() ?? '';
+  }
+
+  DateTime _dateTimeFrom(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    if (value is String) return DateTime.tryParse(value) ?? DateTime.now();
+    return DateTime.now();
   }
 
   String _medicationName(Map<String, dynamic> medication) {
@@ -199,6 +337,43 @@ class _DashboardPageState extends State<DashboardPage> {
     return scheduled;
   }
 
+  String _formatDoseTime(DateTime dateTime) {
+    final hour = dateTime.hour.toString().padLeft(2, '0');
+    final minute = dateTime.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+
+  int _missedMedicationCountFromSummary() {
+    var count = 0;
+    for (final medication in _medications) {
+      final missedCount =
+          int.tryParse(medication["missedCountToday"]?.toString() ?? "") ?? 0;
+      if (missedCount > 0) {
+        count += missedCount;
+        continue;
+      }
+
+      final status = _optionalText(medication["status"]).toLowerCase();
+      if (medication["isMissed"] == true || status == "missed") {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  List<Map<String, dynamic>> get _missedMedicationReminders {
+    return _missedMedications
+        .map((missed) => {
+              "kind": "missed_medication",
+              "name": "Missed Medication",
+              "message": missed["body"] ?? "You missed your medication reminder.",
+              "time": _dateTimeFrom(missed["timestamp"]),
+              "isMissed": true,
+              "color": "red",
+            })
+        .toList();
+  }
+
   Map<String, dynamic>? get _nextMedicationReminder {
     Map<String, dynamic>? nextReminder;
     DateTime? nextTime;
@@ -210,6 +385,7 @@ class _DashboardPageState extends State<DashboardPage> {
         if (nextTime == null || scheduled.isBefore(nextTime)) {
           nextTime = scheduled;
           nextReminder = {
+            "id": medication["id"]?.toString(),
             "name": _medicationName(medication),
             "time": scheduled,
           };
@@ -218,6 +394,90 @@ class _DashboardPageState extends State<DashboardPage> {
     }
 
     return nextReminder;
+  }
+
+  Future<void> _promptMarkMedicationTaken(Map<String, dynamic> reminder) async {
+    final medicationId = reminder["id"]?.toString();
+    final dateTime = reminder["time"] as DateTime?;
+    if (medicationId == null || medicationId.isEmpty || dateTime == null) return;
+
+    final doseTime = _formatDoseTime(dateTime);
+
+    final didConfirm = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  reminder["name"]?.toString() ?? "Medication",
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF37474F),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Dose time: $doseTime',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF78909C),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2E7D32),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text('Mark as taken'),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (didConfirm != true) return;
+
+    try {
+      await ApiService.markMedicationTaken(
+        medicationId,
+        time: doseTime,
+        profileUserId: _selectedManagedProfileUserId,
+      );
+      if (!mounted) return;
+      await _loadDashboardSummary(profileUserId: _selectedManagedProfileUserId, forceRefresh: true);
+    } catch (e) {
+      debugPrint("Error marking medication taken: $e");
+    }
   }
 
   DateTime _nextScheduledTime(int hour, int minute) {
@@ -271,17 +531,22 @@ class _DashboardPageState extends State<DashboardPage> {
     if (!_isStreakAtRisk) return null;
     final scheduled = _nextStreakReminderTime(DateTime.now());
     if (scheduled == null) return null;
+    final missingText = _joinReminderItems(_missingStreakItems);
     return {
       "kind": "streak",
       "name": "Streak reminder",
       "message":
-          "Your $_currentLoggingStreak-day streak ends tonight. Log meals and hydration to keep it going.",
+          "Your $_currentLoggingStreak-day streak ends tonight. Log $missingText to keep it going.",
       "time": scheduled,
     };
   }
 
   List<Map<String, dynamic>> get _dashboardReminders {
     final items = <Map<String, dynamic>>[];
+    
+    // Add missed medication reminders first (highest priority)
+    items.addAll(_missedMedicationReminders);
+    
     items.addAll(_mealReminderItems);
     if (_reminderSettings["medicationReminders"] == true) {
       final medication = _nextMedicationReminder;
@@ -328,6 +593,12 @@ class _DashboardPageState extends State<DashboardPage> {
   String _relativeReminderText(DateTime dateTime) {
     final now = DateTime.now();
     final difference = dateTime.difference(now);
+    if (difference.isNegative) {
+      final elapsed = now.difference(dateTime);
+      if (elapsed.inDays >= 1) return 'Missed ${elapsed.inDays}d ago';
+      if (elapsed.inHours >= 1) return 'Missed ${elapsed.inHours}h ago';
+      return 'Missed';
+    }
     if (difference.inDays >= 1) return 'Tomorrow';
     if (difference.inHours >= 1) return 'In ${difference.inHours} hours';
     final minutes = difference.inMinutes <= 0 ? 1 : difference.inMinutes;
@@ -348,9 +619,26 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   bool get _isPendingCaregiverLinkFlow {
-    return _isCaregiverViewer &&
-        _caregiverDashboardState["childAgeGroup"] == "13-18" &&
-        _caregiverDashboardState["linkedChildAccount"] != true;
+    if (!_isCaregiverViewer) return false;
+    if (_hasCaregiverManagedProfile) return false;
+    return _caregiverDashboardState["linkedChildAccount"] != true;
+  }
+
+  bool get _hasCaregiverManagedProfile {
+    if (!_isCaregiverViewer) return false;
+
+    final linkedChildren = _caregiverDashboardState["linkedChildren"];
+    if (linkedChildren is List && linkedChildren.isNotEmpty) return true;
+
+    final childAgeGroup = _caregiverDashboardState["childAgeGroup"]?.toString();
+    final hasDirectProfile = childAgeGroup == "5-12" ||
+        childAgeGroup == "5-13" ||
+        childAgeGroup == "13-18-direct";
+    final hasLegacyLinkedChild =
+        (_caregiverDashboardState["linkedChildUserId"]?.toString() ?? "")
+            .isNotEmpty;
+
+    return hasDirectProfile || hasLegacyLinkedChild;
   }
 
   String get _viewerRoleLabel {
@@ -362,6 +650,57 @@ class _DashboardPageState extends State<DashboardPage> {
       return "Adolescent";
     }
     return "Account";
+  }
+
+  bool get _isAdolescentViewer {
+    final role = (_viewer["role"] ?? _user["role"] ?? "").toString().toLowerCase();
+    return role == "adolescent";
+  }
+
+  List<Map<String, String>> get _managedChildren {
+    final linkedChildren = _caregiverDashboardState["linkedChildren"];
+    if (linkedChildren is List) {
+      final children = linkedChildren
+          .whereType<Map>()
+          .map((child) {
+            final id = (child["id"] ?? child["uid"] ?? child["userId"])
+                ?.toString();
+            final name = (child["childFullName"] ??
+                    child["fullName"] ??
+                    child["name"])
+                ?.toString();
+            if (id == null || id.isEmpty || name == null || name.isEmpty) {
+              return null;
+            }
+            return {"id": id, "name": name};
+          })
+          .whereType<Map<String, String>>()
+          .toList(growable: false);
+      if (children.isNotEmpty) return children;
+    }
+
+    if (_isCaregiverViewer && !_isPendingCaregiverLinkFlow && _childName != "there") {
+      return [
+        {
+          "id": (_user["id"] ?? _user["uid"] ?? "current-child").toString(),
+          "name": _childName,
+        },
+      ];
+    }
+
+    return const [];
+  }
+
+  String? get _selectedManagedProfileUserId {
+    if (!_isCaregiverViewer) return null;
+    final children = _managedChildren;
+    if (children.isEmpty) return null;
+    final selectedId = _selectedManagedChildId;
+    if (selectedId != null &&
+        children.any((child) => child["id"] == selectedId)) {
+      return selectedId;
+    }
+    return children.first["id"];
   }
 
   Future<void> _generateCaregiverLinkCode() async {
@@ -450,6 +789,94 @@ class _DashboardPageState extends State<DashboardPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Unable to generate a linking code: $error')),
+      );
+    }
+  }
+
+  Future<void> _showAddChildDialog() async {
+    final managedChildren = _managedChildren;
+    if (managedChildren.length >= 3) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('A caregiver account can manage up to 3 profiles.'),
+        ),
+      );
+      return;
+    }
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          title: const Text('How would you like to add another child?'),
+          content: const Text(
+            'You can add a younger child profile, link an adolescent account, or manage an adolescent directly in this caregiver account.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop('link_adolescent'),
+              child: const Text('Link Existing Account'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop('child_profile'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00C874),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Add Child Profile'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || choice == null) return;
+
+    if (choice == 'link_adolescent') {
+      await _generateCaregiverLinkCode();
+      return;
+    }
+
+    await _startChildProfileSetup('5-12');
+  }
+
+  Future<void> _startChildProfileSetup(String childAgeGroup) async {
+    try {
+      final response = await ApiService.saveCaregiverChildAgeGroup(
+        childAgeGroup: childAgeGroup,
+      );
+      if (!mounted) return;
+      if (response["success"] != true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              response["error"]?.toString() ??
+                  'Unable to start profile setup right now.',
+            ),
+          ),
+        );
+        return;
+      }
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const ProfileSetupIntroScreen(
+            isChildProfileSetup: true,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to add child: $error')),
       );
     }
   }
@@ -585,6 +1012,7 @@ class _DashboardPageState extends State<DashboardPage> {
   bool get _isStreakAtRisk {
     if (_currentLoggingStreak < 2) return false;
     if (_todayLogStatus["isCompleteDay"] == true) return false;
+    if (_missingStreakItems.isEmpty) return false;
 
     final lastCompleteLogDate =
         _gamificationStatus["lastCompleteLogDate"]?.toString() ?? "";
@@ -596,13 +1024,31 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   DateTime? _nextStreakReminderTime(DateTime now) {
-    final preferred = DateTime(now.year, now.month, now.day, 20, 30);
+    final preferred = DateTime(now.year, now.month, now.day, 21);
     if (preferred.isAfter(now)) return preferred;
 
     final fallback = now.add(const Duration(minutes: 5));
     final cutoff = DateTime(now.year, now.month, now.day, 23, 30);
     if (fallback.isAfter(cutoff)) return null;
     return fallback;
+  }
+
+  List<String> get _missingStreakItems {
+    if (_todayLogStatus.isEmpty) return const [];
+
+    final missing = <String>[];
+    if (_todayStatusFlag("hasMorningMeal") != true) missing.add("breakfast");
+    if (_todayStatusFlag("hasLunchMeal") != true) missing.add("lunch");
+    if (_todayStatusFlag("hasDinnerMeal") != true) missing.add("dinner");
+    if (_todayStatusFlag("hasHydrationLog") != true) missing.add("hydration");
+    return missing;
+  }
+
+  String _joinReminderItems(List<String> items) {
+    if (items.isEmpty) return "meals and hydration";
+    if (items.length == 1) return items.first;
+    if (items.length == 2) return "${items.first} and ${items.last}";
+    return "${items.sublist(0, items.length - 1).join(', ')}, and ${items.last}";
   }
 
   String _dateKey(DateTime dateTime) {
@@ -700,6 +1146,8 @@ class _DashboardPageState extends State<DashboardPage> {
                             ? Icons.water_drop_outlined
                             : kind == "streak"
                                 ? Icons.local_fire_department_outlined
+                                : kind == "missed_medication"
+                                    ? Icons.warning_outlined
                                 : Icons.medication_outlined,
                     color: kind == "meal"
                         ? const Color(0xFFFFB74D)
@@ -707,6 +1155,8 @@ class _DashboardPageState extends State<DashboardPage> {
                             ? const Color(0xFF64B5F6)
                             : kind == "streak"
                                 ? const Color(0xFFFF7043)
+                                : kind == "missed_medication"
+                                    ? const Color(0xFFD32F2F)
                                 : const Color(0xFF9E86FF),
                     title: reminder["name"]?.toString() ?? "Reminder",
                     message: reminder["message"]?.toString() ?? "",
@@ -748,38 +1198,30 @@ class _DashboardPageState extends State<DashboardPage> {
                           _buildDashboardErrorCard(),
                           const SizedBox(height: 16),
                         ],
-                        _buildPendingCaregiverHeader(),
-                        const SizedBox(height: 24),
-                        _buildPendingCaregiverCard(),
+                        CaregiverPendingDashboard(
+                          caregiverName: (_viewer["fullName"] ??
+                                  _viewer["name"] ??
+                                  "Caregiver")
+                              .toString(),
+                          roleLabel: _viewerRoleLabel,
+                          onAddChildProfile: () =>
+                              _startChildProfileSetup('5-12'),
+                          onLinkExistingAccount: _generateCaregiverLinkCode,
+                        ),
                       ],
                     ),
                   )
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (_dashboardError != null) ...[
-                          _buildDashboardErrorCard(),
-                          const SizedBox(height: 16),
-                        ],
-                        _buildHeader(),
-                        const SizedBox(height: 24),
-                        _buildStreakCard(),
-                        const SizedBox(height: 16),
-                        _buildMetricsRow(),
-                        const SizedBox(height: 16),
-                        _buildNutritionCard(),
-                        const SizedBox(height: 16),
-                        _buildAlertCard(),
-                        const SizedBox(height: 16),
-                        _buildQuickActionsCard(),
-                        const SizedBox(height: 16),
-                        _buildUpcomingCard(),
-                        const SizedBox(height: 40),
-                      ],
-                    ),
-                  ),
+                : _isAdolescentViewer
+                    ? AdolescentDashboardContent(
+                        children: _buildStandardDashboardChildren(),
+                      )
+                    : SingleChildScrollView(
+                        padding: const EdgeInsets.all(20.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: _buildStandardDashboardChildren(),
+                        ),
+                      ),
       ),
       // --- Bottom Navigation Bar ---
       bottomNavigationBar: Container(
@@ -798,18 +1240,34 @@ class _DashboardPageState extends State<DashboardPage> {
             if (index == 1) {
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) => const FoodLogPage()),
+                MaterialPageRoute(
+                  builder: (context) => FoodLogPage(
+                    profileUserId: _selectedManagedProfileUserId,
+                    caregiverNoChildEmptyState:
+                        _isCaregiverViewer && _managedChildren.isEmpty,
+                  ),
+                ),
               );
             } else if (index == 2) {
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) => const AnalyticsPage()),
+                MaterialPageRoute(
+                  builder: (context) => AnalyticsPage(
+                    profileUserId: _selectedManagedProfileUserId,
+                    caregiverNoChildEmptyState:
+                        _isCaregiverViewer && _managedChildren.isEmpty,
+                  ),
+                ),
               );
             } else if (index == 3) {
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => const HealthMetricsPage(),
+                  builder: (context) => HealthMetricsPage(
+                    profileUserId: _selectedManagedProfileUserId,
+                    caregiverNoChildEmptyState:
+                        _isCaregiverViewer && _managedChildren.isEmpty,
+                  ),
                 ),
               );
             } else if (index == 4) {
@@ -857,6 +1315,29 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  List<Widget> _buildStandardDashboardChildren() {
+    return [
+      if (_dashboardError != null) ...[
+        _buildDashboardErrorCard(),
+        const SizedBox(height: 16),
+      ],
+      _buildHeader(),
+      const SizedBox(height: 24),
+      _buildStreakCard(),
+      const SizedBox(height: 16),
+      _buildMetricsRow(),
+      const SizedBox(height: 16),
+      _buildNutritionCard(),
+      const SizedBox(height: 16),
+      _buildAlertCard(),
+      const SizedBox(height: 16),
+      _buildQuickActionsCard(),
+      const SizedBox(height: 16),
+      _buildUpcomingCard(),
+      const SizedBox(height: 40),
+    ];
+  }
+
   // --- 1. Header Area ---
   Widget _buildDashboardErrorCard() {
     return Container(
@@ -875,6 +1356,19 @@ class _DashboardPageState extends State<DashboardPage> {
           height: 1.4,
         ),
       ),
+    );
+  }
+
+  Widget _buildManagedChildSelector() {
+    final children = _managedChildren;
+    if (!_isCaregiverViewer || children.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return CaregiverManagedChildSelector(
+      children: children,
+      selectedChildId: _selectedManagedChildId,
+      onChanged: _selectManagedChild,
     );
   }
 
@@ -916,14 +1410,17 @@ class _DashboardPageState extends State<DashboardPage> {
                 'Welcome!',
                 style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13),
               ),
-              Text(
-                _childName,
-                style: const TextStyle(
-                  color: Color(0xFF37474F),
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
+              if (_isCaregiverViewer && _managedChildren.isNotEmpty)
+                _buildManagedChildSelector()
+              else
+                Text(
+                  _childName,
+                  style: const TextStyle(
+                    color: Color(0xFF37474F),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
               const SizedBox(height: 6),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -953,150 +1450,6 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildPendingCaregiverHeader() {
-    final caregiverName =
-        (_viewer["fullName"] ?? _viewer["name"] ?? "Caregiver").toString();
-
-    return Row(
-      children: [
-        Container(
-          width: 48,
-          height: 48,
-          decoration: const BoxDecoration(
-            color: Color(0xFFD5F5E3),
-            shape: BoxShape.circle,
-          ),
-          child: const Center(
-            child: Icon(
-              Icons.volunteer_activism_outlined,
-              color: Color(0xFF009688),
-            ),
-          ),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Caregiver dashboard',
-                style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13),
-              ),
-              Text(
-                caregiverName,
-                style: const TextStyle(
-                  color: Color(0xFF37474F),
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE9F7F1),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  '$_viewerRoleLabel Dashboard',
-                  style: const TextStyle(
-                    color: Color(0xFF00897B),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPendingCaregiverCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 18,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              color: const Color(0xFFEAF7F2),
-              borderRadius: BorderRadius.circular(22),
-            ),
-            child: const Icon(
-              Icons.link,
-              color: Color(0xFF00A676),
-              size: 36,
-            ),
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            'No linked adolescent account yet',
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF37474F),
-            ),
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'Please link your child’s account to view and support their health profile.',
-            style: TextStyle(
-              fontSize: 15,
-              color: Color(0xFF78909C),
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'Please link your child’s account here.',
-            style: TextStyle(
-              fontSize: 14,
-              color: Color(0xFF78909C),
-            ),
-          ),
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            height: 52,
-            child: ElevatedButton(
-              onPressed: _generateCaregiverLinkCode,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF00C874),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              child: const Text(
-                'Generate Linking Code',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -1180,12 +1533,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
               ElevatedButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const FoodLogPage()),
-                  );
-                },
+                onPressed: _openFoodLogAndRefresh,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.white,
                   foregroundColor: const Color(0xFF00C874),
@@ -1260,6 +1608,14 @@ class _DashboardPageState extends State<DashboardPage> {
         .length;
     final nextReminder = _nextMedicationReminder;
     final nextReminderTime = nextReminder?["time"] as DateTime?;
+    final missedCount = _missedMedications.isNotEmpty
+        ? _missedMedications.length
+        : _missedMedicationCountFromSummary();
+    final missedLabel = missedCount == 1
+        ? '1 missed medication'
+        : missedCount > 1
+            ? '$missedCount missed medications'
+            : null;
 
     return Row(
       children: [
@@ -1289,13 +1645,21 @@ class _DashboardPageState extends State<DashboardPage> {
             iconColor: const Color(0xFFAB47BC),
             mainValue:
                 _hasMedicationData ? '$medicationTaken/$medicationTotal' : 'Not set',
-            subValue: nextReminderTime == null
-                ? 'No medication logged yet'
-                : 'Next: ${_formatClockTime(nextReminderTime)}',
+            subValue: missedLabel != null
+                ? missedLabel
+                : nextReminderTime == null
+                    ? 'No medication logged yet'
+                    : 'Next: ${_formatClockTime(nextReminderTime)}',
             hintText: _hasMedicationData ? null : 'No medication logged yet',
             progressColor: const Color(0xFFAB47BC),
             progressValue:
                 medicationTotal == 0 ? 0 : medicationTaken / medicationTotal,
+            backgroundColor:
+                missedCount > 0 ? const Color(0xFFFFF1F2) : null,
+            borderColor:
+                missedCount > 0 ? const Color(0xFFD32F2F) : null,
+            shadowColor:
+                missedCount > 0 ? const Color(0x4DD32F2F) : null,
           ),
         ),
       ],
@@ -1318,13 +1682,25 @@ class _DashboardPageState extends State<DashboardPage> {
     required Color progressColor,
     required double progressValue,
     String? hintText,
+    Color? backgroundColor,
+    Color? borderColor,
+    Color? shadowColor,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: backgroundColor ?? Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: borderColor ?? Colors.grey.shade200),
+        boxShadow: shadowColor == null
+            ? null
+            : [
+                BoxShadow(
+                  color: shadowColor,
+                  blurRadius: 16,
+                  offset: const Offset(0, 8),
+                ),
+              ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1488,6 +1864,12 @@ class _DashboardPageState extends State<DashboardPage> {
     required Color color,
     bool isAlert = false,
   }) {
+    final displayColor = isAlert ? const Color(0xFFD32F2F) : color;
+    final labelColor =
+        isAlert ? const Color(0xFFD32F2F) : const Color(0xFF78909C);
+    final valueColor =
+        isAlert ? const Color(0xFFD32F2F) : const Color(0xFF37474F);
+
     return Column(
       children: [
         Row(
@@ -1495,40 +1877,61 @@ class _DashboardPageState extends State<DashboardPage> {
             Container(
               width: 8,
               height: 8,
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              decoration: BoxDecoration(
+                color: displayColor,
+                shape: BoxShape.circle,
+              ),
             ),
             const SizedBox(width: 8),
             Text(
               label,
-              style: const TextStyle(
-                color: Color(0xFF78909C),
+              style: TextStyle(
+                color: labelColor,
                 fontSize: 13,
-                fontWeight: FontWeight.w500,
+                fontWeight: isAlert ? FontWeight.w700 : FontWeight.w500,
               ),
             ),
             const Spacer(),
             Text(
               valueText,
               style: TextStyle(
-                color: isAlert ? color : const Color(0xFF37474F),
+                color: valueColor,
                 fontSize: 13,
                 fontWeight: FontWeight.bold,
               ),
             ),
             if (isAlert) ...[
               const SizedBox(width: 4),
-              Icon(Icons.warning_amber_rounded, color: color, size: 16),
+              const Icon(
+                Icons.warning_amber_rounded,
+                color: Color(0xFFD32F2F),
+                size: 16,
+              ),
             ],
           ],
         ),
         const SizedBox(height: 8),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: LinearProgressIndicator(
-            value: progress,
-            backgroundColor: color.withOpacity(0.15),
-            valueColor: AlwaysStoppedAnimation<Color>(color),
-            minHeight: 8,
+        Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4),
+            boxShadow: isAlert
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFFD32F2F).withOpacity(0.35),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: progress,
+              backgroundColor: displayColor.withOpacity(0.15),
+              valueColor: AlwaysStoppedAnimation<Color>(displayColor),
+              minHeight: 8,
+            ),
           ),
         ),
       ],
@@ -1687,26 +2090,23 @@ class _DashboardPageState extends State<DashboardPage> {
           _buildQuickActionBtn(
             Icons.restaurant_menu,
             'Log Food',
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const FoodLogPage()),
-              );
-            },
+            onTap: _openFoodLogAndRefresh,
           ),
-          const SizedBox(height: 12),
-          _buildQuickActionBtn(
-            Icons.emoji_events_outlined,
-            'Leaderboard',
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const LeaderboardPage(),
-                ),
-              );
-            },
-          ),
+          if (_isAdolescentViewer) ...[
+            const SizedBox(height: 12),
+            _buildQuickActionBtn(
+              Icons.emoji_events_outlined,
+              'Leaderboard',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const LeaderboardPage(),
+                  ),
+                );
+              },
+            ),
+          ],
           const SizedBox(height: 12),
           _buildQuickActionBtn(
             Icons.calendar_today_outlined,
@@ -1715,8 +2115,12 @@ class _DashboardPageState extends State<DashboardPage> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) =>
-                      const AnalyticsPage(initialCategory: 'Growth'),
+                  builder: (context) => AnalyticsPage(
+                    initialCategory: 'Growth',
+                    profileUserId: _selectedManagedProfileUserId,
+                    caregiverNoChildEmptyState:
+                        _isCaregiverViewer && _managedChildren.isEmpty,
+                  ),
                 ),
               );
             },
@@ -1729,8 +2133,12 @@ class _DashboardPageState extends State<DashboardPage> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) =>
-                      const AnalyticsPage(initialCategory: 'Nutrients'),
+                  builder: (context) => AnalyticsPage(
+                    initialCategory: 'Nutrients',
+                    profileUserId: _selectedManagedProfileUserId,
+                    caregiverNoChildEmptyState:
+                        _isCaregiverViewer && _managedChildren.isEmpty,
+                  ),
                 ),
               );
             },
@@ -1779,6 +2187,7 @@ class _DashboardPageState extends State<DashboardPage> {
     final nextReminderTime = nextReminder?["time"] as DateTime?;
     final nextReminderMessage = nextReminder?["message"]?.toString() ?? "";
     final nextReminderKind = nextReminder?["kind"]?.toString() ?? "";
+    final isMissed = nextReminder?["isMissed"] as bool? ?? false;
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -1807,38 +2216,46 @@ class _DashboardPageState extends State<DashboardPage> {
                       ? Icons.water_drop_outlined
                       : nextReminderKind == "streak"
                           ? Icons.local_fire_department_outlined
-                          : Icons.medication_outlined,
+                          : nextReminderKind == "missed_medication"
+                              ? Icons.warning_outlined
+                              : Icons.medication_outlined,
               iconColor: nextReminderKind == "meal"
                   ? const Color(0xFFEF6C00)
                   : nextReminderKind == "hydration"
                       ? const Color(0xFF1565C0)
                       : nextReminderKind == "streak"
                           ? const Color(0xFFD84315)
-                          : const Color(0xFF9E86FF),
+                          : nextReminderKind == "missed_medication"
+                              ? const Color(0xFFD32F2F)
+                              : const Color(0xFF9E86FF),
               bgColor: nextReminderKind == "meal"
                   ? const Color(0xFFFFF3E0)
                   : nextReminderKind == "hydration"
                       ? const Color(0xFFE3F2FD)
                       : nextReminderKind == "streak"
                           ? const Color(0xFFFBE9E7)
-                          : const Color(0xFFF3E5F5),
+                          : nextReminderKind == "missed_medication"
+                              ? const Color(0xFFFFEBEE)
+                              : const Color(0xFFF3E5F5),
               title: nextReminderName,
-              subtitle:
-                  '${_formatClockTime(nextReminderTime)} - ${_relativeReminderText(nextReminderTime)}${nextReminderMessage.isNotEmpty ? ' - $nextReminderMessage' : ''}',
+              subtitle: isMissed
+                  ? '${_relativeReminderText(nextReminderTime)}${nextReminderMessage.isNotEmpty ? ' - $nextReminderMessage' : ''}'
+                  : '${_formatClockTime(nextReminderTime)} - ${_relativeReminderText(nextReminderTime)}${nextReminderMessage.isNotEmpty ? ' - $nextReminderMessage' : ''}',
+              onTap: nextReminderKind == "medication"
+                  ? () => _promptMarkMedicationTaken(nextReminder ?? {})
+                  : null,
             ),
             const SizedBox(height: 20),
           ],
-          _buildUpcomingItem(
-            icon: Icons.event_available_outlined,
-            iconColor: const Color(0xFF009688),
-            bgColor: const Color(0xFFE0F2F1),
-            title: nextReminderTime == null
-                ? 'No upcoming items set'
-                : 'No appointments set',
-            subtitle: nextReminderTime == null
-                ? 'Meal, hydration, medication reminders, and appointments will appear here.'
-                : 'Appointments will appear here.',
-          ),
+          if (nextReminderTime == null)
+            _buildUpcomingItem(
+              icon: Icons.notifications_none_outlined,
+              iconColor: const Color(0xFF78909C),
+              bgColor: const Color(0xFFF5F7FA),
+              title: 'No upcoming reminders',
+              subtitle:
+                  'Meal, hydration, and medication reminders will appear here.',
+            ),
         ],
       ),
     );
@@ -1850,8 +2267,9 @@ class _DashboardPageState extends State<DashboardPage> {
     required Color bgColor,
     required String title,
     required String subtitle,
+    VoidCallback? onTap,
   }) {
-    return Row(
+    final content = Row(
       children: [
         Container(
           padding: const EdgeInsets.all(12),
@@ -1883,6 +2301,17 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
         ),
       ],
+    );
+
+    if (onTap == null) return content;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: content,
+      ),
     );
   }
 

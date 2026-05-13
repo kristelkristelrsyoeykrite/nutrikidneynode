@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import 'health_profile2.dart';
+import 'profile_setup_intro.dart';
 
 class HealthProfile1Page extends StatefulWidget {
-  const HealthProfile1Page({super.key});
+  const HealthProfile1Page({
+    super.key,
+    this.isChildProfileSetup = false,
+  });
+
+  final bool isChildProfileSetup;
 
   @override
   State<HealthProfile1Page> createState() => _HealthProfile1PageState();
@@ -33,14 +39,20 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
   DateTime? _dob;
   DateTime? _diagnosisDate;
 
-  bool get _isAdolescentRole => ApiService.userRole == 'adolescent';
+  String? get _currentUserRole {
+    return ApiService.normalizeUserRole(
+      ApiService.userRole ??
+          ApiService.signupData['userRole']?.toString() ??
+          ApiService.signupData['role']?.toString(),
+    );
+  }
+
+  bool get _isAdolescentRole => _currentUserRole == 'adolescent';
 
   String get _accountTypeLabel {
-    final role = ApiService.userRole ??
-        ApiService.signupData['userRole']?.toString() ??
-        ApiService.signupData['role']?.toString();
+    final role = _currentUserRole;
     if (role == 'adolescent') return 'Adolescent';
-    if (role == 'caregiver' || role == 'parent_caregiver') return 'Caregiver';
+    if (role == 'caregiver') return 'Caregiver';
     return 'Profile';
   }
 
@@ -201,7 +213,18 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
   }
 
   void _returnToPrivacyConsent() {
-    Navigator.of(context).pop();
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => ProfileSetupIntroScreen(
+          isChildProfileSetup: widget.isChildProfileSetup,
+        ),
+      ),
+    );
   }
 
   // FORMAT DATE FOR UI ONLY
@@ -686,9 +709,11 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
         border: Border.all(color: const Color(0xFF4DB6AC)),
       ),
       child: Text(
-        _accountTypeLabel == 'Profile'
-            ? 'Setting up profile'
-            : 'Setting up $_accountTypeLabel account',
+        _accountTypeLabel == 'Adolescent'
+            ? 'Setting up adolescent profile'
+            : _accountTypeLabel == 'Profile'
+                ? 'Setting up profile'
+                : 'Setting up $_accountTypeLabel account',
         style: const TextStyle(
           color: Color(0xFF37474F),
           fontSize: 12,

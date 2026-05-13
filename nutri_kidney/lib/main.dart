@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
@@ -14,6 +16,7 @@ void main() async {
   );
   await PushNotificationService.initialize();
   await NotificationService.initialize();
+  await NotificationService.canScheduleExactAlarms();
   runApp(const NutriKidneyApp());
 }
 
@@ -39,7 +42,8 @@ class _NutriKidneyAppState extends State<NutriKidneyApp> {
     
     if (hasRememberedSession) {
       await PushNotificationService.syncTokenIfPossible();
-      NotificationService.refreshReminderNotificationsFromDashboard();
+      await NotificationService.ensureScheduledFromCache();
+      unawaited(NotificationService.syncFromBackendAndRescheduleIfChanged());
       // User has a valid remembered session - take them to dashboard
       return const DashboardPage();
     } else {

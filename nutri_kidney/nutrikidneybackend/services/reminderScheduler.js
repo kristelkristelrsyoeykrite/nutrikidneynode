@@ -1,4 +1,5 @@
 const { admin, db } = require("../firebase/admin");
+const { decryptHealthDocument } = require("../utils/encryption");
 
 /**
  * Backend Reminder Scheduler
@@ -17,15 +18,10 @@ function numberOrZero(value) {
 }
 
 function todayDateKey() {
-  const now = new Date();
-  return `${now.getFullYear().toString().padLeft(4, '0')}-${(now.getMonth() + 1)
-    .toString()
-    .padLeft(2, '0')}-${now.getDate().toString().padLeft(2, '0')}`;
+  // Use Manila time to match how schedules are stored/displayed in the app.
+  const manilaOffsetMs = 8 * 60 * 60 * 1000;
+  return new Date(Date.now() + manilaOffsetMs).toISOString().slice(0, 10);
 }
-
-String.prototype.padLeft = function (length, char) {
-  return char.repeat(Math.max(0, length - this.length)) + this;
-};
 
 /**
  * Check if a meal has been logged for today
@@ -48,24 +44,92 @@ async function hasMealBeenLoggedToday(userId) {
 }
 
 /**
- * Check if medication has been logged/taken today
+ * Check if there are still medications that need reminders.
  */
-async function hasMedicationBeenTakenToday(userId) {
+async function hasPendingMedicationReminders(userId) {
   try {
-    const today = todayDateKey();
     const snapshot = await db
       .collection("medications")
       .where("userId", "==", userId)
-      .where("status", "==", "Taken")
-      .where("date", "==", today)
-      .limit(1)
       .get();
 
-    return !snapshot.empty;
+    if (snapshot.empty) return false;
+
+    const nowMs = Date.now();
+    const today = todayDateKey();
+
+    for (const doc of snapshot.docs) {
+      const medicationId = doc.id;
+      const medication = decryptHealthDocument(doc.data() || {});
+
+      for (const clock of medicationScheduleTimes(medication)) {
+        const scheduled = dateForTodayClockTime(clock);
+        const scheduledMs = scheduled.getTime();
+        if (scheduledMs > nowMs) continue;
+
+        const logDocId = `${userId}_${medicationId}_${today}_${clock.text}`;
+        const intakeLog = await db
+          .collection("medicationIntakeLogs")
+          .doc(logDocId)
+          .get();
+        if (!intakeLog.exists) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   } catch (error) {
     console.error("Error checking medication logs:", error.message);
-    return false;
+    return true;
   }
+}
+
+function parseClockTime(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute, text };
+}
+
+function dateForTodayClockTime(clock) {
+  const now = new Date();
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    clock.hour,
+    clock.minute,
+    0,
+    0,
+  );
+}
+
+function medicationScheduleTimes(medication) {
+  const times = [];
+  const scheduledTimes = medication.scheduled_times ?? medication.scheduledTimes;
+  if (Array.isArray(scheduledTimes)) {
+    for (const entry of scheduledTimes) {
+      const parsed = parseClockTime(entry);
+      if (parsed) times.push(parsed);
+    }
+  }
+
+  if (times.length > 0) return times;
+
+  const startTime =
+    medication.start_time ?? medication.startTime ?? medication.time;
+  const parsed = parseClockTime(startTime);
+  if (parsed) times.push(parsed);
+  return times;
+}
+
+async function hasMedicationBeenTakenToday(userId) {
+  return !(await hasPendingMedicationReminders(userId));
 }
 
 /**
@@ -269,10 +333,12 @@ async function checkMealReminders() {
         continue; // Too soon to remind again
       }
 
+      const childName = user.childFullName || user.child_name || "there";
+
       // Send reminder
       await sendReminderToDevices(userId, {
         type: "meal_reminder",
-        title: "Time to Log Your Meal",
+        title: `Reminder for ${childName}!`,
         body: "Have you eaten? Log your meal to track your nutrition.",
       });
 
@@ -308,22 +374,24 @@ async function checkMedicationReminders() {
         }
       }
 
-      // Check if medication was taken today
-      const medTaken = await hasMedicationBeenTakenToday(userId);
-      if (medTaken) {
-        continue; // Already taken, don't remind
+      // Stop reminding once all medication statuses are marked as Taken.
+      const hasPendingMedication = await hasPendingMedicationReminders(userId);
+      if (!hasPendingMedication) {
+        continue;
       }
 
       // Check if enough time passed since last reminder
       const lastReminder = await getLastReminderTimestamp(userId, "medication");
-      if (!shouldRemindAgain(lastReminder, 30)) {
+      if (!shouldRemindAgain(lastReminder, 24 * 60)) {
         continue; // Too soon to remind again
       }
+
+      const childName = user.childFullName || user.child_name || "there";
 
       // Send reminder
       await sendReminderToDevices(userId, {
         type: "medication_reminder",
-        title: "Time for Your Medication",
+        title: `Reminder for ${childName}!`,
         body: "Don't forget to take your medication.",
       });
 
@@ -350,11 +418,15 @@ async function checkHydrationReminders() {
     for (const userDoc of usersSnapshot.docs) {
       const user = userDoc.data();
       const userId = userDoc.id;
+      const medicalProfileId = String(user.medicalProfileId || "").trim();
+      if (!medicalProfileId) {
+        continue;
+      }
 
       // Get fluid restriction limit
       const medicalProfileDoc = await db
         .collection("medicalProfile")
-        .doc(user.medicalProfileId)
+        .doc(medicalProfileId)
         .get();
 
       if (!medicalProfileDoc.exists) {
@@ -394,10 +466,12 @@ async function checkHydrationReminders() {
         continue;
       }
 
+      const childName = user.childFullName || user.child_name || "there";
+
       // Send reminder
       await sendReminderToDevices(userId, {
         type: "hydration_reminder",
-        title: "Stay Hydrated!",
+        title: `Reminder for ${childName}!`,
         body: `Log your fluid intake. Goal: ${fluidLimitMl}mL`,
       });
 
@@ -405,6 +479,105 @@ async function checkHydrationReminders() {
     }
   } catch (error) {
     console.error("Error in hydration reminder check:", error.message);
+  }
+}
+
+/**
+ * Check and create missed medication reminders
+ * Sends notifications for medications not taken 1 hour after initial reminder
+ */
+async function checkMissedMedicationReminders() {
+  console.log("[Reminders] Checking missed medication reminders...");
+
+  try {
+    // Get all users with medication reminders enabled
+    const usersSnapshot = await db
+      .collection("users")
+      .where("reminderSettings.medicationReminders", "==", true)
+      .get();
+
+    for (const userDoc of usersSnapshot.docs) {
+      const user = userDoc.data();
+      const userId = userDoc.id;
+
+      const missedThresholdMs = 5 * 60 * 1000;
+      const medicationsSnapshot = await db
+        .collection("medications")
+        .where("userId", "==", userId)
+        .get();
+
+      if (medicationsSnapshot.empty) continue;
+
+      const nowMs = Date.now();
+      const today = todayDateKey();
+
+      for (const medicationDoc of medicationsSnapshot.docs) {
+        const medicationId = medicationDoc.id;
+        const medication = decryptHealthDocument(medicationDoc.data() || {});
+        const name =
+          String(
+            medication.medication_name ??
+              medication.medicationName ??
+              medication.name ??
+              "Medication",
+          ).trim() || "Medication";
+
+        for (const clock of medicationScheduleTimes(medication)) {
+          const scheduled = dateForTodayClockTime(clock);
+          const scheduledMs = scheduled.getTime();
+          if (scheduledMs > nowMs) continue;
+          if (nowMs - scheduledMs < missedThresholdMs) continue;
+
+          const intakeLogId = `${userId}_${medicationId}_${today}_${clock.text}`;
+          const intakeLog = await db
+            .collection("medicationIntakeLogs")
+            .doc(intakeLogId)
+            .get();
+          if (intakeLog.exists) continue;
+
+          const stateKey = `missed_medication_${medicationId}_${today}_${clock.text}`;
+          const lastMissedSent = await getLastReminderTimestamp(userId, stateKey);
+          if (lastMissedSent !== 0) continue;
+
+          const dueTimestamp = admin.firestore.Timestamp.fromDate(scheduled);
+
+          const missedNotification = {
+            userId,
+            type: "missed_medication_reminder",
+            title: "Missed Medication Reminder",
+            body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            isMissed: true,
+            priority: "high",
+            color: "red",
+            read: false,
+            medicationId,
+            medicationName: name,
+            scheduledTime: clock.text,
+            dueTime: dueTimestamp,
+            day: today,
+          };
+
+          await db.collection("notifications").add(missedNotification);
+          await db.collection("upcomingReminders").add(missedNotification);
+
+          const childName = user.childFullName || user.child_name || "there";
+          await sendReminderToDevices(userId, {
+            type: "missed_medication_reminder",
+            title: `Missed medication for ${childName}`,
+            body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
+          });
+
+          await updateLastReminderTimestamp(userId, stateKey);
+
+          console.log(
+            `Sent missed medication reminder to ${userId} for ${medicationId} at ${clock.text}`,
+          );
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error in missed medication reminder check:", error.message);
   }
 }
 
@@ -421,6 +594,7 @@ async function runReminderScheduler() {
     await Promise.all([
       checkMealReminders(),
       checkMedicationReminders(),
+      checkMissedMedicationReminders(),
       checkHydrationReminders(),
     ]);
 
@@ -436,10 +610,15 @@ async function runReminderScheduler() {
 function initializeReminderScheduler() {
   console.log("[Reminders] Initializing reminder scheduler...");
 
-  // Run every 5 minutes (300000 ms)
+  const intervalMs = Math.max(
+    10_000,
+    Number(process.env.REMINDER_SCHEDULER_INTERVAL_MS) || 60 * 1000,
+  );
+
+  // Run on an interval; keep it configurable.
   setInterval(() => {
     runReminderScheduler();
-  }, 5 * 60 * 1000);
+  }, intervalMs);
 
   // Also run immediately on startup
   runReminderScheduler();

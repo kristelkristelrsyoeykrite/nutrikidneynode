@@ -9,7 +9,7 @@
         android:maxSdkVersion="32" />
 
     <application
-        android:label="nutri_kidney"
+        android:label="NutriKidney Betav1.2"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:enableOnBackInvokedCallback="true">

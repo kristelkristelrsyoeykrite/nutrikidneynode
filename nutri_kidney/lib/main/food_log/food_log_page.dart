@@ -1,7 +1,14 @@
 part of '../food_log.dart';
 
 class FoodLogPage extends StatefulWidget {
-  const FoodLogPage({super.key});
+  const FoodLogPage({
+    super.key,
+    this.profileUserId,
+    this.caregiverNoChildEmptyState = false,
+  });
+
+  final String? profileUserId;
+  final bool caregiverNoChildEmptyState;
 
   @override
   State<FoodLogPage> createState() => _FoodLogPageState();
@@ -13,8 +20,10 @@ class _FoodLogPageState extends State<FoodLogPage> {
 
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = "";
-  bool _isLoadingLogs = false;
+  bool _isLoadingLogs = true;
+  bool _foodLogRequestInFlight = false;
   String? _foodLogError;
+  bool _resolvedCaregiverNoChildEmptyState = false;
   int _currentLoggingStreak = 0;
   final Set<String> _unlockedAwardIds = {};
   final Set<String> _savingLogKeys = {};
@@ -48,6 +57,13 @@ class _FoodLogPageState extends State<FoodLogPage> {
     'Snacks': [],
   };
 
+  static const List<Map<String, String>> _waterAmountOptions = [
+    {'value': '250', 'label': 'Small glass - 250 mL'},
+    {'value': '350', 'label': 'Medium glass - 350 mL'},
+    {'value': '500', 'label': 'Large glass - 500 mL'},
+    {'value': 'custom', 'label': 'Custom'},
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -56,7 +72,14 @@ class _FoodLogPageState extends State<FoodLogPage> {
         _searchQuery = _searchController.text.trim().toLowerCase();
       });
     });
-    _loadFoodLogs();
+    _resolvedCaregiverNoChildEmptyState = widget.caregiverNoChildEmptyState;
+    if (widget.caregiverNoChildEmptyState) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      _loadFoodLogs();
+    }
   }
 
   @override
@@ -70,6 +93,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
 
   Future<void> _loadFoodLogs() async {
     if (!mounted) return;
+    if (_foodLogRequestInFlight) return;
+    _foodLogRequestInFlight = true;
     setState(() {
       _isLoadingLogs = true;
       _foodLogError = null;
@@ -79,7 +104,18 @@ class _FoodLogPageState extends State<FoodLogPage> {
     });
 
     try {
-      final response = await ApiService.getFoodLogs(date: _selectedDate);
+      if (widget.profileUserId == null && await _shouldShowCaregiverEmptyState()) {
+        if (!mounted) return;
+        setState(() {
+          _resolvedCaregiverNoChildEmptyState = true;
+          _isLoadingLogs = false;
+        });
+        return;
+      }
+      final response = await ApiService.getFoodLogs(
+        date: _selectedDate,
+        profileUserId: widget.profileUserId,
+      );
       if (!mounted) return;
       final logs = response['logs'];
       if (logs is List) {
@@ -92,23 +128,28 @@ class _FoodLogPageState extends State<FoodLogPage> {
             _loggedMeals.putIfAbsent(mealType, () => []);
             _loggedMeals[mealType]!.add(food);
           }
+          _isLoadingLogs = false;
+        });
+      } else {
+        setState(() {
+          _isLoadingLogs = false;
         });
       }
-      await _loadGamificationSummary();
-      await _refreshReminderNotifications();
+      _loadFoodLogBackgroundData();
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _foodLogError = e.toString();
         _currentLoggingStreak = 0;
+        _isLoadingLogs = false;
       });
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoadingLogs = false;
-        });
-      }
+      _foodLogRequestInFlight = false;
     }
+  }
+
+  Future<void> _loadFoodLogBackgroundData() async {
+    await _loadGamificationSummary();
   }
 
   Future<void> _loadGamificationSummary({
@@ -116,7 +157,9 @@ class _FoodLogPageState extends State<FoodLogPage> {
   }) async {
     try {
       final previousAwards = Set<String>.from(_unlockedAwardIds);
-      final response = await ApiService.getGamificationSummary();
+      final response = await ApiService.getGamificationSummary(
+        profileUserId: widget.profileUserId,
+      );
       if (!mounted) return;
       final gamification = response['gamification'];
       final status = gamification is Map ? gamification['status'] : null;
@@ -148,10 +191,6 @@ class _FoodLogPageState extends State<FoodLogPage> {
         _currentLoggingStreak = 0;
       });
     }
-  }
-
-  Future<void> _refreshReminderNotifications() async {
-    await NotificationService.refreshReminderNotificationsFromDashboard();
   }
 
   Set<String> _awardIdsFromStatus(Map<String, dynamic> statusMap) {
@@ -436,14 +475,26 @@ class _FoodLogPageState extends State<FoodLogPage> {
   }
 
   Future<void> _showWaterDialog(String emoji) async {
-    final mlController = TextEditingController(text: '250');
+    final pageContext = context;
+    final customMlController = TextEditingController();
+    String? selectedWaterAmount;
     bool isSavingWater = false;
+    final waterOptions = _waterAmountOptions
+        .map(
+          (option) => DropdownMenuItem<String>(
+            value: option['value'],
+            child: Text(option['label']!),
+          ),
+        )
+        .toList(growable: false);
 
     await showDialog(
       context: context,
-      builder: (context) {
+      builder: (dialogContext) {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
+            final mediaQuery = MediaQuery.of(dialogContext);
+            final isCustomAmount = selectedWaterAmount == 'custom';
             return AlertDialog(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
@@ -452,52 +503,111 @@ class _FoodLogPageState extends State<FoodLogPage> {
                 children: [
                   Text(emoji, style: const TextStyle(fontSize: 24)),
                   const SizedBox(width: 8),
-                  const Text('Log Water'),
+                  const Expanded(
+                    child: Text(
+                      'Log Water',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                 ],
               ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'How much water did you drink?',
-                    style: TextStyle(
-                      color: Color(0xFF90A4AE),
-                      fontSize: 12,
-                    ),
+              content: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: (mediaQuery.size.height -
+                          mediaQuery.viewInsets.bottom -
+                          mediaQuery.padding.vertical -
+                          220)
+                      .clamp(180.0, 420.0)
+                      .toDouble(),
+                ),
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.only(
+                    bottom: mediaQuery.viewInsets.bottom > 0 ? 12 : 0,
                   ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: mlController,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: false,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'e.g. 250, 500, 1000',
-                      suffixText: 'mL',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'How much water did you drink?',
+                        style: TextStyle(
+                          color: Color(0xFF90A4AE),
+                          fontSize: 12,
+                        ),
                       ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 12,
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: selectedWaterAmount,
+                        isExpanded: true,
+                        items: waterOptions,
+                        onChanged: isSavingWater
+                            ? null
+                            : (value) {
+                                if (value == null) return;
+                                setStateDialog(() {
+                                  selectedWaterAmount = value;
+                                });
+                              },
+                        decoration: InputDecoration(
+                          labelText: 'Amount (mL)',
+                          hintText: 'Select amount in mL',
+                          filled: true,
+                          fillColor: const Color(0xFFF8FBFA),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 12,
+                          ),
+                        ),
                       ),
-                    ),
+                      if (isCustomAmount) ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: customMlController,
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                          ],
+                          decoration: InputDecoration(
+                            labelText: 'Custom amount (mL)',
+                            hintText: 'Enter amount in mL',
+                            suffixText: 'mL',
+                            filled: true,
+                            fillColor: const Color(0xFFF8FBFA),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                ],
+                ),
               ),
               actions: [
                 TextButton(
-                  onPressed: isSavingWater ? null : () => Navigator.pop(context),
+                  onPressed: isSavingWater
+                      ? null
+                      : () => Navigator.pop(dialogContext),
                   child: const Text('Cancel'),
                 ),
                 ElevatedButton(
                   onPressed: isSavingWater
                       ? null
                       : () async {
-                          final mlAmount = int.tryParse(mlController.text.trim());
+                          final amountText = isCustomAmount
+                              ? customMlController.text.trim()
+                              : selectedWaterAmount ?? '';
+                          final mlAmount = int.tryParse(amountText);
                           if (mlAmount == null || mlAmount <= 0) {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(pageContext).showSnackBar(
                               const SnackBar(
                                 content: Text('Please enter a valid amount'),
                               ),
@@ -528,52 +638,58 @@ class _FoodLogPageState extends State<FoodLogPage> {
                               needsManualReview: false,
                             );
 
+                            if (!mounted) return;
+                            final response =
+                                await _submitFoodLogWithAllergyCheck({
+                              'mealType': _selectedMealType,
+                              'date': _selectedDate,
+                              'name': 'Water',
+                              'portion': '$mlAmount mL',
+                              'quantity': 1.0,
+                              'calories': 0,
+                              'protein': 0.0,
+                              'carbohydrate': 0.0,
+                              'fat': 0.0,
+                              'sodium': 0.0,
+                              'potassium': 0.0,
+                              'phosphorus': 0.0,
+                              'source': 'manual_entry',
+                              'waterMl': mlAmount.toDouble(),
+                            });
+                            if (!mounted || !dialogContext.mounted) return;
+                            if (response == null) return;
+
+                            final log = response['log'];
+                            final savedFood = log is Map
+                                ? FoodItem.fromLog(
+                                    Map<String, dynamic>.from(log),
+                                  )
+                                : waterItem;
                             if (mounted) {
-                              final response =
-                                  await _submitFoodLogWithAllergyCheck({
-                                'mealType': _selectedMealType,
-                                'date': _selectedDate,
-                                'name': 'Water',
-                                'portion': '$mlAmount mL',
-                                'quantity': 1.0,
-                                'calories': 0,
-                                'protein': 0.0,
-                                'carbohydrate': 0.0,
-                                'fat': 0.0,
-                                'sodium': 0.0,
-                                'potassium': 0.0,
-                                'phosphorus': 0.0,
-                                'source': 'manual_entry',
-                                'waterMl': mlAmount.toDouble(),
-                              });
-                              if (response == null) {
-                                return;
-                              }
-                              final log = response['log'];
-                              final savedFood = log is Map
-                                  ? FoodItem.fromLog(
-                                      Map<String, dynamic>.from(log),
-                                    )
-                                  : waterItem;
                               setState(() {
-                                _loggedMeals[_selectedMealType]?.add(savedFood);
+                                _loggedMeals
+                                    .putIfAbsent(_selectedMealType, () => [])
+                                    .add(savedFood);
                               });
-                              await _loadGamificationSummary(
-                                showAchievementPopup: true,
-                              );
-                              await _refreshReminderNotifications();
-                              if (context.mounted) {
-                                Navigator.pop(context);
-                              }
+                            }
+                            if (!mounted || !dialogContext.mounted) return;
+                            await _loadGamificationSummary(
+                              showAchievementPopup: true,
+                            );
+                            if (!mounted || !dialogContext.mounted) return;
+                            if (dialogContext.mounted) {
+                              Navigator.pop(dialogContext);
                             }
                           } catch (e) {
                             if (mounted) {
-                              ScaffoldMessenger.of(this.context).showSnackBar(
-                                SnackBar(content: Text('Error logging water: $e')),
+                              ScaffoldMessenger.of(pageContext).showSnackBar(
+                                SnackBar(
+                                  content: Text('Error logging water: $e'),
+                                ),
                               );
                             }
                           } finally {
-                            if (mounted && context.mounted) {
+                            if (mounted && dialogContext.mounted) {
                               setStateDialog(() {
                                 isSavingWater = false;
                               });
@@ -712,6 +828,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
   ) async {
     Future<Map<String, dynamic>> submit({required bool confirmed}) {
       return ApiService.addFoodLog(
+        profileUserId: widget.profileUserId,
         mealType: request['mealType'] as String,
         date: request['date']?.toString(),
         foodId: request['foodId']?.toString(),
@@ -797,10 +914,9 @@ class _FoodLogPageState extends State<FoodLogPage> {
 
       if (mounted) {
         setState(() {
-          _loggedMeals[_selectedMealType]?.add(savedFood);
+          _loggedMeals.putIfAbsent(_selectedMealType, () => []).add(savedFood);
         });
         await _loadGamificationSummary(showAchievementPopup: true);
-        await _refreshReminderNotifications();
       }
     } finally {
       if (mounted) {
@@ -821,6 +937,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
     }
 
     final response = await ApiService.updateFoodLog(
+      profileUserId: widget.profileUserId,
       foodLogId: original.id!,
       mealType: _selectedMealType,
       date: _selectedDate,
@@ -856,7 +973,6 @@ class _FoodLogPageState extends State<FoodLogPage> {
         }
       });
       await _loadGamificationSummary(showAchievementPopup: true);
-      await _refreshReminderNotifications();
     }
   }
 
@@ -867,11 +983,13 @@ class _FoodLogPageState extends State<FoodLogPage> {
           _loggedMeals[_selectedMealType]?.remove(food);
         });
       }
-      await _refreshReminderNotifications();
       return;
     }
 
-    final response = await ApiService.deleteFoodLog(food.id!);
+    final response = await ApiService.deleteFoodLog(
+      food.id!,
+      profileUserId: widget.profileUserId,
+    );
     if (response['success'] == false) {
       throw Exception(response['error'] ?? 'Database delete failed.');
     }
@@ -882,7 +1000,6 @@ class _FoodLogPageState extends State<FoodLogPage> {
             ?.removeWhere((item) => item.id == food.id);
       });
       await _loadGamificationSummary();
-      await _refreshReminderNotifications();
     }
   }
 
@@ -1398,6 +1515,13 @@ class _FoodLogPageState extends State<FoodLogPage> {
             bool isFormValid =
                 nameController.text.trim().isNotEmpty &&
                 portionController.text.trim().isNotEmpty;
+            final mediaQuery = MediaQuery.of(context);
+            final maxDialogHeight = (mediaQuery.size.height -
+                    mediaQuery.viewInsets.bottom -
+                    mediaQuery.padding.vertical -
+                    24)
+                .clamp(180.0, 720.0)
+                .toDouble();
             void onFieldChanged(String _) {
               setStateDialog(() {});
             }
@@ -1478,205 +1602,221 @@ class _FoodLogPageState extends State<FoodLogPage> {
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
               ),
-              insetPadding: const EdgeInsets.all(20),
+              insetPadding: EdgeInsets.symmetric(
+                horizontal: 20,
+                vertical: mediaQuery.viewInsets.bottom > 0 ? 8 : 20,
+              ),
               child: Container(
                 padding: const EdgeInsets.all(24),
+                constraints: BoxConstraints(maxHeight: maxDialogHeight),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text(emoji, style: const TextStyle(fontSize: 32)),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'Add to $_selectedMealType',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF37474F),
+                child: SingleChildScrollView(
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: EdgeInsets.only(
+                    bottom: mediaQuery.viewInsets.bottom > 0 ? 12 : 0,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(emoji, style: const TextStyle(fontSize: 32)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Add to $_selectedMealType',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF37474F),
+                              ),
                             ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      _buildDialogTextField(
+                        label: "Food Name",
+                        controller: nameController,
+                        onChanged: (value) {
+                          onFieldChanged(value);
+                          searchDialogSuggestions(value);
+                        },
+                      ),
+                      if (isSearchingDialogSuggestions)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 8),
+                          child: LinearProgressIndicator(
+                            color: Color(0xFF00C874),
+                            minHeight: 2,
+                          ),
+                        ),
+                      if (dialogSuggestions.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 180),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF8FBFA),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Color(0xFFE0E0E0)),
+                          ),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: dialogSuggestions.take(5).length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final suggestion = dialogSuggestions[index];
+                              return ListTile(
+                                dense: true,
+                                title: Text(
+                                  suggestion.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  suggestion.portion,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                trailing: const Icon(
+                                  Icons.chevron_right,
+                                  color: Color(0xFF00C874),
+                                ),
+                                onTap: () => openSuggestion(suggestion),
+                              );
+                            },
                           ),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 20),
-                    _buildDialogTextField(
-                      label: "Food Name",
-                      controller: nameController,
-                      onChanged: (value) {
-                        onFieldChanged(value);
-                        searchDialogSuggestions(value);
-                      },
-                    ),
-                    if (isSearchingDialogSuggestions)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 8),
-                        child: LinearProgressIndicator(
-                          color: Color(0xFF00C874),
-                          minHeight: 2,
-                        ),
+                      const SizedBox(height: 12),
+                      _buildDialogTextField(
+                        label: "Portion Size",
+                        controller: portionController,
+                        hint: "e.g. 1 medium, 100g",
+                        onChanged: onFieldChanged,
                       ),
-                    if (dialogSuggestions.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Container(
-                        constraints: const BoxConstraints(maxHeight: 180),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF8FBFA),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Color(0xFFE0E0E0)),
-                        ),
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          itemCount: dialogSuggestions.take(5).length,
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemBuilder: (context, index) {
-                            final suggestion = dialogSuggestions[index];
-                            return ListTile(
-                              dense: true,
-                              title: Text(
-                                suggestion.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                      const SizedBox(height: 24),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextButton(
+                              onPressed: isSavingDialogFood
+                                  ? null
+                                  : closeDialog,
+                              style: TextButton.styleFrom(
+                                backgroundColor: Colors.grey.shade200,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
                               ),
-                              subtitle: Text(
-                                suggestion.portion,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              trailing: const Icon(
-                                Icons.chevron_right,
-                                color: Color(0xFF00C874),
-                              ),
-                              onTap: () => openSuggestion(suggestion),
-                            );
-                          },
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    _buildDialogTextField(
-                      label: "Portion Size",
-                      controller: portionController,
-                      hint: "e.g. 1 medium, 100g",
-                      onChanged: onFieldChanged,
-                    ),
-                    const SizedBox(height: 24),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextButton(
-                            onPressed: isSavingDialogFood
-                                ? null
-                                : closeDialog,
-                            style: TextButton.styleFrom(
-                              backgroundColor: Colors.grey.shade200,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            child: const Text(
-                              'Cancel',
-                              style: TextStyle(
-                                color: Color(0xFF37474F),
-                                fontWeight: FontWeight.bold,
+                              child: const Text(
+                                'Cancel',
+                                style: TextStyle(
+                                  color: Color(0xFF37474F),
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: isFormValid && !isSavingDialogFood
-                                ? () async {
-                                    final foodToSave = FoodItem(
-                                      foodId: food?.foodId,
-                                      emoji: emoji,
-                                      name: nameController.text.trim(),
-                                      portion: portionController.text.trim(),
-                                      calories: food?.calories ?? 0,
-                                      time: DateFormat(
-                                        'h:mm a',
-                                      ).format(DateTime.now()),
-                                      protein: food?.protein ?? 0,
-                                      carbohydrate: food?.carbohydrate ?? 0,
-                                      fat: food?.fat ?? 0,
-                                      sodium: food?.sodium ?? 0,
-                                      potassium: food?.potassium ?? 0,
-                                      phosphorus: food?.phosphorus ?? 0,
-                                      source: food?.source ?? 'manual_entry',
-                                      needsManualReview:
-                                          food?.needsManualReview ?? false,
-                                      raw: food?.raw,
-                                    );
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: isFormValid && !isSavingDialogFood
+                                  ? () async {
+                                      final foodToSave = FoodItem(
+                                        foodId: food?.foodId,
+                                        emoji: emoji,
+                                        name: nameController.text.trim(),
+                                        portion: portionController.text.trim(),
+                                        calories: food?.calories ?? 0,
+                                        time: DateFormat(
+                                          'h:mm a',
+                                        ).format(DateTime.now()),
+                                        protein: food?.protein ?? 0,
+                                        carbohydrate: food?.carbohydrate ?? 0,
+                                        fat: food?.fat ?? 0,
+                                        sodium: food?.sodium ?? 0,
+                                        potassium: food?.potassium ?? 0,
+                                        phosphorus: food?.phosphorus ?? 0,
+                                        source: food?.source ?? 'manual_entry',
+                                        needsManualReview:
+                                            food?.needsManualReview ?? false,
+                                        raw: food?.raw,
+                                      );
 
-                                    try {
-                                      setStateDialog(() {
-                                        isSavingDialogFood = true;
-                                      });
-                                      if (food?.id == null) {
-                                        await _saveFoodItem(foodToSave);
-                                      } else {
-                                        await _updateFoodItem(food!, foodToSave);
-                                      }
-                                      if (context.mounted) {
-                                        suggestionDebounce?.cancel();
-                                        Navigator.pop(context);
-                                      }
-                                    } catch (e) {
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              'Unable to save food: $e',
-                                            ),
-                                          ),
-                                        );
-                                      }
-                                    } finally {
-                                      if (context.mounted) {
+                                      try {
                                         setStateDialog(() {
-                                          isSavingDialogFood = false;
+                                          isSavingDialogFood = true;
                                         });
+                                        if (food?.id == null) {
+                                          await _saveFoodItem(foodToSave);
+                                        } else {
+                                          await _updateFoodItem(
+                                            food!,
+                                            foodToSave,
+                                          );
+                                        }
+                                        if (context.mounted) {
+                                          suggestionDebounce?.cancel();
+                                          Navigator.pop(context);
+                                        }
+                                      } catch (e) {
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                'Unable to save food: $e',
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      } finally {
+                                        if (context.mounted) {
+                                          setStateDialog(() {
+                                            isSavingDialogFood = false;
+                                          });
+                                        }
                                       }
                                     }
-                                  }
-                                : null,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF00C874),
-                              disabledBackgroundColor: Colors.grey.shade300,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
+                                  : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF00C874),
+                                disabledBackgroundColor: Colors.grey.shade300,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                elevation: 0,
                               ),
-                              elevation: 0,
+                              child: isSavingDialogFood
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : Text(
+                                      food?.id == null ? 'Add Food' : 'Update',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                             ),
-                            child: isSavingDialogFood
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : Text(
-                                    food?.id == null ? 'Add Food' : 'Update',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -2017,6 +2157,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
                                       }
                                       final response = isEditing
                                           ? await ApiService.updateFoodLog(
+                                              profileUserId:
+                                                  widget.profileUserId,
                                               foodLogId: existingLog.id!,
                                               mealType: _selectedMealType,
                                               date: _selectedDate,
@@ -2085,14 +2227,17 @@ class _FoodLogPageState extends State<FoodLogPage> {
                                               foods[index] = savedFood;
                                             }
                                           } else {
-                                            _loggedMeals[_selectedMealType]
-                                                ?.add(savedFood);
+                                            _loggedMeals
+                                                .putIfAbsent(
+                                                  _selectedMealType,
+                                                  () => [],
+                                                )
+                                                .add(savedFood);
                                           }
                                         });
                                         await _loadGamificationSummary(
                                           showAchievementPopup: !isEditing,
                                         );
-                                        await _refreshReminderNotifications();
                                       }
                                       if (dialogContext.mounted) {
                                         Navigator.pop(dialogContext);
@@ -2154,6 +2299,25 @@ class _FoodLogPageState extends State<FoodLogPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_resolvedCaregiverNoChildEmptyState) {
+      return _buildCaregiverNoChildScaffold(
+        title: 'Food Log',
+        message:
+            'Add or link a child profile from the dashboard before viewing meal logs.',
+      );
+    }
+    if (_isLoadingLogs) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        body: const SafeArea(
+          child: Center(
+            child: CircularProgressIndicator(color: Color(0xFF00C874)),
+          ),
+        ),
+        bottomNavigationBar: _buildBottomNavigationBar(),
+      );
+    }
+
     final filteredQuickAdds = _allQuickAdds
         .where((item) => item['name']!.toLowerCase().contains(_searchQuery))
         .toList();
@@ -2549,13 +2713,25 @@ class _FoodLogPageState extends State<FoodLogPage> {
             } else if (index == 2) {
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) => const AnalyticsPage()),
+                MaterialPageRoute(
+                  builder: (context) =>
+                      AnalyticsPage(
+                        profileUserId: widget.profileUserId,
+                        caregiverNoChildEmptyState:
+                            _resolvedCaregiverNoChildEmptyState,
+                      ),
+                ),
               );
             } else if (index == 3) {
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => const HealthMetricsPage(),
+                  builder: (context) =>
+                      HealthMetricsPage(
+                        profileUserId: widget.profileUserId,
+                        caregiverNoChildEmptyState:
+                            _resolvedCaregiverNoChildEmptyState,
+                      ),
                 ),
               );
             } else if (index == 4) {
@@ -2604,6 +2780,141 @@ class _FoodLogPageState extends State<FoodLogPage> {
         ),
       ),
     );
+  }
+
+  Widget _buildCaregiverNoChildScaffold({
+    required String title,
+    required String message,
+  }) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Color(0xFF37474F),
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                message,
+                style: const TextStyle(
+                  color: Color(0xFF607D8B),
+                  fontSize: 15,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      bottomNavigationBar: _buildBottomNavigationBar(),
+    );
+  }
+
+  Widget _buildBottomNavigationBar() {
+    return Container(
+      decoration: BoxDecoration(
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, -5),
+          ),
+        ],
+      ),
+      child: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (index) {
+          if (index == 0) {
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (context) => const DashboardPage()),
+              (route) => false,
+            );
+          } else if (index == 2) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => AnalyticsPage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
+            );
+          } else if (index == 3) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => HealthMetricsPage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
+            );
+          } else if (index == 4) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const ProfilePage()),
+            );
+          } else {
+            setState(() {
+              _currentIndex = index;
+            });
+          }
+        },
+        type: BottomNavigationBarType.fixed,
+        backgroundColor: Colors.white,
+        selectedItemColor: const Color(0xFF00C874),
+        unselectedItemColor: const Color(0xFFB0BEC5),
+        selectedFontSize: 11,
+        unselectedFontSize: 11,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home_outlined),
+            activeIcon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.restaurant_menu),
+            label: 'Food',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.bar_chart),
+            label: 'Analytics',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.favorite_border),
+            label: 'Health',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            label: 'Profile',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _shouldShowCaregiverEmptyState() async {
+    final response = await ApiService.getDashboardSummary();
+    final viewer = response['viewer'];
+    final role = viewer is Map
+        ? (viewer['role'] ?? viewer['userRole'] ?? '').toString().toLowerCase()
+        : '';
+    if (role != 'caregiver' && role != 'parent_caregiver') return false;
+    final state = response['caregiverDashboardState'];
+    final children = state is Map ? state['linkedChildren'] : null;
+    return children is! List || children.isEmpty;
   }
 
   // --- UI Helpers ---
@@ -2763,13 +3074,12 @@ class _FoodLogPageState extends State<FoodLogPage> {
           ? FoodItem.fromLog(Map<String, dynamic>.from(log))
           : pendingFood;
       setState(() {
-        _loggedMeals[_selectedMealType]?.add(savedFood);
+        _loggedMeals.putIfAbsent(_selectedMealType, () => []).add(savedFood);
         _imageReviewFoodDetails = null;
         _imageReviewSelectedServing = null;
         _imageReviewQuantityController.text = '1';
       });
       await _loadGamificationSummary(showAchievementPopup: true);
-      await _refreshReminderNotifications();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

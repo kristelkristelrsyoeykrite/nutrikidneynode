@@ -6,6 +6,7 @@ import '../../services/notification_service.dart';
 
 class NotificationSettingsPage extends StatefulWidget {
   final String? profileUserId;
+  final String? reminderSettingsProfileUserId;
   final bool canManageReminderSettings;
   final String reminderSettingsLockReason;
   final bool initialMedicationReminders;
@@ -19,6 +20,7 @@ class NotificationSettingsPage extends StatefulWidget {
   const NotificationSettingsPage({
     super.key,
     required this.profileUserId,
+    this.reminderSettingsProfileUserId,
     required this.canManageReminderSettings,
     required this.reminderSettingsLockReason,
     required this.initialMedicationReminders,
@@ -149,13 +151,19 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
 
   Future<void> _syncVisibleReminderSettings() async {
     var medications = widget.medications;
+    Map<String, dynamic>? responseUser;
     Map<String, dynamic>? intakeData;
     Map<String, dynamic>? gamification;
 
     try {
-      final response = await ApiService.getDashboardSummary();
+      final response = await ApiService.getDashboardSummary(
+        profileUserId: widget.profileUserId,
+      );
       if (response['success'] == true) {
         final dashboardMedications = response['medications'];
+        final dashboardUser = response['user'];
+        responseUser =
+            dashboardUser is Map ? Map<String, dynamic>.from(dashboardUser) : null;
         if (_medicationReminders && dashboardMedications is List) {
           medications = dashboardMedications
               .whereType<Map>()
@@ -177,6 +185,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
 
     return NotificationService.syncReminderNotifications(
       user: {
+        if (responseUser != null) ...responseUser,
         'reminderSettings': {
           'medicationReminders': _medicationReminders,
           'hydrationAlerts': _hydrationAlerts,
@@ -221,10 +230,9 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
         snackReminder: snackReminder,
         dinnerReminder: dinnerReminder,
       );
-      await _syncVisibleReminderSettings();
 
       final response = await ApiService.updateReminderSettings(
-        profileUserId: widget.profileUserId,
+        profileUserId: widget.reminderSettingsProfileUserId,
         medicationReminders: medicationReminders,
         hydrationAlerts: hydrationAlerts,
         breakfastReminder: breakfastReminder,
@@ -246,6 +254,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
           Map<String, dynamic>.from(savedSettings),
         );
       }
+      NotificationService.refreshReminderNotificationsFromDashboard();
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

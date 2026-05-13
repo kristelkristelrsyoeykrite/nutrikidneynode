@@ -11,7 +11,6 @@ import 'dashboard.dart';
 import 'health_metrics.dart';
 import 'profile.dart'; // Ensure Profile is imported
 import '../services/api_service.dart';
-import '../services/notification_service.dart';
 
 part 'food_log/food_item.dart';
 part 'food_log/food_log_page.dart';

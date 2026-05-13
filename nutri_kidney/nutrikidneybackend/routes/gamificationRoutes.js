@@ -9,13 +9,17 @@ const router = express.Router();
 
 router.post("/summary", async (req, res) => {
   try {
-    const { userId, date } = req.body;
+    const { userId, profileUserId, date } = req.body;
     if (!userId) {
       return res.status(400).json({ success: false, error: "userId is required" });
     }
 
     const today = date || new Date().toISOString().slice(0, 10);
-    const gamification = await getGamificationSummary({ db, userId, date: today });
+    const gamification = await getGamificationSummary({
+      db,
+      userId: profileUserId || userId,
+      date: today,
+    });
     return res.status(200).json({ success: true, gamification });
   } catch (error) {
     console.error("GAMIFICATION_SUMMARY ERROR:", error.message);
@@ -29,6 +33,7 @@ router.post("/summary", async (req, res) => {
 router.post("/leaderboard", async (req, res) => {
   try {
     const leaderboard = await getLeaderboard({
+      admin,
       db,
       limit: Number(req.body.limit) || 10,
     });

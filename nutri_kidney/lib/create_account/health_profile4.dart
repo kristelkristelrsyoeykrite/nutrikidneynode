@@ -573,7 +573,7 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      resizeToAvoidBottomInset: false,
+      resizeToAvoidBottomInset: true,
       body: SizedBox.expand(
         child: Stack(
           children: [
@@ -591,7 +591,14 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
             // --- Foreground Content ---
             SafeArea(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: EdgeInsets.fromLTRB(
+                  24,
+                  0,
+                  24,
+                  MediaQuery.of(context).viewInsets.bottom + 100,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -703,8 +710,7 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                       physics: const NeverScrollableScrollPhysics(),
                       crossAxisSpacing: 16,
                       mainAxisSpacing: 16,
-                      childAspectRatio:
-                          2.15, // Keeps label + input from clipping.
+                      childAspectRatio: 1.55,
                       children: [
                         _buildTextField(
                           label: "Serum Creatinine (mg/dL)",

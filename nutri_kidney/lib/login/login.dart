@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../create_account/profile_setup_intro.dart';
@@ -6,6 +8,7 @@ import '../create_account/register.dart';
 import '../main/dashboard.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/notification_service.dart';
 import '../services/push_notification_service.dart';
 
 class LoginPage extends StatefulWidget {
@@ -156,6 +159,7 @@ Future<void> _loadRememberedLoginState() async {
       }
 
       ApiService.setUserId(userCredential.user!.uid);
+      ApiService.clearSessionCache();
 
       if (profileStatus['needsProfileSetup'] == true) {
         setState(() => _isLoading = false);
@@ -190,6 +194,8 @@ Future<void> _loadRememberedLoginState() async {
         contact: result['email'] as String?,
       );
       await PushNotificationService.syncTokenIfPossible();
+      await NotificationService.ensureScheduledFromCache();
+      unawaited(NotificationService.syncFromBackendAndRescheduleIfChanged());
 
       if (mounted) {
         Navigator.pushReplacement(
@@ -242,6 +248,7 @@ Future<void> _loadRememberedLoginState() async {
 
       // Store userId in ApiService
       ApiService.setUserId(uid);
+      ApiService.clearSessionCache();
 
       if (loginResponse['needsProfileSetup'] == true) {
         await _restartProfileSetup(
@@ -273,6 +280,8 @@ Future<void> _loadRememberedLoginState() async {
         contact: enteredEmail,
       );
       await PushNotificationService.syncTokenIfPossible();
+      await NotificationService.ensureScheduledFromCache();
+      unawaited(NotificationService.syncFromBackendAndRescheduleIfChanged());
 
       if (mounted) {
         Navigator.pushReplacement(

@@ -5,9 +5,8 @@ import 'package:nutri_kidney/services/api_service.dart';
 import 'package:nutri_kidney/services/auth_service.dart';
 import 'package:nutri_kidney/utils/app_logger.dart';
 import 'package:nutri_kidney/models/user_status.dart';
-import 'health_profile1.dart';
 import 'account_success_screen.dart';
-import 'caregiver_child_age_screen.dart';
+import 'profile_setup_intro.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -21,12 +20,10 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _isPasswordVisible = false;
   bool _isConfirmPasswordVisible = false;
 
-  // Privacy agreement state
-  bool _hasAgreedToPrivacy = false;
-  late TapGestureRecognizer _privacyTapRecognizer;
-
   // Role selection (NEW)
   String? _selectedRole;
+  bool _legacyPrivacyDialogAccepted = false;
+  TapGestureRecognizer? _privacyTapRecognizer;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
@@ -52,7 +49,6 @@ class _RegisterPageState extends State<RegisterPage> {
   @override
   void initState() {
     super.initState();
-    _privacyTapRecognizer = TapGestureRecognizer()..onTap = _showPrivacyDialog;
 
     // If signup data was prefilled (e.g., from Google), populate the fields
     final prefill = ApiService.signupData;
@@ -86,8 +82,13 @@ class _RegisterPageState extends State<RegisterPage> {
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
-    _privacyTapRecognizer.dispose();
+    _privacyTapRecognizer?.dispose();
     super.dispose();
+  }
+
+  TapGestureRecognizer get _privacyRecognizer {
+    return _privacyTapRecognizer ??= TapGestureRecognizer()
+      ..onTap = _showPrivacyInfoDialog;
   }
 
   // --- NEW: Validation Helper Methods ---
@@ -119,8 +120,7 @@ class _RegisterPageState extends State<RegisterPage> {
         _isEmailFormat(email) &&
         _isPasswordValid(password) &&
         password == confirmPassword &&
-        _normalizedRole(_selectedRole) != null &&
-        _hasAgreedToPrivacy;
+        _normalizedRole(_selectedRole) != null;
   }
 
   @override
@@ -401,30 +401,27 @@ class _RegisterPageState extends State<RegisterPage> {
 
                     const SizedBox(height: 40),
 
-                    // Privacy Disclaimer
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: Text.rich(
                         TextSpan(
-                          text:
-                              'By signing in, you agree to our Terms of Service and Privacy Policy\n',
+                          text: 'By creating an account, you agree to our '
+                              'Terms of Service and acknowledge our ',
                           style: const TextStyle(
                             fontSize: 10,
                             color: Colors.black54,
+                            height: 1.4,
                           ),
                           children: [
-                            const TextSpan(text: 'Click '),
                             TextSpan(
-                              text: 'here',
+                              text: 'Privacy Policy',
                               style: const TextStyle(
                                 color: Color.fromARGB(255, 34, 162, 160),
                                 fontWeight: FontWeight.bold,
                               ),
-                              recognizer: _privacyTapRecognizer,
+                              recognizer: _privacyRecognizer,
                             ),
-                            const TextSpan(
-                              text: ' to know more on how we use your data.',
-                            ),
+                            const TextSpan(text: '.'),
                           ],
                         ),
                         textAlign: TextAlign.center,
@@ -463,6 +460,7 @@ class _RegisterPageState extends State<RegisterPage> {
         "password": password,
         "phoneNumber": null,
         "userRole": _normalizedRole(_selectedRole),
+        "privacyConsentAccepted": false,
       };
       ApiService.setSignupData(signupPayload);
 
@@ -479,6 +477,7 @@ class _RegisterPageState extends State<RegisterPage> {
         phoneNumber: null,
         password: password,
         userRole: _normalizedRole(_selectedRole),
+        privacyConsentAccepted: false,
       );
 
       if (createResponse['success'] != true) {
@@ -587,6 +586,23 @@ class _RegisterPageState extends State<RegisterPage> {
         );
       }
 
+      var privacyConsentAccepted = false;
+      try {
+        final profileStatus = await ApiService.getProfileStatus(uid: userId);
+        final profile = profileStatus['profile'];
+        if (profile is Map) {
+          privacyConsentAccepted =
+              profile['privacyConsentAccepted'] == true ||
+              profile['dataPrivacyConsentAccepted'] == true ||
+              profile['consentAccepted'] == true;
+        }
+      } catch (e) {
+        AppLogger.warning(
+          'Unable to check privacy consent status after verification: $e',
+          tag: LogTag.signup,
+        );
+      }
+
       // Step 4: Navigate to Account Success Screen
       if (mounted) {
         AppLogger.success(
@@ -596,9 +612,11 @@ class _RegisterPageState extends State<RegisterPage> {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (context) => _normalizedRole(_selectedRole) == "caregiver"
-                ? CaregiverChildAgeScreen(userName: fullName)
-                : AccountSuccessScreen(userName: fullName),
+            builder: (context) => AccountSuccessScreen(
+              userName: fullName,
+              userRole: _normalizedRole(_selectedRole),
+              privacyConsentAccepted: privacyConsentAccepted,
+            ),
           ),
         );
       }
@@ -843,16 +861,10 @@ Future<void> _signupUser() async {
     return;
   }
 
-  // Validation 5: Check if privacy agreed
+  // Validation 5: Check role
   if (_normalizedRole(_selectedRole) == null) {
     AppLogger.warning('Signup rejected: Role not selected', tag: LogTag.signup);
     _showErrorDialog("Please select your role");
-    return;
-  }
-
-  if (!_hasAgreedToPrivacy) {
-    AppLogger.warning('Signup rejected: Privacy not agreed', tag: LogTag.signup);
-    _showErrorDialog("Please agree to the privacy policy");
     return;
   }
 
@@ -916,6 +928,78 @@ Future<void> _signupUser() async {
     );
   }
 
+  void _showPrivacyInfoDialog() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          insetPadding: const EdgeInsets.all(20),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Privacy Policy',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF00B074),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'NutriKidney keeps your information safe and private. Basic account details are used to create and secure your account.',
+                    style: TextStyle(fontSize: 14, color: Colors.black87),
+                  ),
+                  const SizedBox(height: 8),
+                  _buildBulletPoint('Full name and email address'),
+                  _buildBulletPoint('Selected account role'),
+                  _buildBulletPoint('Account verification status'),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Before health profile setup, you will review and explicitly consent to the collection of sensitive health information. Your data is stored securely and used only for NutriKidney care and monitoring features.',
+                    style: TextStyle(fontSize: 14, color: Colors.black87),
+                  ),
+                  const SizedBox(height: 24),
+                  Center(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF2ECA7F),
+                        minimumSize: const Size(120, 45),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      child: const Text(
+                        'Close',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   // --- Privacy Dialog ---
   void _showPrivacyDialog() {
     showDialog(
@@ -972,11 +1056,12 @@ Future<void> _signupUser() async {
                             height: 24,
                             width: 24,
                             child: Checkbox(
-                              value: _hasAgreedToPrivacy,
+                              value: _legacyPrivacyDialogAccepted,
                               activeColor: const Color(0xFF2ECA7F),
                               onChanged: (bool? value) {
                                 setStateDialog(() {
-                                  _hasAgreedToPrivacy = value ?? false;
+                                  _legacyPrivacyDialogAccepted =
+                                      value ?? false;
                                 });
                                 setState(() {});
                               },

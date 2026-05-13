@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import 'api_cache.dart';
+
 class ApiService {
  static const String baseUrl = "http://127.0.0.1:3000";
 
@@ -10,6 +12,39 @@ class ApiService {
   static const Map<String, String> _jsonHeaders = {
     "Content-Type": "application/json",
   };
+
+  static String _cacheKey(List<Object?> parts) => ApiCache.key(parts);
+
+  static String _withTryAgain(Object? message) {
+    final text = message?.toString().trim();
+    final base = text == null || text.isEmpty ? "Request failed." : text;
+    return base.toLowerCase().contains("try again")
+        ? base
+        : "$base Please try again.";
+  }
+
+  static String _readableError(Object error) {
+    return error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '').trim();
+  }
+
+
+  static void _invalidateCurrentUserCache(Iterable<String> sections) {
+    final currentUserId = _userId;
+    if (currentUserId == null) return;
+    ApiCache.invalidatePrefixes(
+      sections.map((section) => _cacheKey(["user", currentUserId, section])),
+    );
+  }
+
+  static Map<String, dynamic> _invalidateOnSuccess(
+    Map<String, dynamic> response,
+    Iterable<String> sections,
+  ) {
+    if (response["success"] != false) {
+      _invalidateCurrentUserCache(sections);
+    }
+    return response;
+  }
 
   static String? _userId;
   static String? get userId => _userId;
@@ -20,14 +55,28 @@ class ApiService {
   static Map<String, dynamic> step4Data = {};
   static Map<String, dynamic> signupData = {};
   static String? userRole;
+  static String? activeChildProfileId;
+  static String? pendingCaregiverChildAgeGroup;
+  static String? selectedManagedChildProfileId;
 
   static void setUserId(String userId) {
+    if (_userId != userId) {
+      ApiCache.clear();
+      selectedManagedChildProfileId = null;
+    }
     _userId = userId;
     print("DEBUG: UserId stored: $_userId");
   }
 
+  static void clearSessionCache() {
+    ApiCache.clear();
+    print("DEBUG: Session cache cleared");
+  }
+
   static void clearUserId() {
     _userId = null;
+    selectedManagedChildProfileId = null;
+    ApiCache.clear();
     print("DEBUG: UserId cleared");
   }
 
@@ -36,8 +85,17 @@ class ApiService {
     print("DEBUG: Signup data stored: $signupData");
   }
 
+  static String? normalizeUserRole(String? role) {
+    final normalized = role?.trim().toLowerCase();
+    if (normalized == null || normalized.isEmpty) return null;
+    if (normalized == "parent_caregiver") return "caregiver";
+    if (normalized.contains("adolescent")) return "adolescent";
+    if (normalized.contains("caregiver")) return "caregiver";
+    return normalized;
+  }
+
   static void setUserRole(String? role) {
-    userRole = role;
+    userRole = normalizeUserRole(role);
     print("DEBUG: User role stored: $userRole");
   }
 
@@ -46,7 +104,19 @@ class ApiService {
     step2Data = {};
     step3Data = {};
     step4Data = {};
+    activeChildProfileId = null;
+    pendingCaregiverChildAgeGroup = null;
     print("DEBUG: Profile setup data cleared");
+  }
+
+  static void setSelectedManagedChildProfileId(String? profileUserId) {
+    selectedManagedChildProfileId =
+        profileUserId != null && profileUserId.isNotEmpty
+            ? profileUserId
+            : null;
+    print(
+      "DEBUG: Selected managed child profile id stored: $selectedManagedChildProfileId",
+    );
   }
 
   static Future<Map<String, dynamic>> _post(
@@ -113,7 +183,7 @@ class ApiService {
       throw Exception("UserId not set. Please complete signup first.");
     }
 
-    return _post(
+    final response = await _post(
       "/api/health/submit-all",
       body: {
         "userId": _userId,
@@ -122,56 +192,113 @@ class ApiService {
         "step3": step3Data,
         "step4": step4Data,
         "userRole": userRole,
+        if (pendingCaregiverChildAgeGroup != null)
+          "caregiverChildAgeGroup": pendingCaregiverChildAgeGroup,
+        if (activeChildProfileId != null)
+          "childProfileId": activeChildProfileId,
       },
     );
+    if (response["success"] == true) {
+      activeChildProfileId = null;
+      pendingCaregiverChildAgeGroup = null;
+    }
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+      "reminder-settings",
+    ]);
   }
 
-  static Future<Map<String, dynamic>> getDashboardSummary() async {
-    if (_userId == null) {
-      throw Exception("UserId not set. Please log in again.");
-    }
+  static Future<Map<String, dynamic>> getDashboardSummary({
+    String? profileUserId,
+    bool forceRefresh = false,
+  }) async {
+    final currentUserId = _requireCurrentUserId();
     final now = DateTime.now();
     final today =
         "${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-    return _post(
-      "/api/health/dashboard-summary",
-      body: {
-        "userId": _userId,
-        "date": today,
-      },
+    Future<Map<String, dynamic>> fetch() => _post(
+          "/api/health/dashboard-summary",
+          body: {
+            "userId": currentUserId,
+            "date": today,
+            if (profileUserId != null) "profileUserId": profileUserId,
+          },
+        );
+
+    final key = _cacheKey([
+        "user",
+        currentUserId,
+        "dashboard-summary",
+        profileUserId ?? "active",
+        today,
+      ]);
+    if (forceRefresh) ApiCache.invalidate(key);
+
+    return ApiCache.getOrFetch(
+      key,
+      fetch,
+      ttl: const Duration(minutes: 1),
     );
   }
 
-  static Future<Map<String, dynamic>> getHealthSummary() async {
-    if (_userId == null) {
-      throw Exception("UserId not set. Please log in again.");
-    }
-    return _post(
-      "/api/health/health-summary",
-      body: {
-        "userId": _userId,
-      },
+  static Future<Map<String, dynamic>> getHealthSummary({
+    String? profileUserId,
+  }) async {
+    final currentUserId = _requireCurrentUserId();
+    Future<Map<String, dynamic>> fetch() => _post(
+          "/api/health/health-summary",
+          body: {
+            "userId": currentUserId,
+            if (profileUserId != null) "profileUserId": profileUserId,
+          },
+        );
+
+    return ApiCache.getOrFetch(
+      _cacheKey([
+        "user",
+        currentUserId,
+        "health-summary",
+        profileUserId ?? "active",
+      ]),
+      fetch,
+      ttl: const Duration(minutes: 3),
     );
   }
 
   static Future<Map<String, dynamic>> getAnalyticsSummary({
     required String range,
     String? endDate,
+    String? profileUserId,
   }) async {
-    if (_userId == null) {
-      throw Exception("UserId not set. Please log in again.");
-    }
-    return _post(
-      "/api/health/analytics-summary",
-      body: {
-        "userId": _userId,
-        "range": range,
-        "endDate": endDate,
-      },
+    final currentUserId = _requireCurrentUserId();
+    Future<Map<String, dynamic>> fetch() => _post(
+          "/api/health/analytics-summary",
+          body: {
+            "userId": currentUserId,
+            "range": range,
+            "endDate": endDate,
+            if (profileUserId != null) "profileUserId": profileUserId,
+          },
+        );
+
+    return ApiCache.getOrFetch(
+      _cacheKey([
+        "user",
+        currentUserId,
+        "analytics-summary",
+        profileUserId ?? "active",
+        range,
+        endDate,
+      ]),
+      fetch,
+      ttl: const Duration(minutes: 2),
     );
   }
 
   static Future<Map<String, dynamic>> saveMeasurement({
+    String? profileUserId,
     required String metricType,
     required String value,
     String? date,
@@ -181,19 +308,26 @@ class ApiService {
       throw Exception("UserId not set. Please log in again.");
     }
 
-    return _post(
+    final response = await _post(
       "/api/health/save-measurement",
       body: {
         "userId": _userId,
+        if (profileUserId != null) "profileUserId": profileUserId,
         "metricType": metricType,
         "value": value,
         "date": date,
         "recalculateNutritionTargets": recalculateNutritionTargets,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> saveLabResult({
+    String? profileUserId,
     required String metricType,
     required String value,
     required String resultDate,
@@ -202,16 +336,46 @@ class ApiService {
     if (_userId == null) {
       throw Exception("UserId not set. Please log in again.");
     }
-    return _post(
+    final response = await _post(
       "/api/health/save-lab-result",
       body: {
         "userId": _userId,
+        if (profileUserId != null) "profileUserId": profileUserId,
         "labResultId": labResultId,
         "metricType": metricType,
         "value": value,
         "resultDate": resultDate,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
+  }
+
+  static Future<Map<String, dynamic>> deleteLabResult({
+    String? profileUserId,
+    required String labResultId,
+    required String metricType,
+  }) async {
+    if (_userId == null) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+    final response = await _post(
+      "/api/health/delete-lab-result",
+      body: {
+        "userId": _userId,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        "labResultId": labResultId,
+        "metricType": metricType,
+      },
+    );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> updateProfile(
@@ -221,53 +385,168 @@ class ApiService {
       throw Exception("UserId not set. Please log in again.");
     }
     data['userId'] = _userId;
-    return _post("/api/health/update-profile", body: data);
+    final response = await _post("/api/health/update-profile", body: data);
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+      "reminder-settings",
+    ]);
   }
 
   static Future<Map<String, dynamic>> unlinkCaregiverChild({
     String? linkedChildUserId,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/user/unlink-caregiver-child",
       body: {
         "uid": currentUserId,
         "linkedChildUserId": linkedChildUserId,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "reminder-settings",
+    ]);
   }
 
-  static Future<Map<String, dynamic>> saveMedication(Map<String, dynamic> data) async {
+  static Future<Map<String, dynamic>> archiveDirectChildProfile({
+    String? childProfileId,
+  }) async {
+    final currentUserId = _requireCurrentUserId();
+    final response = await _post(
+      "/api/user/archive-direct-child-profile",
+      body: {
+        "uid": currentUserId,
+        if (childProfileId != null) "childProfileId": childProfileId,
+      },
+    );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "reminder-settings",
+    ]);
+  }
+
+  static Future<Map<String, dynamic>> saveMedication(
+    Map<String, dynamic> data, {
+    String? profileUserId,
+  }) async {
     if (_userId == null) {
       throw Exception("UserId not set. Please log in again.");
     }
     data['userId'] = _userId;
-    return _post("/api/health/save-medication", body: data);
+    if (profileUserId != null) {
+      data['profileUserId'] = profileUserId;
+      data['childProfileId'] ??= profileUserId;
+    }
+    final response = await _post("/api/health/save-medication", body: data);
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> updateMedication(
     String medicationId,
-    Map<String, dynamic> data,
-  ) async {
+    Map<String, dynamic> data, {
+    String? profileUserId,
+  }) async {
     if (_userId == null) {
       throw Exception("UserId not set. Please log in again.");
     }
     data['userId'] = _userId;
     data['medicationId'] = medicationId;
-    return _post("/api/health/update-medication", body: data);
+    if (profileUserId != null) {
+      data['profileUserId'] = profileUserId;
+      data['childProfileId'] ??= profileUserId;
+    }
+    final response = await _post("/api/health/update-medication", body: data);
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
   }
 
-  static Future<Map<String, dynamic>> deleteMedication(String medicationId) async {
+  static Future<Map<String, dynamic>> deleteMedication(
+    String medicationId, {
+    String? profileUserId,
+  }) async {
     if (_userId == null) {
       throw Exception("UserId not set. Please log in again.");
     }
-    return _post(
+    final response = await _post(
       "/api/health/delete-medication",
       body: {
         "userId": _userId,
         "medicationId": medicationId,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        if (profileUserId != null) "childProfileId": profileUserId,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
+  }
+
+  static Future<Map<String, dynamic>> markMedicationTaken(
+    String medicationId, {
+    String? time,
+    String? profileUserId,
+  }) async {
+    if (_userId == null) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    final response = await _post(
+      "/api/health/medications/mark-taken",
+      body: {
+        "userId": _userId,
+        "medicationId": medicationId,
+        if (time != null) "time": time,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        if (profileUserId != null) "childProfileId": profileUserId,
+      },
+    );
+
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
+  }
+
+  static Future<Map<String, dynamic>> markMedicationUntaken(
+    String medicationId, {
+    String? time,
+    String? profileUserId,
+  }) async {
+    if (_userId == null) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    final response = await _post(
+      "/api/health/medications/mark-untaken",
+      body: {
+        "userId": _userId,
+        "medicationId": medicationId,
+        if (time != null) "time": time,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        if (profileUserId != null) "childProfileId": profileUserId,
+      },
+    );
+
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> extractPrescription({
@@ -295,7 +574,11 @@ class ApiService {
       throw Exception("UserId not set. Please log in again.");
     }
     data['userId'] = _userId;
-    return _post("/api/health/medications/confirm", body: data);
+    final response = await _post("/api/health/medications/confirm", body: data);
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> signup(Map<String, dynamic> data) async {
@@ -364,6 +647,7 @@ class ApiService {
     String? phoneNumber,
     required String password,
     String? userRole,
+    bool privacyConsentAccepted = false,
   }) async {
     return _post(
       "/api/user/create",
@@ -373,6 +657,20 @@ class ApiService {
         "phoneNumber": phoneNumber,
         "password": password,
         "userRole": userRole,
+        "privacyConsentAccepted": privacyConsentAccepted,
+      },
+    );
+  }
+
+  static Future<Map<String, dynamic>> updatePrivacyConsent({
+    required bool accepted,
+  }) async {
+    final currentUserId = _requireCurrentUserId();
+    return _post(
+      "/api/user/privacy-consent",
+      body: {
+        "uid": currentUserId,
+        "accepted": accepted,
       },
     );
   }
@@ -475,11 +773,15 @@ class ApiService {
 
   static Future<Map<String, dynamic>> getSecuritySettings() async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
-      "/api/user/security-settings",
-      body: {
-        "uid": currentUserId,
-      },
+    return ApiCache.getOrFetch(
+      _cacheKey(["user", currentUserId, "security-settings"]),
+      () => _post(
+        "/api/user/security-settings",
+        body: {
+          "uid": currentUserId,
+        },
+      ),
+      ttl: const Duration(minutes: 5),
     );
   }
 
@@ -489,7 +791,7 @@ class ApiService {
     String? mfaCode,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/user/update-security-settings",
       body: {
         "uid": currentUserId,
@@ -498,32 +800,47 @@ class ApiService {
         if (mfaCode != null) "mfaCode": mfaCode,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "security-settings",
+      "dashboard-summary",
+      "health-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> startAuthenticatorMfaSetup({
     String? email,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/user/mfa/authenticator/setup/start",
       body: {
         "uid": currentUserId,
         "email": email,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "security-settings",
+      "dashboard-summary",
+      "health-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> verifyAuthenticatorMfaSetup({
     required String code,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/user/mfa/authenticator/setup/verify",
       body: {
         "uid": currentUserId,
         "code": code,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "security-settings",
+      "dashboard-summary",
+      "health-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> verifyAuthenticatorMfaCode({
@@ -539,26 +856,45 @@ class ApiService {
     );
   }
 
-  static Future<Map<String, dynamic>> getGamificationSummary() async {
+  static Future<Map<String, dynamic>> getGamificationSummary({
+    String? profileUserId,
+  }) async {
     final currentUserId = _requireCurrentUserId();
     final now = DateTime.now();
     final today =
         "${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-    return _post(
-      "/api/gamification/summary",
-      body: {
-        "userId": currentUserId,
-        "date": today,
-      },
+    Future<Map<String, dynamic>> fetch() => _post(
+          "/api/gamification/summary",
+          body: {
+            "userId": currentUserId,
+            if (profileUserId != null) "profileUserId": profileUserId,
+            "date": today,
+          },
+        );
+
+    return ApiCache.getOrFetch(
+      _cacheKey([
+        "user",
+        currentUserId,
+        "gamification-summary",
+        profileUserId ?? "active",
+        today,
+      ]),
+      fetch,
+      ttl: const Duration(minutes: 1),
     );
   }
 
   static Future<Map<String, dynamic>> getGamificationLeaderboard({
     int limit = 10,
   }) async {
-    return _post(
-      "/api/gamification/leaderboard",
-      body: {"limit": limit},
+    return ApiCache.getOrFetch(
+      _cacheKey(["global", "gamification-leaderboard", limit]),
+      () => _post(
+        "/api/gamification/leaderboard",
+        body: {"limit": limit},
+      ),
+      ttl: const Duration(minutes: 1),
     );
   }
 
@@ -566,25 +902,34 @@ class ApiService {
     required bool showOnLeaderboard,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/gamification/leaderboard-visibility",
       body: {
         "userId": currentUserId,
         "showOnLeaderboard": showOnLeaderboard,
       },
     );
+    if (response["success"] != false) {
+      _invalidateCurrentUserCache(["gamification-summary"]);
+      ApiCache.invalidatePrefixes(["global|gamification-leaderboard"]);
+    }
+    return response;
   }
 
   static Future<Map<String, dynamic>> getReminderSettings({
     String? profileUserId,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
-      "/api/user/reminder-settings",
-      body: {
-        "uid": currentUserId,
-        "profileUserId": profileUserId,
-      },
+    return ApiCache.getOrFetch(
+      _cacheKey(["user", currentUserId, "reminder-settings", profileUserId]),
+      () => _post(
+        "/api/user/reminder-settings",
+        body: {
+          "uid": currentUserId,
+          "profileUserId": profileUserId,
+        },
+      ),
+      ttl: const Duration(minutes: 3),
     );
   }
 
@@ -598,7 +943,7 @@ class ApiService {
     required bool dinnerReminder,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/user/update-reminder-settings",
       body: {
         "uid": currentUserId,
@@ -613,40 +958,67 @@ class ApiService {
         },
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "reminder-settings",
+    ]);
   }
 
   static Future<Map<String, dynamic>> saveCaregiverChildAgeGroup({
     required String childAgeGroup,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/user/caregiver-child-age",
       body: {
         "uid": currentUserId,
         "childAgeGroup": childAgeGroup,
       },
     );
+    if (response["success"] != false) {
+      final childProfileId = response["childProfileId"]?.toString();
+      clearProfileSetupData();
+      pendingCaregiverChildAgeGroup = childAgeGroup;
+      if (childProfileId != null && childProfileId.isNotEmpty) {
+        activeChildProfileId = childProfileId;
+        print("DEBUG: Active child profile id stored: $activeChildProfileId");
+      }
+    }
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> generateCaregiverLinkCode() async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/user/generate-caregiver-link-code",
       body: {"uid": currentUserId},
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> linkCaregiverWithCode({
     required String linkingCode,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/user/link-caregiver-account",
       body: {
         "uid": currentUserId,
         "linkingCode": linkingCode,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "reminder-settings",
+    ]);
   }
 
   static Future<Map<String, dynamic>> registerDeviceToken({
@@ -698,15 +1070,22 @@ class ApiService {
     String query, {
     int page = 0,
   }) async {
-    final response = await _post(
-      "/api/food/search",
-      body: {
-        "query": query,
-        "page": page,
-      },
-    );
+    final Map<String, dynamic> response;
+    try {
+      response = await _post(
+        "/api/food/search",
+        body: {
+          "query": query,
+          "page": page,
+        },
+      );
+    } catch (error) {
+      throw Exception(_withTryAgain(_readableError(error)));
+    }
     if (response["success"] == false) {
-      throw Exception(response["error"] ?? "Food search failed.");
+      throw Exception(
+        _withTryAgain(response["error"] ?? "Food search failed."),
+      );
     }
 
     final rawFoods = response["foods"] ?? response["choices"];
@@ -741,14 +1120,21 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> getFoodDetails(String foodId) async {
-    final response = await _post(
-      "/api/food/details",
-      body: {
-        "foodId": foodId,
-      },
-    );
+    final Map<String, dynamic> response;
+    try {
+      response = await _post(
+        "/api/food/details",
+        body: {
+          "foodId": foodId,
+        },
+      );
+    } catch (error) {
+      throw Exception(_withTryAgain(_readableError(error)));
+    }
     if (response["success"] == false) {
-      throw Exception(response["error"] ?? "Food details failed.");
+      throw Exception(
+        _withTryAgain(response["error"] ?? "Food details failed."),
+      );
     }
 
     final food = response["food"] is Map
@@ -801,25 +1187,48 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> getFoodLogs({
+    String? profileUserId,
     String? date,
     String? dateFrom,
     String? dateTo,
     int limit = 100,
+    bool forceRefresh = false,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
-      "/api/food/logs/list",
-      body: {
-        "userId": currentUserId,
-        "date": date,
-        "dateFrom": dateFrom,
-        "dateTo": dateTo,
-        "limit": limit,
-      },
+    Future<Map<String, dynamic>> fetch() => _post(
+          "/api/food/logs/list",
+          body: {
+            "userId": currentUserId,
+            if (profileUserId != null) "profileUserId": profileUserId,
+            if (profileUserId != null) "childProfileId": profileUserId,
+            "date": date,
+            "dateFrom": dateFrom,
+            "dateTo": dateTo,
+            "limit": limit,
+          },
+        );
+
+    final key = _cacheKey([
+        "user",
+        currentUserId,
+        "food-logs",
+        profileUserId ?? "active",
+        date,
+        dateFrom,
+        dateTo,
+        limit,
+      ]);
+    if (forceRefresh) ApiCache.invalidate(key);
+
+    return ApiCache.getOrFetch(
+      key,
+      fetch,
+      ttl: const Duration(minutes: 1),
     );
   }
 
   static Future<Map<String, dynamic>> addFoodLog({
+    String? profileUserId,
     required String mealType,
     required String name,
     required String portion,
@@ -841,10 +1250,12 @@ class ApiService {
     bool userConfirmedAllergyWarning = false,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/food/logs/add",
       body: {
         "userId": currentUserId,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        if (profileUserId != null) "childProfileId": profileUserId,
         "mealType": mealType,
         "date": date,
         "loggedAt": DateTime.now().toIso8601String(),
@@ -867,20 +1278,40 @@ class ApiService {
         "userConfirmedAllergyWarning": userConfirmedAllergyWarning,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+      "food-logs",
+      "gamification-summary",
+    ]);
   }
 
-  static Future<Map<String, dynamic>> deleteFoodLog(String foodLogId) async {
+  static Future<Map<String, dynamic>> deleteFoodLog(
+    String foodLogId, {
+    String? profileUserId,
+  }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/food/logs/delete",
       body: {
         "userId": currentUserId,
         "foodLogId": foodLogId,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        if (profileUserId != null) "childProfileId": profileUserId,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+      "food-logs",
+      "gamification-summary",
+    ]);
   }
 
   static Future<Map<String, dynamic>> updateFoodLog({
+    String? profileUserId,
     required String foodLogId,
     required String mealType,
     required String name,
@@ -899,10 +1330,12 @@ class ApiService {
     double? waterMl,
   }) async {
     final currentUserId = _requireCurrentUserId();
-    return _post(
+    final response = await _post(
       "/api/food/logs/update",
       body: {
         "userId": currentUserId,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        if (profileUserId != null) "childProfileId": profileUserId,
         "foodLogId": foodLogId,
         "mealType": mealType,
         "date": date,
@@ -921,5 +1354,12 @@ class ApiService {
         "waterMl": waterMl,
       },
     );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+      "food-logs",
+      "gamification-summary",
+    ]);
   }
 }

@@ -91,6 +91,7 @@ class AuthService {
       }
 
       ApiService.setUserId(savedUserId);
+      ApiService.clearSessionCache();
       print('Remember Me session valid - auto-login as ${currentUser.email}');
       return true;
     } catch (e) {
@@ -171,6 +172,21 @@ class AuthService {
 
       final GoogleSignInAuthentication googleAuth =
           await googleUser.authentication;
+
+      final profileStatus = await ApiService.getProfileStatus(
+        email: googleUser.email,
+      );
+      if (profileStatus['success'] != true ||
+          profileStatus['exists'] != true ||
+          profileStatus['verified'] != true) {
+        await _googleSignIn.signOut();
+        return {
+          'success': false,
+          'error':
+              'No registered app account was found for this Google account. Please sign up first.',
+        };
+      }
+
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
@@ -185,6 +201,7 @@ class AuthService {
         'email': googleUser.email,
         'displayName': googleUser.displayName,
         'photoUrl': googleUser.photoUrl,
+        'profileStatus': profileStatus,
       };
     } on FirebaseAuthException catch (e) {
       return {'success': false, 'error': 'Firebase error: ${e.message}'};

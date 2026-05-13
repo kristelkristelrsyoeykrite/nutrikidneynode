@@ -682,7 +682,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   Future<void> _loadLatestProfileForEdit() async {
     try {
-      final response = await ApiService.getHealthSummary();
+      final response = await ApiService.getHealthSummary(
+        profileUserId: widget.profileOwnerId,
+      );
       if (!mounted) return;
 
       if (response["success"] == true) {

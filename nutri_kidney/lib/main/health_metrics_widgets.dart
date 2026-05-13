@@ -39,6 +39,8 @@ class HealthMetricsMedicationCard extends StatelessWidget {
     required this.status,
     required this.onTap,
     this.isPending = false,
+    this.isMissed = false,
+    this.note,
   });
 
   final String name;
@@ -46,7 +48,9 @@ class HealthMetricsMedicationCard extends StatelessWidget {
   final String time;
   final String status;
   final bool isPending;
+  final bool isMissed;
   final VoidCallback onTap;
+  final String? note;
 
   @override
   Widget build(BuildContext context) {
@@ -99,13 +103,23 @@ class HealthMetricsMedicationCard extends StatelessWidget {
                       fontSize: 12,
                     ),
                   ),
+                  if (note != null && note!.trim().isNotEmpty)
+                    Text(
+                      note!,
+                      style: const TextStyle(
+                        color: Color(0xFF90A4AE),
+                        fontSize: 12,
+                      ),
+                    ),
                 ],
               ),
             ),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
-                color: isPending
+                color: isMissed
+                    ? const Color(0xFFFFEBEE)
+                    : isPending
                     ? const Color(0xFFFFF3E0)
                     : const Color(0xFFE8F5E9),
                 borderRadius: BorderRadius.circular(8),
@@ -113,7 +127,11 @@ class HealthMetricsMedicationCard extends StatelessWidget {
               child: Text(
                 status,
                 style: TextStyle(
-                  color: isPending ? Colors.orange : Colors.green,
+                  color: isMissed
+                      ? const Color(0xFFD32F2F)
+                      : isPending
+                          ? Colors.orange
+                          : Colors.green,
                   fontSize: 11,
                   fontWeight: FontWeight.bold,
                 ),

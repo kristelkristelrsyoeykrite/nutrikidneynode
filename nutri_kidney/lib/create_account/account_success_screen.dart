@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:nutri_kidney/utils/app_logger.dart';
+import '../main/dashboard.dart';
 import 'profile_setup_intro.dart';
+import 'privacy_consent_screen.dart';
 
 /// Screen shown after successful account creation and verification
 class AccountSuccessScreen extends StatefulWidget {
   final String userName;
+  final String? userRole;
+  final bool privacyConsentAccepted;
 
   const AccountSuccessScreen({
     super.key,
     required this.userName,
+    this.userRole,
+    this.privacyConsentAccepted = false,
   });
 
   @override
@@ -37,13 +43,22 @@ class _AccountSuccessScreenState extends State<AccountSuccessScreen>
     // Auto-navigate after 3 seconds
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) {
-        AppLogger.info(
-          'Auto-navigating to profile setup intro',
-          tag: LogTag.onboarding,
-        );
+        final role = widget.userRole?.trim().toLowerCase();
+        final isCaregiver =
+            role == 'caregiver' || role == 'parent_caregiver';
+        AppLogger.info('Auto-navigating after account success', tag: LogTag.onboarding);
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
-            builder: (context) => const ProfileSetupIntroScreen(),
+            builder: (context) {
+              if (widget.privacyConsentAccepted) {
+                return isCaregiver
+                    ? const DashboardPage()
+                    : const ProfileSetupIntroScreen();
+              }
+              return PrivacyConsentScreen(
+                goToDashboardAfterAccept: isCaregiver,
+              );
+            },
           ),
         );
       }
@@ -131,7 +146,7 @@ class _AccountSuccessScreenState extends State<AccountSuccessScreen>
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Text(
-                      'Hello ${widget.userName}! Let\'s set up your profile.',
+                      'Hello ${widget.userName}! Let\'s continue.',
                       style: const TextStyle(
                         fontSize: 14,
                         color: Color(0xFF90A4AE),

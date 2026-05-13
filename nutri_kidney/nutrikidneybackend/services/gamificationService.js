@@ -1,3 +1,5 @@
+const { decryptHealthProfile } = require("../utils/encryption");
+
 const AWARDS = {
   seven_day_streak: {
     title: "7-Day Streak",
@@ -37,9 +39,44 @@ function addDays(dateString, days) {
   return date.toISOString().slice(0, 10);
 }
 
+function todayDateKey() {
+  const manilaOffsetMs = 8 * 60 * 60 * 1000;
+  return new Date(Date.now() + manilaOffsetMs).toISOString().slice(0, 10);
+}
+
 function numberOrZero(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function textValue(...values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function leaderboardDisplayName(user = {}) {
+  return (
+    textValue(
+      user.childFullName,
+      user.fullName,
+      user.displayName,
+      user.name,
+    ) || "NutriKidney user"
+  );
+}
+
+function leaderboardInitials(displayName) {
+  return (
+    String(displayName || "NK")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("") || "NK"
+  );
 }
 
 function normalizeMealType(value) {
@@ -128,11 +165,19 @@ async function getUserTargets(db, userId) {
 }
 
 async function buildDailyStatus({ db, userId, date }) {
-  const snapshot = await db
+  const userSnapshot = await db
     .collection("foodLogs")
     .where("userId", "==", userId)
     .where("date", "==", date)
     .get();
+  const childProfileSnapshot = await db
+    .collection("foodLogs")
+    .where("childProfileId", "==", userId)
+    .where("date", "==", date)
+    .get();
+  const logs = new Map();
+  userSnapshot.docs.forEach((doc) => logs.set(doc.id, doc));
+  childProfileSnapshot.docs.forEach((doc) => logs.set(doc.id, doc));
 
   const totals = {
     calories: 0,
@@ -151,7 +196,7 @@ async function buildDailyStatus({ db, userId, date }) {
   let waterMl = 0;
   let mealLogCount = 0;
 
-  snapshot.docs.forEach((doc) => {
+  logs.forEach((doc) => {
     const log = doc.data() || {};
     if (log.deletedAt) return;
     mealLogCount += 1;
@@ -216,11 +261,15 @@ async function countBackCompleteDays(db, userId, date) {
       .collection("dailyLogStatus")
       .doc(currentDate)
       .get();
-    if (!doc.exists || doc.data()?.isCompleteDay !== true) break;
+    const storedStatus = doc.exists ? doc.data() : null;
+    const dayStatus = storedStatus?.isCompleteDay === true
+      ? storedStatus
+      : await buildDailyStatus({ db, userId, date: currentDate });
+    if (dayStatus?.isCompleteDay !== true) break;
     count += 1;
     currentDate = addDays(currentDate, -1);
   }
-  return count >= 2 ? count : 0;
+  return count;
 }
 
 async function unlockAward({ admin, db, userId, awardId, unlockedAwards }) {
@@ -282,7 +331,7 @@ async function recomputeGamificationForDate({ admin, db, userId, date }) {
   const longestStreak = Math.max(numberOrZero(previous.longestStreak), currentStreak);
   const gamificationStatus = {
     currentStreak,
-    displayStreak: currentStreak >= 2 ? currentStreak : 0,
+    displayStreak: currentStreak,
     longestStreak,
     lastCompleteLogDate: status.isCompleteDay ? date : previous.lastCompleteLogDate || null,
     waterGoalMetCount,
@@ -310,17 +359,27 @@ async function getGamificationSummary({ db, userId, date }) {
   };
 }
 
-async function getLeaderboard({ db, limit = 10 }) {
+async function getLeaderboard({ admin, db, limit = 10 }) {
   const usersSnapshot = await db.collection("users").limit(500).get();
   const entries = [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayDateKey();
   const weekStart = addDays(today, -6);
 
   for (const userDoc of usersSnapshot.docs) {
-    const user = userDoc.data() || {};
+    const user = decryptHealthProfile(userDoc.data() || {});
     const statusDoc = await userDoc.ref.collection("gamification").doc("status").get();
-    const status = statusDoc.exists ? statusDoc.data() || {} : {};
-    if (status.leaderboardOptIn !== true) continue;
+    const previousStatus = statusDoc.exists ? statusDoc.data() || {} : {};
+    if (previousStatus.leaderboardOptIn !== true) continue;
+
+    const recomputed = admin
+      ? await recomputeGamificationForDate({
+          admin,
+          db,
+          userId: userDoc.id,
+          date: today,
+        })
+      : null;
+    const status = recomputed?.gamificationStatus || previousStatus;
 
     const dailySnapshot = await userDoc.ref.collection("dailyLogStatus").get();
     const weeklyPoints = dailySnapshot.docs
@@ -328,16 +387,11 @@ async function getLeaderboard({ db, limit = 10 }) {
       .filter((day) => day.date >= weekStart && day.date <= today)
       .reduce((sum, day) => sum + numberOrZero(day.points), 0);
 
+    const displayName = leaderboardDisplayName(user);
     entries.push({
       userId: userDoc.id,
-      displayName:
-        user.childFullName || user.fullName || user.displayName || user.name || "NutriKidney user",
-      avatarInitials: String(user.childFullName || user.fullName || "NK")
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((part) => part[0]?.toUpperCase())
-        .join("") || "NK",
+      displayName,
+      avatarInitials: leaderboardInitials(displayName),
       weeklyPoints,
       currentStreak: numberOrZero(status.displayStreak || status.currentStreak),
       badges: Array.isArray(status.unlockedAwards) ? status.unlockedAwards : [],

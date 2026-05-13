@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:nutri_kidney/main/medication_scan_flow.dart';
 import 'package:nutri_kidney/main/health_metrics_widgets.dart';
@@ -9,13 +11,24 @@ import 'analytics.dart';
 import 'profile.dart'; // Added Profile import
 
 class HealthMetricsPage extends StatefulWidget {
-  const HealthMetricsPage({super.key});
+  const HealthMetricsPage({
+    super.key,
+    this.profileUserId,
+    this.caregiverNoChildEmptyState = false,
+  });
+
+  final String? profileUserId;
+  final bool caregiverNoChildEmptyState;
 
   @override
   State<HealthMetricsPage> createState() => _HealthMetricsPageState();
 }
 
 class _HealthMetricsPageState extends State<HealthMetricsPage> {
+  static final Map<String, List<Map<String, dynamic>>> _medicationCache = {};
+  static final Map<String, List<Map<String, dynamic>>> _labResultCache = {};
+  static final Map<String, List<Map<String, dynamic>>> _labHistoryCache = {};
+
   int _currentIndex = 3;
 
   // ==========================================
@@ -55,6 +68,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
   bool _isScanningPrescription = false;
   bool _isLoadingHealth = true;
   String? _healthError;
+  bool _resolvedCaregiverNoChildEmptyState = false;
   /*
     {
       'title': 'Creatinine',
@@ -101,12 +115,77 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
   @override
   void initState() {
     super.initState();
-    _loadHealthSummary();
+    _resolvedCaregiverNoChildEmptyState = widget.caregiverNoChildEmptyState;
+    if (!widget.caregiverNoChildEmptyState) {
+      _loadCachedMedications();
+      _loadCachedLabResults();
+      _loadHealthSummary();
+    } else {
+      _isLoadingHealth = false;
+    }
+  }
+
+  String get _medicationCacheKey => widget.profileUserId ?? '_self';
+
+  void _loadCachedMedications() {
+    final cached = _medicationCache[_medicationCacheKey];
+    if (cached == null || cached.isEmpty) return;
+    _medications = cached
+        .map((medication) => Map<String, dynamic>.from(medication))
+        .toList();
+    _isLoadingHealth = false;
+  }
+
+  void _cacheMedications() {
+    _medicationCache[_medicationCacheKey] = _medications
+        .map((medication) => Map<String, dynamic>.from(medication))
+        .toList();
+  }
+
+  String get _labCacheKey => widget.profileUserId ?? '_self';
+
+  void _loadCachedLabResults() {
+    final cachedResults = _labResultCache[_labCacheKey];
+    final cachedHistory = _labHistoryCache[_labCacheKey];
+    if ((cachedResults == null || cachedResults.isEmpty) &&
+        (cachedHistory == null || cachedHistory.isEmpty)) {
+      return;
+    }
+    if (cachedResults != null) {
+      _labResults = cachedResults
+          .map((lab) => Map<String, dynamic>.from(lab))
+          .toList();
+    }
+    if (cachedHistory != null) {
+      _labHistory = cachedHistory
+          .map((lab) => Map<String, dynamic>.from(lab))
+          .toList();
+    }
+    _isLoadingHealth = false;
+  }
+
+  void _cacheLabResults() {
+    _labResultCache[_labCacheKey] = _labResults
+        .map((lab) => Map<String, dynamic>.from(lab))
+        .toList();
+    _labHistoryCache[_labCacheKey] = _labHistory
+        .map((lab) => Map<String, dynamic>.from(lab))
+        .toList();
   }
 
   Future<void> _loadHealthSummary() async {
     try {
-      final response = await ApiService.getHealthSummary();
+      if (await _shouldShowCaregiverEmptyState()) {
+        if (!mounted) return;
+        setState(() {
+          _resolvedCaregiverNoChildEmptyState = true;
+          _isLoadingHealth = false;
+        });
+        return;
+      }
+      final response = await ApiService.getHealthSummary(
+        profileUserId: widget.profileUserId,
+      );
 
       if (!mounted) return;
 
@@ -125,6 +204,8 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
             .expand((lab) => _buildLabCards(lab))
             .toList();
         _medications = medications.map(_buildMedicationCardData).toList();
+        _cacheMedications();
+        _cacheLabResults();
         _isLoadingHealth = false;
         _healthError = null;
       });
@@ -136,6 +217,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
         _medications = [];
         _labResults = [];
         _labHistory = [];
+        _cacheLabResults();
         _isLoadingHealth = false;
         _healthError = e.toString();
       });
@@ -233,6 +315,18 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
     return text.isEmpty ? 'No date' : text;
   }
 
+  String _formatTime12Hour(String time24h) {
+    final parts = time24h.split(':');
+    if (parts.length != 2) return time24h;
+    final hour = int.tryParse(parts[0]) ?? 0;
+    final minute = int.tryParse(parts[1]) ?? 0;
+
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+
+    return '$displayHour:${minute.toString().padLeft(2, '0')} $period';
+  }
+
   Map<String, String> _buildVitals(Map<String, dynamic> anthropometrics) {
     final vitals = _emptyVitals();
     final weight = anthropometrics['weight_kg'] ?? anthropometrics['weight'];
@@ -267,11 +361,38 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
   }
 
   Map<String, dynamic> _buildMedicationCardData(Map<String, dynamic> med) {
-    final status = _optionalText(med['status']).isEmpty
-        ? 'Pending'
-        : _optionalText(med['status']);
     final dosage = _optionalText(med['dose'] ?? med['dosage']);
     final frequency = _optionalText(med['frequency']);
+    final takenTimesToday = med['takenTimesToday'] is List
+        ? (med['takenTimesToday'] as List)
+            .map((t) => t.toString())
+            .where((t) => t.trim().isNotEmpty)
+            .toList()
+        : <String>[];
+    final nextDoseTime24h = _optionalText(med['nextDoseTime']);
+    final scheduleTimes = med['scheduled_times'] is List
+        ? (med['scheduled_times'] as List)
+            .map((t) => t.toString())
+            .where((t) => t.trim().isNotEmpty)
+            .toList()
+        : <String>[];
+
+    final missedCountToday = int.tryParse(med['missedCountToday']?.toString() ?? '') ?? 0;
+
+    final status = missedCountToday > 0
+        ? 'Missed'
+        : takenTimesToday.isNotEmpty
+            ? 'Taken'
+            : 'Pending';
+    final isPending = status.toLowerCase() == 'pending';
+    final isMissed = status.toLowerCase() == 'missed';
+    final shouldShowUpcomingNote =
+        status == 'Taken' &&
+        scheduleTimes.length > 1 &&
+        nextDoseTime24h.isNotEmpty;
+    final upcomingNote = shouldShowUpcomingNote
+        ? 'Upcoming ${_formatTime12Hour(nextDoseTime24h)}'
+        : null;
 
     return {
       'id': med['id'],
@@ -287,12 +408,17 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       'frequency': frequency,
       'time': _displayValue(med['schedule'] ?? med['time'] ?? med['display_times']),
       'status': status,
-      'isPending': status.toLowerCase() == 'pending',
+      'isPending': isPending,
+      'isMissed': isMissed,
+      'note': upcomingNote,
       'instructions': _optionalText(med['instructions']),
       'frequency_type': med['frequency_type'],
       'frequency_value': med['frequency_value'],
       'start_time': med['start_time'],
       'scheduled_times': med['scheduled_times'],
+      'takenTimesToday': takenTimesToday,
+      'nextDoseTime': nextDoseTime24h,
+      'missedCountToday': missedCountToday,
     };
   }
 
@@ -374,6 +500,35 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
         ? _medications[index]['name']
         : _labResults[index]['title'];
 
+    List<String> medicationDoseTimes(Map<String, dynamic> medication) {
+      final scheduled = medication['scheduled_times'];
+      if (scheduled is List && scheduled.isNotEmpty) {
+        return scheduled
+            .map((t) => t.toString().trim())
+            .where((t) => RegExp(r'^\d{1,2}:\d{2}$').hasMatch(t))
+            .toList();
+      }
+      final start = _optionalText(medication['start_time']);
+      if (RegExp(r'^\d{1,2}:\d{2}$').hasMatch(start)) return [start];
+      return [];
+    }
+
+    String formatTime12Hour(String time24h) {
+      final parts = time24h.split(':');
+      if (parts.length != 2) return time24h;
+      final hour = int.tryParse(parts[0]) ?? 0;
+      final minute = int.tryParse(parts[1]) ?? 0;
+      final period = hour >= 12 ? 'PM' : 'AM';
+      final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+      return '$displayHour:${minute.toString().padLeft(2, '0')} $period';
+    }
+
+    bool isMedicationDoseTaken(Map<String, dynamic> medication, String time) {
+      final takenTimes = medication['takenTimesToday'];
+      if (takenTimes is! List) return false;
+      return takenTimes.map((t) => t.toString().trim()).contains(time.trim());
+    }
+
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -411,30 +566,185 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
               ),
               if (collectionType == 'Medication')
                 ListTile(
-                  leading: const Icon(
-                    Icons.delete_outline,
-                    color: Colors.redAccent,
+                  leading: Icon(
+                    (_medications[index]['takenTimesToday'] is List &&
+                            (_medications[index]['takenTimesToday'] as List)
+                                .isNotEmpty)
+                        ? Icons.undo_outlined
+                        : Icons.check_circle_outline,
+                    color: (_medications[index]['takenTimesToday'] is List &&
+                            (_medications[index]['takenTimesToday'] as List)
+                                .isNotEmpty)
+                        ? Colors.orange
+                        : const Color(0xFF2E7D32),
                   ),
-                  title: const Text('Delete Entry'),
+                  title: Text(
+                    (_medications[index]['takenTimesToday'] is List &&
+                            (_medications[index]['takenTimesToday'] as List)
+                                .isNotEmpty)
+                        ? 'Mark as untaken'
+                        : 'Mark as taken',
+                  ),
                   onTap: () async {
                     Navigator.pop(bottomSheetContext);
+                    final medication =
+                        Map<String, dynamic>.from(_medications[index]);
+                    final medicationId =
+                        (medication['medicationId'] ?? medication['id'])
+                            ?.toString();
+                    if (medicationId == null || medicationId.isEmpty) return;
+
+                    final times = medicationDoseTimes(medication);
+                    if (times.isEmpty) return;
+
+                    String? selectedTime;
+                    if (times.length == 1) {
+                      selectedTime = times.first;
+                    } else {
+                      selectedTime = await showModalBottomSheet<String>(
+                        context: context,
+                        shape: const RoundedRectangleBorder(
+                          borderRadius: BorderRadius.vertical(
+                            top: Radius.circular(20),
+                          ),
+                        ),
+                        builder: (context) {
+                          return SafeArea(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Select dose time',
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF37474F),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  ...times.map(
+                                    (time) {
+                                      final isTaken =
+                                          isMedicationDoseTaken(medication, time);
+                                      return ListTile(
+                                        leading: Icon(
+                                          isTaken
+                                              ? Icons.undo_outlined
+                                              : Icons.check_circle_outline,
+                                          color: isTaken
+                                              ? Colors.orange
+                                              : const Color(0xFF2E7D32),
+                                        ),
+                                        title: Text(formatTime12Hour(time)),
+                                        subtitle:
+                                            Text(isTaken ? 'Taken' : 'Not taken'),
+                                        onTap: () =>
+                                            Navigator.pop(context, time),
+                                      );
+                                    },
+                                  ),
+                                  const SizedBox(height: 6),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      );
+                    }
+
+                    if (selectedTime == null || selectedTime.isEmpty) return;
+
+                    try {
+                      final isTaken =
+                          isMedicationDoseTaken(medication, selectedTime);
+                      final response = isTaken
+                          ? await ApiService.markMedicationUntaken(
+                              medicationId,
+                              time: selectedTime,
+                              profileUserId: widget.profileUserId,
+                            )
+                          : await ApiService.markMedicationTaken(
+                              medicationId,
+                              time: selectedTime,
+                              profileUserId: widget.profileUserId,
+                            );
+                      if (response["success"] != true) {
+                        throw Exception(
+                          response["error"] ??
+                              "Failed to update medication status",
+                        );
+                      }
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            isTaken
+                                ? 'Marked as untaken for ${formatTime12Hour(selectedTime)}.'
+                                : 'Marked as taken for ${formatTime12Hour(selectedTime)}.',
+                          ),
+                        ),
+                      );
+                      await _loadHealthSummary();
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Unable to update medication: $e'),
+                        ),
+                      );
+                    }
+                  },
+                ),
+              ListTile(
+                leading: const Icon(
+                  Icons.delete_outline,
+                  color: Colors.redAccent,
+                ),
+                title: const Text('Delete Entry'),
+                onTap: () async {
+                  Navigator.pop(bottomSheetContext);
+                  if (collectionType == 'Medication') {
                     final medicationId =
                         (_medications[index]['medicationId'] ??
                                 _medications[index]['id'])
                             ?.toString();
 
                     if (medicationId == null || medicationId.isEmpty) {
+                      final removedMedication =
+                          Map<String, dynamic>.from(_medications[index]);
                       setState(() {
                         _medications.removeAt(index);
+                        _cacheMedications();
                       });
-                      await NotificationService
-                          .refreshReminderNotificationsFromDashboard();
+                      unawaited(
+                        NotificationService.syncSingleMedicationReminder(
+                          medication: {
+                            ...removedMedication,
+                            'status': 'Taken',
+                            'isPending': false,
+                          },
+                          previousMedication: removedMedication,
+                          profileUserId: widget.profileUserId,
+                        ),
+                      );
                       return;
                     }
 
+                    final removedMedication =
+                        Map<String, dynamic>.from(_medications[index]);
+                    setState(() {
+                      _medications.removeAt(index);
+                      _cacheMedications();
+                    });
+
                     try {
-                      final response =
-                          await ApiService.deleteMedication(medicationId);
+                      final response = await ApiService.deleteMedication(
+                        medicationId,
+                        profileUserId: widget.profileUserId,
+                      );
                       if (response["success"] != true) {
                         throw Exception(
                           response["error"] ?? "Failed to delete medication",
@@ -442,26 +752,104 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       }
 
                       if (!mounted) return;
-                      setState(() {
-                        _medications.removeAt(index);
-                      });
-                      await _loadHealthSummary();
-                      await NotificationService
-                          .refreshReminderNotificationsFromDashboard();
+                      unawaited(
+                        NotificationService.syncSingleMedicationReminder(
+                          medication: {
+                            ...removedMedication,
+                            'status': 'Taken',
+                            'isPending': false,
+                          },
+                          previousMedication: removedMedication,
+                          profileUserId: widget.profileUserId,
+                        ),
+                      );
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Medication deleted.')),
                       );
                     } catch (e) {
                       if (!mounted) return;
+                      setState(() {
+                        final insertIndex = index < 0
+                            ? 0
+                            : (index > _medications.length
+                                ? _medications.length
+                                : index);
+                        _medications.insert(insertIndex, removedMedication);
+                        _cacheMedications();
+                      });
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('Unable to delete medication: $e'),
                         ),
                       );
                     }
-                  },
-                ),
+                    return;
+                  }
+
+                  final labResultId = _labResults[index]['labResultId']?.toString();
+                  final metricType = _labResults[index]['fieldKey']?.toString();
+                  if (labResultId == null ||
+                      labResultId.isEmpty ||
+                      metricType == null ||
+                      metricType.isEmpty) {
+                    setState(() {
+                      _labResults.removeAt(index);
+                      _cacheLabResults();
+                    });
+                    return;
+                  }
+
+                  final removedLab = Map<String, dynamic>.from(_labResults[index]);
+                  final previousLabResults = _labResults
+                      .map((lab) => Map<String, dynamic>.from(lab))
+                      .toList();
+                  final previousLabHistory = _labHistory
+                      .map((lab) => Map<String, dynamic>.from(lab))
+                      .toList();
+                  setState(() {
+                    _labResults.removeAt(index);
+                    _labHistory.removeWhere(
+                      (lab) =>
+                          lab['labResultId']?.toString() == labResultId &&
+                          lab['fieldKey']?.toString() == metricType,
+                    );
+                    _cacheLabResults();
+                  });
+
+                  try {
+                    final response = await ApiService.deleteLabResult(
+                      labResultId: labResultId,
+                      metricType: metricType,
+                      profileUserId: widget.profileUserId,
+                    );
+                    if (response["success"] != true) {
+                      throw Exception(
+                        response["error"] ?? "Failed to delete lab result",
+                      );
+                    }
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Lab result deleted.')),
+                    );
+                    unawaited(_loadHealthSummary());
+                  } catch (e) {
+                    if (!mounted) return;
+                    setState(() {
+                      _labResults = previousLabResults;
+                      _labHistory = previousLabHistory;
+                      _cacheLabResults();
+                    });
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          'Unable to delete ${removedLab['title'] ?? 'lab result'}: $e',
+                        ),
+                      ),
+                    );
+                  }
+                },
+              ),
               const SizedBox(height: 10),
             ],
           ),
@@ -628,7 +1016,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
     final List<String> metricTypes = [
       'Height',
       'Weight',
-      'BMI',
       'Dry Weight',
       'Blood Pressure',
       'Heart Rate',
@@ -640,12 +1027,18 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       'eGFR',
     ];
 
+    var dialogMounted = true;
     showDialog(
       context: context,
       barrierDismissible: true,
       builder: (BuildContext dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            void closeDialog() {
+              dialogMounted = false;
+              Navigator.of(dialogContext).pop();
+            }
+
             // Track validation state
             bool hasDate = dateController.text.trim().isNotEmpty;
             bool hasValue = valueController.text.trim().isNotEmpty;
@@ -677,7 +1070,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             ),
                           ),
                           IconButton(
-                            onPressed: () => Navigator.of(dialogContext).pop(),
+                            onPressed: closeDialog,
                             icon: const Icon(
                               Icons.close,
                               color: Color(0xFF37474F),
@@ -819,15 +1212,21 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             if (affectsNutritionTargets) {
                               final confirmed =
                                   await _confirmNutritionTargetUpdate();
+                              if (!dialogMounted || !mounted) return;
                               if (!confirmed) return;
                             }
 
+                            List<Map<String, dynamic>>? previousLabResults;
+                            List<Map<String, dynamic>>? previousLabHistory;
+
                             try {
+                              if (!dialogMounted || !mounted) return;
                               setDialogState(() => isSavingMeasurement = true);
 
                               if (isVitalMeasurement) {
                                 final response =
                                     await ApiService.saveMeasurement(
+                                  profileUserId: widget.profileUserId,
                                   metricType: selectedType,
                                   value: measurementValue,
                                   date: measurementDate.isEmpty
@@ -846,10 +1245,58 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
 
                                 await _loadHealthSummary();
                               } else {
+                                final fieldKey =
+                                    existingLab?['fieldKey']?.toString() ??
+                                        (selectedType == 'eGFR'
+                                            ? 'egfr'
+                                            : selectedType.toLowerCase());
+                                final tempLabResultId = existingLab?['labResultId']
+                                        ?.toString() ??
+                                    'temp_lab_${DateTime.now().millisecondsSinceEpoch}';
+                                final optimisticLab = {
+                                  'labResultId': tempLabResultId,
+                                  'fieldKey': fieldKey,
+                                  'title': selectedType,
+                                  'value': measurementValue,
+                                  'unit': unitMap[selectedType] ?? 'unit',
+                                  'date': _formatDate(measurementDate),
+                                  'status': existingLab?['status'] ?? '',
+                                  'range': existingLab?['range'] ?? '',
+                                  'isWarning': existingLab?['isWarning'] ?? false,
+                                };
+                                previousLabResults = _labResults
+                                    .map((lab) => Map<String, dynamic>.from(lab))
+                                    .toList();
+                                previousLabHistory = _labHistory
+                                    .map((lab) => Map<String, dynamic>.from(lab))
+                                    .toList();
+
+                                if (!mounted) return;
+                                setState(() {
+                                  if (isEdit && editIndex >= 0) {
+                                    _labResults[editIndex] = optimisticLab;
+                                  } else {
+                                    final existingIndex =
+                                        _labResults.indexWhere(
+                                      (lab) =>
+                                          lab['fieldKey']?.toString() ==
+                                          fieldKey,
+                                    );
+                                    if (existingIndex >= 0) {
+                                      _labResults[existingIndex] =
+                                          optimisticLab;
+                                    } else {
+                                      _labResults.add(optimisticLab);
+                                    }
+                                  }
+                                  _cacheLabResults();
+                                });
+                                if (dialogMounted) closeDialog();
+
                                 final response =
                                     await ApiService.saveLabResult(
-                                  metricType:
-                                      existingLab?['fieldKey'] ?? selectedType,
+                                  profileUserId: widget.profileUserId,
+                                  metricType: fieldKey,
                                   value: measurementValue,
                                   resultDate: measurementDate,
                                   labResultId:
@@ -863,13 +1310,47 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                                   );
                                 }
 
-                                await _loadHealthSummary();
+                                final savedLabResultId =
+                                    response["labResultId"]?.toString();
+                                if (!mounted) return;
+                                if (savedLabResultId != null &&
+                                    savedLabResultId.isNotEmpty &&
+                                    savedLabResultId != tempLabResultId) {
+                                  setState(() {
+                                    final savedIndex =
+                                        _labResults.indexWhere(
+                                      (lab) =>
+                                          lab['labResultId'] ==
+                                          tempLabResultId,
+                                    );
+                                    if (savedIndex >= 0) {
+                                      _labResults[savedIndex] = {
+                                        ..._labResults[savedIndex],
+                                        'labResultId': savedLabResultId,
+                                      };
+                                      _cacheLabResults();
+                                    }
+                                  });
+                                }
+                                unawaited(_loadHealthSummary());
                               }
 
-                              if (mounted) Navigator.of(dialogContext).pop();
+                              if (dialogMounted && mounted) closeDialog();
                             } catch (e) {
                               if (!mounted) return;
-                              setDialogState(() => isSavingMeasurement = false);
+                              if (previousLabResults != null &&
+                                  previousLabHistory != null) {
+                                setState(() {
+                                  _labResults = previousLabResults!;
+                                  _labHistory = previousLabHistory!;
+                                  _cacheLabResults();
+                                });
+                              }
+                              if (dialogMounted) {
+                                setDialogState(
+                                  () => isSavingMeasurement = false,
+                                );
+                              }
                               ScaffoldMessenger.of(pageContext).showSnackBar(
                                 SnackBar(content: Text(e.toString())),
                               );
@@ -918,7 +1399,9 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
           },
         );
       },
-    );
+    ).then((_) {
+      dialogMounted = false;
+    });
   }
 
   // Form 2: Add/Edit Medications with Time Picker & Frequency Scheduling
@@ -959,7 +1442,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
     TimeOfDay selectedTime = const TimeOfDay(hour: 8, minute: 0);
     String frequencyType = 'times_per_day'; // 'times_per_day' or 'interval'
     int frequencyValue = 1;
-    String status = existingMed?['status'] ?? 'Pending';
     bool isSavingMedication = false;
 
     // Parse existing data if editing
@@ -994,18 +1476,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       return times;
     }
 
-    // Convert 24-hour time to 12-hour format with AM/PM
-    String _formatTime12Hour(String time24h) {
-      final parts = time24h.split(':');
-      int hour = int.parse(parts[0]);
-      int minute = int.parse(parts[1]);
-
-      final period = hour >= 12 ? 'PM' : 'AM';
-      final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
-
-      return "$displayHour:${minute.toString().padLeft(2, '0')} $period";
-    }
-
     // Get frequency label
     String _getFrequencyLabel(String type, int value) {
       if (type == 'times_per_day') {
@@ -1026,15 +1496,32 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       }
     }
 
+    var dialogMounted = true;
     showDialog(
       context: context,
       barrierDismissible: true,
       builder: (BuildContext dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            void closeDialog() {
+              dialogMounted = false;
+              Navigator.of(dialogContext).pop();
+            }
+
             // Update scheduled times whenever frequency changes
             final currentSchedule =
                 _generateScheduledTimes(selectedTime, frequencyType, frequencyValue);
+            final isNameMissing = nameController.text.trim().isEmpty;
+            final isDosageMissing = dosageController.text.trim().isEmpty;
+            final isMedicationFormValid =
+                !isNameMissing && !isDosageMissing;
+            final canSubmitMedication =
+                isMedicationFormValid && !isSavingMedication;
+            final mediaQuery = MediaQuery.of(context);
+            final maxDialogHeight = mediaQuery.size.height -
+                mediaQuery.viewInsets.bottom -
+                mediaQuery.padding.vertical -
+                40;
 
             return Dialog(
               shape: RoundedRectangleBorder(
@@ -1045,7 +1532,13 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
               child: Container(
                 padding: const EdgeInsets.all(24),
                 width: double.infinity,
+                constraints: BoxConstraints(
+                  maxHeight: maxDialogHeight.clamp(320.0, 720.0).toDouble(),
+                ),
                 child: SingleChildScrollView(
+                  padding: EdgeInsets.only(
+                    bottom: mediaQuery.viewInsets.bottom > 0 ? 12 : 0,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1062,7 +1555,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             ),
                           ),
                           IconButton(
-                            onPressed: () => Navigator.of(dialogContext).pop(),
+                            onPressed: closeDialog,
                             icon: const Icon(
                               Icons.close,
                               color: Color(0xFF37474F),
@@ -1073,21 +1566,49 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       const SizedBox(height: 20),
 
                       // Medication Name
-                      const HealthMetricsFormLabel(label: 'Medication Name'),
+                      const HealthMetricsFormLabel(
+                        label: 'Medication Name (Required)',
+                      ),
                       const SizedBox(height: 8),
                       HealthMetricsTextFormField(
                         controller: nameController,
                         placeholder: 'e.g. Calcium',
+                        onChanged: (_) => setDialogState(() {}),
                       ),
+                      if (isNameMissing)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            'Medication name is required.',
+                            style: TextStyle(
+                              color: Colors.red.shade600,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
                       const SizedBox(height: 20),
 
                       // Dosage
-                      const HealthMetricsFormLabel(label: 'Dosage'),
+                      const HealthMetricsFormLabel(label: 'Dosage (Required)'),
                       const SizedBox(height: 8),
                       HealthMetricsTextFormField(
                         controller: dosageController,
                         placeholder: 'e.g. 500mg',
+                        onChanged: (_) => setDialogState(() {}),
                       ),
+                      if (isDosageMissing)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            'Dosage is required.',
+                            style: TextStyle(
+                              color: Colors.red.shade600,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
                       const SizedBox(height: 20),
 
                       // Start Time Picker
@@ -1100,6 +1621,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             initialTime: selectedTime,
                           );
                           if (picked != null) {
+                            if (!dialogMounted || !mounted) return;
                             setDialogState(() => selectedTime = picked);
                           }
                         },
@@ -1244,21 +1766,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                         controller: instructionsController,
                         placeholder: 'e.g. Take with water, with food',
                       ),
-                      const SizedBox(height: 20),
-
-                      // Status
-                      const HealthMetricsFormLabel(label: 'Status'),
-                      const SizedBox(height: 8),
-                      DropdownButtonFormField<String>(
-                        value: status,
-                        items: ['Taken', 'Pending']
-                            .map(
-                              (s) => DropdownMenuItem(value: s, child: Text(s)),
-                            )
-                            .toList(),
-                        onChanged: (val) => setDialogState(() => status = val!),
-                        decoration: _dropdownDecoration(),
-                      ),
                       const SizedBox(height: 32),
 
                       // Save Button
@@ -1266,13 +1773,20 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                         width: double.infinity,
                         height: 50,
                         child: ElevatedButton(
-                          onPressed: isSavingMedication
-                              ? null
-                              : () async {
+                          onPressed: canSubmitMedication
+                              ? () async {
                             if (nameController.text.trim().isEmpty) {
                               ScaffoldMessenger.of(pageContext).showSnackBar(
                                 const SnackBar(
                                   content: Text('Please enter medication name'),
+                                ),
+                              );
+                              return;
+                            }
+                            if (dosageController.text.trim().isEmpty) {
+                              ScaffoldMessenger.of(pageContext).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Please enter medication dosage'),
                                 ),
                               );
                               return;
@@ -1321,8 +1835,9 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                               if (seedMedication?['confirmedByUser'] != null)
                                 'confirmedByUser':
                                     seedMedication?['confirmedByUser'],
-                              'status': status,
-                              'isPending': status == 'Pending',
+                              // Keep status internal and default to Pending; per-dose marking is tracked separately.
+                              'status': 'Pending',
+                              'isPending': true,
                               'frequency': frequencyLabel,
                               'time': displayTimes,
                               'schedule': displayTimes,
@@ -1333,15 +1848,44 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             };
 
                             try {
+                              if (!dialogMounted || !mounted) return;
                               setDialogState(() => isSavingMedication = true);
+                              final tempMedicationId = isEdit
+                                  ? medicationId
+                                  : 'temp_${DateTime.now().millisecondsSinceEpoch}';
+                              if (!isEdit) {
+                                newMed['id'] = tempMedicationId;
+                                newMed['medicationId'] = tempMedicationId;
+                              }
+                              newMed['saveStatus'] = 'saving';
+                              final previousMedication = isEdit
+                                  ? Map<String, dynamic>.from(
+                                      _medications[editIndex],
+                                    )
+                                  : null;
+
+                              if (!mounted) return;
+                              setState(() {
+                                if (isEdit) {
+                                  _medications[editIndex] = newMed;
+                                } else {
+                                  _medications.add(newMed);
+                                }
+                                _cacheMedications();
+                              });
+                              if (dialogMounted) closeDialog();
 
                               if (isEdit &&
                                   medicationId != null &&
                                   medicationId.isNotEmpty) {
+                                final savePayload =
+                                    Map<String, dynamic>.from(newMed)
+                                      ..remove('saveStatus');
                                 final response =
                                     await ApiService.updateMedication(
                                   medicationId,
-                                  newMed,
+                                  savePayload,
+                                  profileUserId: widget.profileUserId,
                                 );
                                 if (response["success"] != true) {
                                   throw Exception(
@@ -1350,8 +1894,16 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                                   );
                                 }
                               } else if (!isEdit) {
+                                final savePayload =
+                                    Map<String, dynamic>.from(newMed)
+                                      ..remove('id')
+                                      ..remove('medicationId')
+                                      ..remove('saveStatus');
                                 final response =
-                                    await ApiService.saveMedication(newMed);
+                                    await ApiService.saveMedication(
+                                  savePayload,
+                                  profileUserId: widget.profileUserId,
+                                );
                                 if (response["success"] != true) {
                                   throw Exception(
                                     response["error"] ??
@@ -1368,18 +1920,30 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                               }
 
                               if (!mounted) return;
+                              newMed['saveStatus'] = 'saved';
                               setState(() {
                                 if (isEdit) {
                                   _medications[editIndex] = newMed;
                                 } else {
-                                  _medications.add(newMed);
+                                  final savedIndex = _medications.indexWhere(
+                                    (medication) =>
+                                        medication['medicationId'] ==
+                                            tempMedicationId ||
+                                        medication['id'] == tempMedicationId,
+                                  );
+                                  if (savedIndex >= 0) {
+                                    _medications[savedIndex] = newMed;
+                                  }
                                 }
+                                _cacheMedications();
                               });
-
-                              Navigator.of(dialogContext).pop();
-                              await _loadHealthSummary();
-                              await NotificationService
-                                  .refreshReminderNotificationsFromDashboard();
+                              unawaited(
+                                NotificationService.syncSingleMedicationReminder(
+                                  medication: newMed,
+                                  previousMedication: previousMedication,
+                                  profileUserId: widget.profileUserId,
+                                ),
+                              );
                               if (!mounted) return;
                               ScaffoldMessenger.of(pageContext).showSnackBar(
                                 const SnackBar(
@@ -1388,7 +1952,27 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                               );
                             } catch (e) {
                               if (!mounted) return;
-                              setDialogState(() => isSavingMedication = false);
+                              setState(() {
+                                if (isEdit) {
+                                  if (editIndex >= 0 &&
+                                      editIndex < _medications.length) {
+                                    _medications[editIndex] =
+                                        Map<String, dynamic>.from(
+                                      existingMed ?? {},
+                                    );
+                                  }
+                                } else {
+                                  _medications.removeWhere(
+                                    (medication) =>
+                                        medication['saveStatus'] == 'saving' &&
+                                        medication['name'] ==
+                                            newMed['name'] &&
+                                        medication['dosage'] ==
+                                            newMed['dosage'],
+                                  );
+                                }
+                                _cacheMedications();
+                              });
                               ScaffoldMessenger.of(pageContext).showSnackBar(
                                 SnackBar(
                                   content: Text(
@@ -1397,9 +1981,13 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                                 ),
                               );
                             }
-                          },
+                          }
+                              : null,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF00B074),
+                            backgroundColor: canSubmitMedication
+                                ? const Color(0xFF00B074)
+                                : Colors.grey.shade400,
+                            disabledBackgroundColor: Colors.grey.shade400,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(8),
                             ),
@@ -1416,10 +2004,12 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                                     ),
                                   ),
                                 )
-                              : const Text(
-                                  'Save Medication',
+                              : Text(
+                                  isEdit ? 'Save Medication' : 'Add Medication',
                                   style: TextStyle(
-                                    color: Colors.white,
+                                    color: canSubmitMedication
+                                        ? Colors.white
+                                        : Colors.white70,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 16,
                                   ),
@@ -1434,7 +2024,9 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
           },
         );
       },
-    );
+    ).then((_) {
+      dialogMounted = false;
+    });
   }
 
   Future<void> _scanPrescriptionForMedications() {
@@ -1470,6 +2062,10 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_resolvedCaregiverNoChildEmptyState) {
+      return _buildCaregiverNoChildScaffold();
+    }
+
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBFB),
       body: SafeArea(
@@ -1608,13 +2204,17 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
               ..._medications.asMap().entries.map((entry) {
                 int idx = entry.key;
                 var med = entry.value;
+                final isSaving = med['saveStatus'] == 'saving';
                 return HealthMetricsMedicationCard(
                   name: med['name'],
                   dosage: med['dosage'],
                   time: med['time'],
-                  status: med['status'],
-                  onTap: () => _showItemManageSheet(idx, 'Medication'),
-                  isPending: med['isPending'],
+                  status: isSaving ? 'Saving...' : (med['status'] ?? 'Pending'),
+                  onTap:
+                      isSaving ? () {} : () => _showItemManageSheet(idx, 'Medication'),
+                  isPending: med['isPending'] == true,
+                  isMissed: med['isMissed'] == true,
+                  note: med['note']?.toString(),
                 );
               }).toList(),
 
@@ -1723,12 +2323,26 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
           } else if (index == 1) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const FoodLogPage()),
+              MaterialPageRoute(
+                builder: (context) =>
+                    FoodLogPage(
+                      profileUserId: widget.profileUserId,
+                      caregiverNoChildEmptyState:
+                          _resolvedCaregiverNoChildEmptyState,
+                    ),
+              ),
             );
           } else if (index == 2) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const AnalyticsPage()),
+              MaterialPageRoute(
+                builder: (context) =>
+                    AnalyticsPage(
+                      profileUserId: widget.profileUserId,
+                      caregiverNoChildEmptyState:
+                          _resolvedCaregiverNoChildEmptyState,
+                    ),
+              ),
             );
           } else if (index == 4) {
             Navigator.pushReplacement(
@@ -1741,6 +2355,89 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
         },
       ),
     );
+  }
+
+  Widget _buildCaregiverNoChildScaffold() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF9FBFB),
+      body: const SafeArea(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Health Metrics',
+                style: TextStyle(
+                  color: Color(0xFF37474F),
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: 24),
+              Text(
+                'Add or link a child profile from the dashboard before viewing health metrics.',
+                style: TextStyle(
+                  color: Color(0xFF607D8B),
+                  fontSize: 15,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      bottomNavigationBar: HealthMetricsBottomNavBar(
+        currentIndex: _currentIndex,
+        onTap: (index) {
+          if (index == 0) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const DashboardPage()),
+            );
+          } else if (index == 1) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => FoodLogPage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
+            );
+          } else if (index == 2) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => AnalyticsPage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
+            );
+          } else if (index == 4) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const ProfilePage()),
+            );
+          }
+        },
+      ),
+    );
+  }
+
+  Future<bool> _shouldShowCaregiverEmptyState() async {
+    final response = await ApiService.getDashboardSummary();
+    final viewer = response['viewer'];
+    final role = viewer is Map
+        ? (viewer['role'] ?? viewer['userRole'] ?? '').toString().toLowerCase()
+        : '';
+    if (role != 'caregiver' && role != 'parent_caregiver') return false;
+    final state = response['caregiverDashboardState'];
+    final children = state is Map ? state['linkedChildren'] : null;
+    return children is! List || children.isEmpty;
   }
 
   // ==========================================

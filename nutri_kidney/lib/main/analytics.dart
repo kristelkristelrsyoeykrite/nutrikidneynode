@@ -16,11 +16,15 @@ import 'profile.dart';
 class AnalyticsPage extends StatefulWidget {
   final String initialCategory;
   final bool? allowDataExport;
+  final String? profileUserId;
+  final bool caregiverNoChildEmptyState;
 
   const AnalyticsPage({
     super.key,
     this.initialCategory = 'Nutrients',
     this.allowDataExport,
+    this.profileUserId,
+    this.caregiverNoChildEmptyState = false,
   });
 
   @override
@@ -35,18 +39,26 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   String? _error;
   late bool _allowDataExport;
   bool _isExporting = false;
+  bool _resolvedCaregiverNoChildEmptyState = false;
   DateTime _historyDate = DateTime.now();
   List<Map<String, dynamic>> _historyLogsForSelectedDate = [];
   List<_DailyAnalyticsPoint> _dailyPoints = [];
   List<Map<String, dynamic>> _anthropometricHistory = [];
   List<Map<String, dynamic>> _labResultsHistory = [];
+  Map<String, dynamic> _userProfile = {};
+  Map<String, dynamic> _medicalProfile = {};
 
   @override
   void initState() {
     super.initState();
     _activeCategory = widget.initialCategory;
     _allowDataExport = widget.allowDataExport ?? false;
-    _loadAnalytics();
+    _resolvedCaregiverNoChildEmptyState = widget.caregiverNoChildEmptyState;
+    if (!widget.caregiverNoChildEmptyState) {
+      _loadAnalytics();
+    } else {
+      _isLoading = false;
+    }
   }
 
   Future<void> _loadAnalytics() async {
@@ -57,15 +69,42 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     });
 
     try {
+      if (await _shouldShowCaregiverEmptyState()) {
+        if (!mounted) return;
+        setState(() {
+          _resolvedCaregiverNoChildEmptyState = true;
+          _isLoading = false;
+        });
+        return;
+      }
       final now = DateTime.now();
 
       // Load health summary first to sync export preference immediately
-      final healthSummaryResponse = await ApiService.getHealthSummary();
+      final healthSummaryResponse = await ApiService.getHealthSummary(
+        profileUserId: widget.profileUserId,
+      );
       if (healthSummaryResponse['success'] == true) {
-        final user = healthSummaryResponse['user'] is Map ? healthSummaryResponse['user'] : {};
+        final viewer = healthSummaryResponse['viewer'] is Map
+            ? Map<String, dynamic>.from(healthSummaryResponse['viewer'] as Map)
+            : <String, dynamic>{};
+        final user = healthSummaryResponse['user'] is Map
+            ? Map<String, dynamic>.from(healthSummaryResponse['user'] as Map)
+            : <String, dynamic>{};
+        final medicalProfile = healthSummaryResponse['medicalProfile'] is Map
+            ? Map<String, dynamic>.from(
+                healthSummaryResponse['medicalProfile'] as Map,
+              )
+            : <String, dynamic>{};
         if (mounted) {
           setState(() {
-            _allowDataExport = user['allowDataExport'] == true;
+            _userProfile = user;
+            _medicalProfile = medicalProfile;
+            final viewerRole = viewer['role']?.toString().toLowerCase() ?? '';
+            final isCaregiverViewer =
+                viewerRole == 'caregiver' || viewerRole == 'parent_caregiver';
+            _allowDataExport = isCaregiverViewer
+                ? viewer['allowDataExport'] == true
+                : user['allowDataExport'] == true;
           });
         }
       }
@@ -74,15 +113,18 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       final analyticsSummaryResponse = await ApiService.getAnalyticsSummary(
         range: _analyticsRangeKey(_activeTimeRange),
         endDate: _dateKey(now),
+        profileUserId: widget.profileUserId,
       );
       final rangeLogsResponse = await ApiService.getFoodLogs(
         dateFrom: _dateKey(range.start),
         dateTo: _dateKey(range.end),
         limit: 500,
+        profileUserId: widget.profileUserId,
       );
       final selectedDateLogsResponse = await ApiService.getFoodLogs(
         date: _dateKey(_historyDate),
         limit: 200,
+        profileUserId: widget.profileUserId,
       );
 
       final summary = _extractAnalyticsSummary(analyticsSummaryResponse);
@@ -114,6 +156,10 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_resolvedCaregiverNoChildEmptyState) {
+      return _buildCaregiverNoChildScaffold();
+    }
+
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBFB),
       body: SafeArea(
@@ -135,10 +181,6 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                     Row(
                       children: [
                         _buildTimeToggle('Week'),
-                        const SizedBox(width: 8),
-                        _buildTimeToggle('Month'),
-                        const SizedBox(width: 8),
-                        _buildTimeToggle('3 Months'),
                       ],
                     ),
                     const SizedBox(height: 24),
@@ -188,13 +230,25 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             } else if (index == 1) {
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) => const FoodLogPage()),
+                MaterialPageRoute(
+                  builder: (context) =>
+                      FoodLogPage(
+                        profileUserId: widget.profileUserId,
+                        caregiverNoChildEmptyState:
+                            _resolvedCaregiverNoChildEmptyState,
+                      ),
+                ),
               );
             } else if (index == 3) {
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => const HealthMetricsPage(),
+                  builder: (context) =>
+                      HealthMetricsPage(
+                        profileUserId: widget.profileUserId,
+                        caregiverNoChildEmptyState:
+                            _resolvedCaregiverNoChildEmptyState,
+                      ),
                 ),
               );
             } else if (index == 4) {
@@ -240,6 +294,136 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         ),
       ),
     );
+  }
+
+  Widget _buildCaregiverNoChildScaffold() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF9FBFB),
+      body: const SafeArea(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Analytics',
+                style: TextStyle(
+                  color: Color(0xFF37474F),
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: 24),
+              Text(
+                'Add or link a child profile from the dashboard before viewing analytics.',
+                style: TextStyle(
+                  color: Color(0xFF607D8B),
+                  fontSize: 15,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      bottomNavigationBar: _buildBottomNavigationBar(),
+    );
+  }
+
+  Widget _buildBottomNavigationBar() {
+    return Container(
+      decoration: BoxDecoration(
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, -5),
+          ),
+        ],
+      ),
+      child: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (index) {
+          if (index == 0) {
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (context) => const DashboardPage()),
+              (route) => false,
+            );
+          } else if (index == 1) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => FoodLogPage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
+            );
+          } else if (index == 3) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => HealthMetricsPage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
+            );
+          } else if (index == 4) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const ProfilePage()),
+            );
+          } else {
+            setState(() => _currentIndex = index);
+          }
+        },
+        type: BottomNavigationBarType.fixed,
+        backgroundColor: Colors.white,
+        selectedItemColor: const Color(0xFF00C874),
+        unselectedItemColor: const Color(0xFFB0BEC5),
+        selectedFontSize: 11,
+        unselectedFontSize: 11,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home_outlined),
+            activeIcon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.restaurant_menu),
+            label: 'Food',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.bar_chart),
+            label: 'Analytics',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.favorite_border),
+            label: 'Health',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            label: 'Profile',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _shouldShowCaregiverEmptyState() async {
+    final response = await ApiService.getDashboardSummary();
+    final viewer = response['viewer'];
+    final role = viewer is Map
+        ? (viewer['role'] ?? viewer['userRole'] ?? '').toString().toLowerCase()
+        : '';
+    if (role != 'caregiver' && role != 'parent_caregiver') return false;
+    final state = response['caregiverDashboardState'];
+    final children = state is Map ? state['linkedChildren'] : null;
+    return children is! List || children.isEmpty;
   }
 
   Widget _buildHeader() {
@@ -1432,10 +1616,6 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
 
   String _analyticsRangeKey(String range) {
     switch (range) {
-      case 'Month':
-        return 'month';
-      case '3 Months':
-        return '3_months';
       case 'Week':
       default:
         return 'week';
@@ -1452,8 +1632,6 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       (endDate ?? DateTime.now()).day,
     );
     final days = switch (range) {
-      'Month' => 29,
-      '3 Months' => 89,
       _ => 6,
     };
     return (start: end.subtract(Duration(days: days)), end: end);
@@ -1559,6 +1737,241 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     return DateFormat('h:mm a').format(parsed.toLocal());
   }
 
+  String _firstTextValue(Map<String, dynamic> source, List<String> keys) {
+    for (final key in keys) {
+      final value = source[key]?.toString().trim() ?? '';
+      if (value.isNotEmpty && value.toLowerCase() != 'null') return value;
+    }
+    return '';
+  }
+
+  String _profileDisplayValue(
+    Map<String, dynamic> source,
+    List<String> keys, {
+    String fallback = 'Not recorded',
+  }) {
+    final value = _firstTextValue(source, keys);
+    return value.isEmpty ? fallback : value;
+  }
+
+  List<List<String>> _medicalProfileRows() {
+    final name = _firstTextValue(_userProfile, [
+      'childFullName',
+      'fullName',
+      'displayName',
+      'name',
+    ]);
+    final rows = <List<String>>[
+      ['Name', name.isEmpty ? 'Not recorded' : name],
+      [
+        'Age',
+        _profileDisplayValue(_userProfile, ['age', 'childAge']),
+      ],
+      [
+        'CKD Stage',
+        _profileDisplayValue(_medicalProfile, ['ckdStage', 'ckd_stage', 'stage']),
+      ],
+      [
+        'Kidney Disease Type',
+        _profileDisplayValue(_medicalProfile, [
+          'kidneyDiseaseType',
+          'kidney_disease_type',
+        ]),
+      ],
+      [
+        'Dialysis Status',
+        _profileDisplayValue(_medicalProfile, [
+          'dialysisStatus',
+          'dialysis_status',
+          'onDialysis',
+        ]),
+      ],
+      [
+        'Treatment Frequency',
+        _profileDisplayValue(_medicalProfile, [
+          'treatmentFrequency',
+          'treatment_frequency',
+        ]),
+      ],
+      [
+        'Fluid Restriction',
+        _profileDisplayValue(_medicalProfile, [
+          'fluidRestrictionStatus',
+          'fluid_restriction_status',
+        ]),
+      ],
+      [
+        'Fluid Limit',
+        _profileDisplayValue(_medicalProfile, [
+          'fluidLimitMl',
+          'fluid_limit_ml',
+        ]),
+      ],
+      [
+        'Diagnosis Date',
+        _profileDisplayValue(_medicalProfile, [
+          'dateOfDiagnosis',
+          'date_of_diagnosis',
+        ]),
+      ],
+    ];
+    return rows.where((row) => row[1] != 'Not recorded').toList();
+  }
+
+  pw.Widget _pdfSummaryBarChart({
+    required String title,
+    required List<_PdfBarItem> items,
+    required PdfColor accent,
+  }) {
+    return pw.Container(
+      width: double.infinity,
+      padding: const pw.EdgeInsets.all(10),
+      decoration: pw.BoxDecoration(
+        border: pw.Border.all(color: const PdfColor.fromInt(0xFFE0ECE8)),
+        borderRadius: pw.BorderRadius.circular(8),
+      ),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(
+            title,
+            style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12),
+          ),
+          pw.SizedBox(height: 8),
+          if (items.isEmpty)
+            pw.Text('No chart data available.')
+          else
+            ...items.map((item) {
+              final width = (item.ratio.clamp(0.0, 1.0) * 180).toDouble();
+              return pw.Padding(
+                padding: const pw.EdgeInsets.only(bottom: 7),
+                child: pw.Row(
+                  crossAxisAlignment: pw.CrossAxisAlignment.center,
+                  children: [
+                    pw.SizedBox(
+                      width: 88,
+                      child: pw.Text(
+                        item.label,
+                        style: const pw.TextStyle(fontSize: 9),
+                      ),
+                    ),
+                    pw.Container(
+                      width: 180,
+                      height: 8,
+                      decoration: pw.BoxDecoration(
+                        color: const PdfColor.fromInt(0xFFEFF4F2),
+                        borderRadius: pw.BorderRadius.circular(4),
+                      ),
+                      alignment: pw.Alignment.centerLeft,
+                      child: pw.Container(
+                        width: width,
+                        height: 8,
+                        decoration: pw.BoxDecoration(
+                          color: item.color ?? accent,
+                          borderRadius: pw.BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
+                    pw.SizedBox(width: 8),
+                    pw.Expanded(
+                      child: pw.Text(
+                        item.value,
+                        style: const pw.TextStyle(fontSize: 9),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+        ],
+      ),
+    );
+  }
+
+  List<_PdfBarItem> _pdfNutrientBars() {
+    final averages = [
+      (
+        label: 'Sodium',
+        value: _averageFor((point) => point.sodium),
+        unit: 'mg',
+        color: const PdfColor.fromInt(0xFF42A5F5),
+      ),
+      (
+        label: 'Potassium',
+        value: _averageFor((point) => point.potassium),
+        unit: 'mg',
+        color: const PdfColor.fromInt(0xFF66BB6A),
+      ),
+      (
+        label: 'Phosphorus',
+        value: _averageFor((point) => point.phosphorus),
+        unit: 'mg',
+        color: const PdfColor.fromInt(0xFFFFB74D),
+      ),
+      (
+        label: 'Protein',
+        value: _averageFor((point) => point.protein),
+        unit: 'g',
+        color: const PdfColor.fromInt(0xFF9E86FF),
+      ),
+    ];
+    final maxValue = _maxValue(averages.map((item) => item.value).toList());
+    return averages
+        .map(
+          (item) => _PdfBarItem(
+            label: item.label,
+            value:
+                '${item.value.toStringAsFixed(item.unit == 'g' ? 1 : 0)} ${item.unit}',
+            ratio: maxValue <= 0 ? 0 : item.value / maxValue,
+            color: item.color,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  List<_PdfBarItem> _pdfGrowthBars(List<_GrowthPoint> growthPoints) {
+    final latest = growthPoints.isNotEmpty ? growthPoints.last : null;
+    if (latest == null) return [];
+    return [
+      _PdfBarItem(
+        label: 'Weight',
+        value: latest.weightLabel,
+        ratio: latest.weightKg / 80,
+        color: const PdfColor.fromInt(0xFF9E86FF),
+      ),
+      _PdfBarItem(
+        label: 'Height',
+        value: latest.heightLabel,
+        ratio: latest.heightCm / 180,
+        color: const PdfColor.fromInt(0xFF42A5F5),
+      ),
+      _PdfBarItem(
+        label: 'BMI',
+        value: latest.bmiLabel,
+        ratio: (latest.bmi ?? 0) / 35,
+        color: const PdfColor.fromInt(0xFF00C874),
+      ),
+    ];
+  }
+
+  List<_PdfBarItem> _pdfHydrationBars() {
+    final points = _dailyPoints.length > 7
+        ? _dailyPoints.sublist(_dailyPoints.length - 7)
+        : _dailyPoints;
+    return points
+        .map(
+          (point) => _PdfBarItem(
+            label: DateFormat('MMM d').format(point.date),
+            value: '${(point.waterMl / 1000).toStringAsFixed(1)} L',
+            ratio: (point.waterMl / 1000) / 1.5,
+            color: point.waterMl > 1500
+                ? const PdfColor.fromInt(0xFFEF5350)
+                : const PdfColor.fromInt(0xFF42A5F5),
+          ),
+        )
+        .toList(growable: false);
+  }
+
   Future<void> _exportAnalyticsPdf() async {
     if (_isExporting) return;
 
@@ -1592,6 +2005,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     final exportDate = DateFormat('MMM d, yyyy h:mm a').format(DateTime.now());
     final growthPoints = _growthHistoryPoints();
     final latestGrowth = growthPoints.isNotEmpty ? growthPoints.last : null;
+    final medicalRows = _medicalProfileRows();
     final mealRows = _historyLogsForSelectedDate.map((log) {
       final name = log['name']?.toString() ?? 'Food';
       final mealType = log['mealType']?.toString() ?? 'Meal';
@@ -1635,6 +2049,24 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           pw.Text('Range: $_activeTimeRange'),
           pw.Text('Category view: $_activeCategory'),
           pw.SizedBox(height: 18),
+          pw.Header(level: 1, text: 'Medical Profile'),
+          if (medicalRows.isEmpty)
+            pw.Text('No medical profile details available.')
+          else
+            pw.TableHelper.fromTextArray(
+              headers: const ['Field', 'Value'],
+              data: medicalRows,
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+              cellStyle: const pw.TextStyle(fontSize: 9),
+              headerDecoration: const pw.BoxDecoration(
+                color: PdfColor.fromInt(0xFFE8F5F1),
+              ),
+              cellAlignments: {
+                0: pw.Alignment.centerLeft,
+                1: pw.Alignment.centerLeft,
+              },
+            ),
+          pw.SizedBox(height: 12),
           pw.Header(level: 1, text: 'Summary'),
           pw.Bullet(text: 'Days tracked: ${_dailyPoints.length}'),
           pw.Bullet(text: 'Days with meals: ${_daysWithMeals()}'),
@@ -1655,6 +2087,25 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             pw.Bullet(text: 'Latest height: ${latestGrowth.heightLabel}'),
             pw.Bullet(text: latestGrowth.bmiLabel),
           ],
+          pw.SizedBox(height: 12),
+          pw.Header(level: 1, text: 'Summarized Charts'),
+          _pdfSummaryBarChart(
+            title: 'Nutrients - Average Daily Intake',
+            items: _pdfNutrientBars(),
+            accent: const PdfColor.fromInt(0xFF00C874),
+          ),
+          pw.SizedBox(height: 8),
+          _pdfSummaryBarChart(
+            title: 'Growth - Latest Measurement Snapshot',
+            items: _pdfGrowthBars(growthPoints),
+            accent: const PdfColor.fromInt(0xFF9E86FF),
+          ),
+          pw.SizedBox(height: 8),
+          _pdfSummaryBarChart(
+            title: 'Hydration - Recent Daily Intake',
+            items: _pdfHydrationBars(),
+            accent: const PdfColor.fromInt(0xFF42A5F5),
+          ),
           pw.SizedBox(height: 12),
           pw.Header(level: 1, text: 'Daily Analytics'),
           if (dailyRows.isEmpty)
@@ -1942,5 +2393,19 @@ class _LabDetailEntry {
     required this.value,
     required this.unit,
     this.status,
+  });
+}
+
+class _PdfBarItem {
+  final String label;
+  final String value;
+  final double ratio;
+  final PdfColor? color;
+
+  const _PdfBarItem({
+    required this.label,
+    required this.value,
+    required this.ratio,
+    this.color,
   });
 }

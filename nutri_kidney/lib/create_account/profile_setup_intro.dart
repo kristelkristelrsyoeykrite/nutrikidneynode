@@ -2,26 +2,50 @@ import 'package:flutter/material.dart';
 import 'package:nutri_kidney/login/login.dart';
 import 'package:nutri_kidney/services/auth_service.dart';
 import 'package:nutri_kidney/utils/app_logger.dart';
+import 'health_profile1.dart';
 import 'privacy_consent_screen.dart';
 
 /// Introduction screen for profile setup
-/// Explains what data privacy means and gets user ready for profile setup
+/// Gets the user ready for health profile setup
 class ProfileSetupIntroScreen extends StatelessWidget {
-  const ProfileSetupIntroScreen({super.key});
+  const ProfileSetupIntroScreen({
+    super.key,
+    this.isChildProfileSetup = false,
+  });
+
+  final bool isChildProfileSetup;
 
   void _navigateToPrivacyConsent(BuildContext context) {
     AppLogger.info(
       'User proceeding to privacy consent from intro screen',
       tag: LogTag.onboarding,
     );
-    Navigator.of(context).pushReplacement(
+    if (isChildProfileSetup) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => const HealthProfile1Page(
+            isChildProfileSetup: true,
+          ),
+        ),
+      );
+      return;
+    }
+    Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => const PrivacyConsentScreen(),
+        builder: (context) => PrivacyConsentScreen(
+          continueToHealthProfile: isChildProfileSetup,
+          isChildProfileSetup: isChildProfileSetup,
+        ),
       ),
     );
   }
 
   Future<void> _leaveSetup(BuildContext context) async {
+    if (isChildProfileSetup) {
+      Navigator.of(context).pop();
+      return;
+    }
+
     AppLogger.warning(
       'User left profile setup intro before completing setup',
       tag: LogTag.onboarding,

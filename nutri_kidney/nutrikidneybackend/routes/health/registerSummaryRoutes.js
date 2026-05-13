@@ -21,11 +21,105 @@ function registerSummaryRoutes(router, deps) {
     aggregateDailySummaries,
     analyticsSummaryDocumentId,
     analyticsPeriodLabel,
+    decryptHealthProfile,
   } = deps;
+
+  function parseClockTime(value) {
+    const text = String(value || "").trim();
+    const match = text.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return {
+      hour,
+      minute,
+      text: `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`,
+    };
+  }
+
+  function medicationScheduleTimes(medication) {
+    const times = [];
+    const scheduledTimes =
+      medication?.scheduled_times ?? medication?.scheduledTimes;
+    if (Array.isArray(scheduledTimes)) {
+      for (const entry of scheduledTimes) {
+        const parsed = parseClockTime(entry);
+        if (parsed) times.push(parsed.text);
+      }
+    }
+
+    if (times.length > 0) return Array.from(new Set(times));
+
+    const startTime = medication?.start_time ?? medication?.startTime;
+    const parsed = parseClockTime(startTime);
+    return parsed ? [parsed.text] : [];
+  }
+
+  function nextUpcomingDoseTime({ times, takenTimes, now }) {
+    const taken = new Set(takenTimes || []);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const remaining = [];
+
+    for (const timeText of times) {
+      if (taken.has(timeText)) continue;
+      const parsed = parseClockTime(timeText);
+      if (!parsed) continue;
+      const minutes = parsed.hour * 60 + parsed.minute;
+      if (minutes > nowMinutes) {
+        remaining.push({ timeText, minutes });
+      }
+    }
+
+    remaining.sort((a, b) => a.minutes - b.minutes);
+    return remaining.length > 0 ? remaining[0].timeText : null;
+  }
+
+  function countMissedDoses({ times, takenTimes, now, graceMinutes = 5 }) {
+    const taken = new Set(takenTimes || []);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const threshold = nowMinutes - graceMinutes;
+    let missed = 0;
+
+    for (const timeText of times) {
+      if (taken.has(timeText)) continue;
+      const parsed = parseClockTime(timeText);
+      if (!parsed) continue;
+      const minutes = parsed.hour * 60 + parsed.minute;
+      if (minutes <= threshold) {
+        missed += 1;
+      }
+    }
+
+    return missed;
+  }
 
   function isCaregiverRole(role) {
     const normalized = String(role || "").trim().toLowerCase();
     return normalized === "parent_caregiver" || normalized === "caregiver";
+  }
+
+  function isDirectManagedChildEntry(child = {}) {
+    if (child?.type === "direct") return true;
+    if (
+      child?.relationship === "adolescent" ||
+      child?.type === "linked" ||
+      child?.type === "adolescent"
+    ) {
+      return false;
+    }
+    const childAgeGroup = String(child?.childAgeGroup || "");
+    if (
+      childAgeGroup === "5-12" ||
+      childAgeGroup === "5-13" ||
+      childAgeGroup === "13-18-direct"
+    ) {
+      return true;
+    }
+    const age = Number(child?.age ?? child?.ageYears);
+    if (Number.isFinite(age)) return age < 13;
+    return true;
   }
 
   function toIsoString(value) {
@@ -35,40 +129,122 @@ function registerSummaryRoutes(router, deps) {
     return null;
   }
 
-  async function resolveViewerTarget(userId) {
+  function childDisplayName(child = {}, childProfile = {}) {
+    return (
+      childProfile.childFullName ||
+      childProfile.child_name ||
+      childProfile.fullName ||
+      childProfile.name ||
+      child.name ||
+      child.fullName ||
+      child.childFullName ||
+      "Child Profile"
+    );
+  }
+
+  async function enrichLinkedChildren(linkedChildren = []) {
+    return Promise.all(
+      linkedChildren.map(async (child) => {
+        const childId = child?.userId || child?.uid || child?.id;
+        if (!childId) return child;
+        const childDoc = await db.collection("users").doc(String(childId)).get();
+        const childProfile = childDoc.exists
+          ? decryptHealthProfile(childDoc.data() || {})
+          : {};
+        return {
+          ...child,
+          id: child.id || String(childId),
+          userId: child.userId || String(childId),
+          uid: child.uid || String(childId),
+          name: childDisplayName(child, childProfile),
+          fullName: childProfile.fullName || child.fullName || child.name || null,
+          childFullName:
+            childProfile.childFullName ||
+            childProfile.child_name ||
+            child.childFullName ||
+            null,
+          age: childProfile.ageYears || childProfile.age_years || child.age || null,
+          ageYears:
+            childProfile.ageYears || childProfile.age_years || child.ageYears || null,
+        };
+      }),
+    );
+  }
+
+  async function resolveViewerTarget(userId, requestedProfileUserId = null) {
     const viewerDoc = await db.collection("users").doc(userId).get();
     if (!viewerDoc.exists) {
       return null;
     }
 
-    const viewer = { id: viewerDoc.id, ...viewerDoc.data() };
+    const viewer = { id: viewerDoc.id, ...decryptHealthProfile(viewerDoc.data() || {}) };
     let user = viewer;
     let dataUserId = userId;
     let caregiverDashboardState = null;
 
     if (isCaregiverRole(viewer.role)) {
+      const linkedChildren = Array.isArray(viewer.linkedChildren)
+        ? viewer.linkedChildren
+        : [];
+      const enrichedLinkedChildren = await enrichLinkedChildren(linkedChildren);
+      const hasLinkedAdolescentAccount = enrichedLinkedChildren.some(
+        (child) => !isDirectManagedChildEntry(child),
+      );
       caregiverDashboardState = {
         isCaregiver: true,
         childAgeGroup: viewer.childAgeGroup || null,
-        linkedChildAccount: viewer.linkedChildAccount === true,
-        linkedChildUserId: viewer.linkedChildUserId || null,
+        activeDirectChildProfileId: viewer.activeDirectChildProfileId || null,
+        linkedChildAccount:
+          hasLinkedAdolescentAccount ||
+          (linkedChildren.length === 0 && viewer.linkedChildAccount === true),
+        linkedChildUserId:
+          hasLinkedAdolescentAccount || viewer.linkedChildAccount === true
+            ? viewer.linkedChildUserId || null
+            : null,
+        linkedChildren: enrichedLinkedChildren,
         linkStatus: viewer.linkStatus || "none",
         activeLinkingCode: viewer.activeLinkingCode || null,
         linkCodeExpiresAt: toIsoString(viewer.linkCodeExpiresAt),
       };
 
-      if (
-        viewer.childAgeGroup === "13-18" &&
-        viewer.linkedChildAccount === true &&
-        viewer.linkedChildUserId
-      ) {
+      const requestedLinkedChild =
+        requestedProfileUserId &&
+        enrichedLinkedChildren.some((child) => {
+          const childId = child?.userId || child?.uid || child?.id;
+          return String(childId || "") === String(requestedProfileUserId);
+        });
+      const firstManagedChildId =
+        enrichedLinkedChildren[0]?.userId ||
+        enrichedLinkedChildren[0]?.uid ||
+        enrichedLinkedChildren[0]?.id;
+      const activeDirectChildId =
+        viewer.activeDirectChildProfileId &&
+        enrichedLinkedChildren.some((child) => {
+          const childId = child?.userId || child?.uid || child?.id;
+          return String(childId || "") === String(viewer.activeDirectChildProfileId);
+        })
+          ? viewer.activeDirectChildProfileId
+          : null;
+      const linkedAdolescentChildId =
+        hasLinkedAdolescentAccount || viewer.linkedChildAccount === true
+          ? viewer.linkedChildUserId
+          : null;
+      const targetLinkedChildId = requestedLinkedChild
+        ? requestedProfileUserId
+        : activeDirectChildId || firstManagedChildId || linkedAdolescentChildId;
+
+      if (targetLinkedChildId) {
         const linkedChildDoc = await db
           .collection("users")
-          .doc(viewer.linkedChildUserId)
+          .doc(targetLinkedChildId)
           .get();
         if (linkedChildDoc.exists) {
-          user = { id: linkedChildDoc.id, ...linkedChildDoc.data() };
+          user = {
+            id: linkedChildDoc.id,
+            ...decryptHealthProfile(linkedChildDoc.data() || {}),
+          };
           dataUserId = linkedChildDoc.id;
+          caregiverDashboardState.linkedChildUserId = linkedChildDoc.id;
         } else {
           caregiverDashboardState.linkedChildAccount = false;
           caregiverDashboardState.linkedChildUserId = null;
@@ -89,13 +265,13 @@ function registerSummaryRoutes(router, deps) {
     console.log("Dashboard summary requested:", req.body);
 
     try {
-      const { userId, date } = req.body;
+      const { userId, profileUserId, date } = req.body;
 
       if (!userId) {
         throw new Error("Missing userId");
       }
 
-      const resolved = await resolveViewerTarget(userId);
+      const resolved = await resolveViewerTarget(userId, profileUserId);
       if (!resolved) {
         return res.status(404).json({
           success: false,
@@ -108,9 +284,8 @@ function registerSummaryRoutes(router, deps) {
         "nutritionTargets",
         user.baselineNutritionTargetId,
       );
-      const medicalProfile = await getDocumentData(
-        "medicalProfile",
-        user.medicalProfileId,
+      const medicalProfile = decryptHealthProfile(
+        await getDocumentData("medicalProfile", user.medicalProfileId),
       );
       const phase2DecisionSupport = await getDocumentData(
         "phase2DecisionSupport",
@@ -162,6 +337,52 @@ function registerSummaryRoutes(router, deps) {
           ...medicationsByIds,
         ]),
       );
+      const today = todayDateKey();
+      const now = new Date();
+      const medicationsWithDoseStatus = await Promise.all(
+        medications.map(async (medication) => {
+          const times = medicationScheduleTimes(medication);
+          if (times.length === 0) {
+            return { ...medication, takenTimesToday: [], nextDoseTime: null };
+          }
+
+          const logIds = times.map(
+            (timeText) => `${dataUserId}_${medication.id}_${today}_${timeText}`,
+          );
+          const logs = await Promise.all(
+            logIds.map((id) =>
+              db.collection("medicationIntakeLogs").doc(id).get(),
+            ),
+          );
+
+          const takenTimesToday = [];
+          for (let i = 0; i < logs.length; i += 1) {
+            if (logs[i].exists) {
+              takenTimesToday.push(times[i]);
+            }
+          }
+
+          const nextDoseTime = nextUpcomingDoseTime({
+            times,
+            takenTimes: takenTimesToday,
+            now,
+          });
+
+          const missedCountToday = countMissedDoses({
+            times,
+            takenTimes: takenTimesToday,
+            now,
+            graceMinutes: 5,
+          });
+
+          return {
+            ...medication,
+            takenTimesToday,
+            nextDoseTime,
+            missedCountToday,
+          };
+        }),
+      );
       const intakeData = await getDailyIntakeData(dataUserId, date, user);
       const gamificationDate = date || todayDateKey();
       await recomputeGamificationForDate({
@@ -190,8 +411,10 @@ function registerSummaryRoutes(router, deps) {
         intakeData,
         gamification,
         medicationData:
-          medications.length > 0 ? { count: medications.length } : null,
-        medications,
+          medicationsWithDoseStatus.length > 0
+            ? { count: medicationsWithDoseStatus.length }
+            : null,
+        medications: medicationsWithDoseStatus,
       });
     } catch (error) {
       console.error("DASHBOARD_SUMMARY ERROR:", error.message);
@@ -206,13 +429,13 @@ function registerSummaryRoutes(router, deps) {
     console.log("Analytics summary requested:", req.body);
 
     try {
-      const { userId, range, endDate } = req.body;
+      const { userId, profileUserId, range, endDate } = req.body;
 
       if (!userId) {
         throw new Error("Missing userId");
       }
 
-      const resolved = await resolveViewerTarget(userId);
+      const resolved = await resolveViewerTarget(userId, profileUserId);
       if (!resolved) {
         return res.status(404).json({
           success: false,
@@ -303,13 +526,13 @@ function registerSummaryRoutes(router, deps) {
     console.log("Health summary requested:", req.body);
 
     try {
-      const { userId } = req.body;
+      const { userId, profileUserId } = req.body;
 
       if (!userId) {
         throw new Error("Missing userId");
       }
 
-      const resolved = await resolveViewerTarget(userId);
+      const resolved = await resolveViewerTarget(userId, profileUserId);
       if (!resolved) {
         return res.status(404).json({
           success: false,
@@ -317,9 +540,8 @@ function registerSummaryRoutes(router, deps) {
         });
       }
       const { viewer, user, dataUserId, caregiverDashboardState } = resolved;
-      const medicalProfile = await getDocumentData(
-        "medicalProfile",
-        user.medicalProfileId,
+      const medicalProfile = decryptHealthProfile(
+        await getDocumentData("medicalProfile", user.medicalProfileId),
       );
       const phase2DecisionSupport = await getDocumentData(
         "phase2DecisionSupport",
@@ -406,6 +628,53 @@ function registerSummaryRoutes(router, deps) {
         ]),
       );
 
+      const today = todayDateKey();
+      const now = new Date();
+      const medicationsWithDoseStatus = await Promise.all(
+        medications.map(async (medication) => {
+          const times = medicationScheduleTimes(medication);
+          if (times.length === 0) {
+            return { ...medication, takenTimesToday: [], nextDoseTime: null };
+          }
+
+          const logIds = times.map(
+            (timeText) => `${dataUserId}_${medication.id}_${today}_${timeText}`,
+          );
+          const logs = await Promise.all(
+            logIds.map((id) =>
+              db.collection("medicationIntakeLogs").doc(id).get(),
+            ),
+          );
+
+          const takenTimesToday = [];
+          for (let i = 0; i < logs.length; i += 1) {
+            if (logs[i].exists) {
+              takenTimesToday.push(times[i]);
+            }
+          }
+
+          const nextDoseTime = nextUpcomingDoseTime({
+            times,
+            takenTimes: takenTimesToday,
+            now,
+          });
+
+          const missedCountToday = countMissedDoses({
+            times,
+            takenTimes: takenTimesToday,
+            now,
+            graceMinutes: 5,
+          });
+
+          return {
+            ...medication,
+            takenTimesToday,
+            nextDoseTime,
+            missedCountToday,
+          };
+        }),
+      );
+
       return res.status(200).json({
         success: true,
         viewer,
@@ -419,7 +688,7 @@ function registerSummaryRoutes(router, deps) {
         anthropometricHistory,
         latestLabResult,
         labResultsHistory,
-        medications,
+        medications: medicationsWithDoseStatus,
       });
     } catch (error) {
       console.error("HEALTH_SUMMARY ERROR:", error.message);

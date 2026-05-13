@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart'; // For the iOS style switches
+import 'package:nutri_kidney/create_account/profile_setup_intro.dart';
+import 'caregiver_profile.dart';
 import 'dashboard.dart';
 import 'food_log.dart';
 import 'analytics.dart';
 import 'health_metrics.dart';
+import 'manage_children_page.dart';
 import 'profile/account_management_page.dart';
 import 'profile/edit_profile_page.dart';
 import 'profile/notification_settings_page.dart';
@@ -41,6 +44,7 @@ class _ProfilePageState extends State<ProfilePage> {
   Map<String, dynamic> _caregiverDashboardState = {};
   List<Map<String, dynamic>> _medications = [];
   Set<String> _unlockedAwardIds = {};
+  String? _selectedManagedProfileId;
 
   Map<String, dynamic> get _caregiverSettings {
     final settings = _user["caregiverSettings"];
@@ -55,14 +59,16 @@ class _ProfilePageState extends State<ProfilePage> {
     if (viewerSettings is Map) {
       return Map<String, dynamic>.from(viewerSettings);
     }
-    final userSettings = _user["securitySettings"];
-    if (userSettings is Map) {
-      return Map<String, dynamic>.from(userSettings);
-    }
     return {};
   }
 
   Map<String, dynamic> get _reminderSettings {
+    if (_isCaregiverViewer) {
+      final viewerSettings = _viewer["reminderSettings"];
+      if (viewerSettings is Map) {
+        return Map<String, dynamic>.from(viewerSettings);
+      }
+    }
     final settings = _user["reminderSettings"];
     if (settings is Map) {
       return Map<String, dynamic>.from(settings);
@@ -91,24 +97,52 @@ class _ProfilePageState extends State<ProfilePage> {
   bool get _linkedChildAccountActive =>
       _caregiverDashboardState["linkedChildAccount"] == true;
 
-  bool get _canManageReminderSettings {
-    if (_isCaregiverViewer) return _linkedChildAccountActive;
-    if (_isAdolescentRole && _caregiverLinked) return false;
+  bool get _hasDirectCaregiverProfile {
+    final ageGroup = _caregiverDashboardState["childAgeGroup"]?.toString();
+    return _isCaregiverViewer &&
+        (ageGroup == "5-12" ||
+            ageGroup == "5-13" ||
+            ageGroup == "13-18-direct");
+  }
+
+  bool _isDirectChildEntry(Map item) {
+    if (item["type"] == "direct") return true;
+    if (item["relationship"] == "adolescent" ||
+        item["type"] == "linked" ||
+        item["type"] == "adolescent") {
+      return false;
+    }
+    final childAgeGroup = item["childAgeGroup"]?.toString();
+    if (childAgeGroup == "5-12" ||
+        childAgeGroup == "5-13" ||
+        childAgeGroup == "13-18-direct") {
+      return true;
+    }
+    final age = int.tryParse((item["age"] ?? item["ageYears"] ?? "").toString());
+    if (age != null) return age < 13;
     return true;
   }
 
+  bool get _canManageReminderSettings {
+    if (_isCaregiverViewer) return true;
+    return true;
+  }
+
+  String? get _reminderSettingsProfileUserId {
+    return _isCaregiverViewer ? null : _profileOwnerId;
+  }
+
   bool get _canOpenEditProfile {
+    if (_isCaregiverViewer) {
+      return _linkedChildAccountActive || _hasDirectCaregiverProfile;
+    }
     if (_isAdolescentRole && _caregiverLinked) return false;
-    if (_isCaregiverViewer) return _linkedChildAccountActive;
     return true;
   }
 
   String get _reminderSettingsLockReason {
     if (_isCaregiverViewer && !_linkedChildAccountActive) {
-      return 'Link an adolescent account first to manage reminders.';
-    }
-    if (_isAdolescentRole && _caregiverLinked) {
-      return 'Reminder settings are managed by the linked caregiver.';
+      return 'Add or link a child profile first to manage reminders.';
     }
     return 'Reminder settings are unavailable right now.';
   }
@@ -128,19 +162,11 @@ class _ProfilePageState extends State<ProfilePage> {
     _loadProfile();
   }
 
-  Future<void> _loadProfile() async {
+  Future<void> _loadProfile({String? profileUserId}) async {
     try {
-      final response = await ApiService.getHealthSummary();
-      Map<String, dynamic> gamificationStatus = {};
-      if (response["success"] == true) {
-        try {
-          final gamificationResponse = await ApiService.getGamificationSummary();
-          final gamification = _asStringMap(gamificationResponse["gamification"]);
-          gamificationStatus = _asStringMap(gamification["status"]);
-        } catch (_) {
-          gamificationStatus = {};
-        }
-      }
+      final response = await ApiService.getHealthSummary(
+        profileUserId: profileUserId,
+      );
       if (!mounted) return;
       if (response["success"] == true) {
         setState(() {
@@ -160,20 +186,52 @@ class _ProfilePageState extends State<ProfilePage> {
           _lunchReminders = _mealReminderSettings["lunch"] == true;
           _snackReminders = _mealReminderSettings["snack"] == true;
           _dinnerReminders = _mealReminderSettings["dinner"] == true;
-          _allowDataExport = _user["allowDataExport"] == true;
-          final unlockedAwards = gamificationStatus["unlockedAwards"];
-          _unlockedAwardIds = unlockedAwards is List
-              ? unlockedAwards.map((award) => award.toString()).toSet()
-              : {};
+          _allowDataExport = _isCaregiverViewer
+              ? _viewer["allowDataExport"] == true
+              : _user["allowDataExport"] == true;
+          final managedProfiles = _managedProfiles;
+          if (managedProfiles.isNotEmpty) {
+            final requestedProfileExists = managedProfiles.any(
+              (profile) => profile.id == profileUserId,
+            );
+            final selectedProfileExists = managedProfiles.any(
+              (profile) => profile.id == _selectedManagedProfileId,
+            );
+            if (profileUserId != null && requestedProfileExists) {
+              _selectedManagedProfileId = profileUserId;
+            } else if (!selectedProfileExists) {
+              _selectedManagedProfileId = managedProfiles.first.id;
+            }
+          }
           _isLoadingProfile = false;
         });
-        await NotificationService.cacheReminderSettings(_reminderSettings);
+        NotificationService.cacheReminderSettings(_reminderSettings);
+        _loadGamificationAwards();
       } else {
         setState(() => _isLoadingProfile = false);
       }
     } catch (_) {
       if (!mounted) return;
       setState(() => _isLoadingProfile = false);
+    }
+  }
+
+  Future<void> _loadGamificationAwards() async {
+    try {
+      final gamificationResponse = await ApiService.getGamificationSummary(
+        profileUserId: _isCaregiverViewer ? _profileOwnerId : null,
+      );
+      if (!mounted) return;
+      final gamification = _asStringMap(gamificationResponse["gamification"]);
+      final gamificationStatus = _asStringMap(gamification["status"]);
+      final unlockedAwards = gamificationStatus["unlockedAwards"];
+      setState(() {
+        _unlockedAwardIds = unlockedAwards is List
+            ? unlockedAwards.map((award) => award.toString()).toSet()
+            : {};
+      });
+    } catch (_) {
+      // Awards are secondary profile decoration; keep the page responsive.
     }
   }
 
@@ -219,6 +277,72 @@ class _ProfilePageState extends State<ProfilePage> {
   String get _childName {
     final name = _textValue(_user, ["childFullName", "child_name", "name"]);
     return name.isEmpty ? "Child Profile" : name;
+  }
+
+  List<CaregiverManagedProfile> get _managedProfiles {
+    if (!_isCaregiverViewer) return const [];
+
+    final profiles = <CaregiverManagedProfile>[];
+    final seenIds = <String>{};
+
+    if (_hasDirectCaregiverProfile) {
+      final id = (_profileOwnerId ??
+              _user["id"] ??
+              _user["uid"] ??
+              "direct-caregiver-profile")
+          .toString();
+      profiles.add(
+        CaregiverManagedProfile(
+          id: id,
+          name: _childName,
+          typeLabel: "Direct child",
+          canRemove: false,
+        ),
+      );
+      seenIds.add(id);
+    }
+
+    final linkedChildren = _caregiverDashboardState["linkedChildren"];
+    if (linkedChildren is List) {
+      for (final item in linkedChildren) {
+        if (item is! Map) continue;
+        final id = (item["id"] ?? item["uid"] ?? item["userId"])?.toString();
+        if (id == null || id.isEmpty || seenIds.contains(id)) continue;
+        final isDirectProfile = _isDirectChildEntry(item);
+        final name = (item["name"] ??
+                item["fullName"] ??
+                item["childFullName"] ??
+                (isDirectProfile ? "Child Profile" : "Linked adolescent"))
+            .toString();
+        profiles.add(
+          CaregiverManagedProfile(
+            id: id,
+            name: name,
+            typeLabel: isDirectProfile ? "Direct child" : "Linked adolescent",
+            canRemove: !isDirectProfile,
+          ),
+        );
+        seenIds.add(id);
+      }
+    }
+
+    final legacyLinkedId =
+        _caregiverDashboardState["linkedChildUserId"]?.toString();
+    if (_caregiverDashboardState["linkedChildAccount"] == true &&
+        legacyLinkedId != null &&
+        legacyLinkedId.isNotEmpty &&
+        !seenIds.contains(legacyLinkedId)) {
+      profiles.add(
+        CaregiverManagedProfile(
+          id: legacyLinkedId,
+          name: _childName,
+          typeLabel: "Linked adolescent",
+          canRemove: true,
+        ),
+      );
+    }
+
+    return profiles.take(3).toList(growable: false);
   }
 
   String get _viewerRoleLabel {
@@ -272,6 +396,21 @@ class _ProfilePageState extends State<ProfilePage> {
     if (parts.length == 1) {
       return parts.first.substring(0, 1).toUpperCase();
     }
+    return "${parts.first[0]}${parts.last[0]}".toUpperCase();
+  }
+
+  String get _caregiverName {
+    final name = _textValue(_viewer, ["fullName", "name", "displayName"]);
+    return name.isEmpty ? "Caregiver Account" : name;
+  }
+
+  String get _caregiverInitials {
+    final parts = _caregiverName
+        .split(RegExp(r"\s+"))
+        .where((part) => part.trim().isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return "NK";
+    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
     return "${parts.first[0]}${parts.last[0]}".toUpperCase();
   }
 
@@ -334,7 +473,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
     try {
       final response = await ApiService.updateReminderSettings(
-        profileUserId: _profileOwnerId,
+        profileUserId: _reminderSettingsProfileUserId,
         medicationReminders: medicationReminders,
         hydrationAlerts: hydrationAlerts,
         breakfastReminder: breakfastReminder,
@@ -352,12 +491,16 @@ class _ProfilePageState extends State<ProfilePage> {
       }
       final savedSettings = response["reminderSettings"];
       if (savedSettings is Map) {
-        _user["reminderSettings"] = Map<String, dynamic>.from(savedSettings);
+        if (_isCaregiverViewer) {
+          _viewer["reminderSettings"] = Map<String, dynamic>.from(savedSettings);
+        } else {
+          _user["reminderSettings"] = Map<String, dynamic>.from(savedSettings);
+        }
         await NotificationService.cacheReminderSettings(
           Map<String, dynamic>.from(savedSettings),
         );
       }
-      await NotificationService.refreshReminderNotificationsFromDashboard();
+      NotificationService.refreshReminderNotificationsFromDashboard();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -399,6 +542,16 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  Future<void> _openManageChildren() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (context) => const ManageChildrenPage()),
+    );
+    if (mounted) {
+      _loadProfile();
+    }
+  }
+
   Future<void> _openPrivacySecurity() async {
     final updated = await Navigator.push<bool>(
       context,
@@ -421,6 +574,7 @@ class _ProfilePageState extends State<ProfilePage> {
       MaterialPageRoute(
         builder: (context) => NotificationSettingsPage(
           profileUserId: _profileOwnerId,
+          reminderSettingsProfileUserId: _reminderSettingsProfileUserId,
           canManageReminderSettings: _canManageReminderSettings,
           reminderSettingsLockReason: _reminderSettingsLockReason,
           initialMedicationReminders: _medicationReminders,
@@ -436,6 +590,225 @@ class _ProfilePageState extends State<ProfilePage> {
 
     if (updated == true) {
       _loadProfile();
+    }
+  }
+
+  Future<void> _generateCaregiverLinkCode() async {
+    try {
+      final response = await ApiService.generateCaregiverLinkCode();
+      if (!mounted) return;
+
+      if (response["success"] != true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              response["error"]?.toString() ??
+                  "Unable to generate a linking code right now.",
+            ),
+          ),
+        );
+        return;
+      }
+
+      final code = response["code"]?.toString() ?? "";
+      final expiresAt = response["expiresAt"]?.toString() ?? "";
+      await _loadProfile();
+      if (!mounted) return;
+
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            title: const Text('Caregiver Linking Code'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Share this code with your adolescent child so they can link their NutriKidney account.',
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 18,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF2FBF7),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: const Color(0xFFD7ECE5)),
+                  ),
+                  child: Text(
+                    code,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 4,
+                      color: Color(0xFF009688),
+                    ),
+                  ),
+                ),
+                if (expiresAt.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    'Expires: $expiresAt',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF78909C),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to generate a linking code: $error')),
+      );
+    }
+  }
+
+  Future<void> _showSendLinkRequestDialog() async {
+    String email = '';
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          title: const Text('Send Link Request'),
+          content: TextField(
+            keyboardType: TextInputType.emailAddress,
+            onChanged: (value) => email = value.trim(),
+            decoration: const InputDecoration(
+              labelText: 'Adolescent email',
+              hintText: 'child@example.com',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      email.isEmpty
+                          ? 'Enter an email address to send a link request.'
+                          : 'Link request prepared for $email. The adolescent must approve access from their account.',
+                    ),
+                  ),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00C874),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Send Request'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showAddChildDialog() async {
+    if (_managedProfiles.length >= 3) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('A caregiver account can manage up to 3 profiles.'),
+        ),
+      );
+      return;
+    }
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          title: const Text('How would you like to add another child?'),
+          content: const Text(
+            'Add a 5-12 child profile, link a 13-18 adolescent account, or manage an adolescent directly in this caregiver account.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop('link_adolescent'),
+              child: const Text('Link Existing Account'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop('child_profile'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00C874),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Add Child Profile'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || choice == null) return;
+    if (choice == 'link_adolescent') {
+      await _generateCaregiverLinkCode();
+      return;
+    }
+
+    try {
+      final response = await ApiService.saveCaregiverChildAgeGroup(
+        childAgeGroup: '5-12',
+      );
+      if (!mounted) return;
+      if (response["success"] != true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              response["error"]?.toString() ??
+                  'Unable to start profile setup right now.',
+            ),
+          ),
+        );
+        return;
+      }
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const ProfileSetupIntroScreen(
+            isChildProfileSetup: true,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to add child: $error')),
+      );
     }
   }
 
@@ -615,9 +988,11 @@ class _ProfilePageState extends State<ProfilePage> {
               _buildProfileCard(),
               const SizedBox(height: 32),
 
-              // --- Achievements Section ---
-              _buildAchievementsSection(),
-              const SizedBox(height: 32),
+              if (!_isCaregiverViewer) ...[
+                // --- Achievements Section ---
+                _buildAchievementsSection(),
+                const SizedBox(height: 32),
+              ],
 
               // --- Settings Section ---
               const Text(
@@ -652,26 +1027,30 @@ class _ProfilePageState extends State<ProfilePage> {
                 subtitle: 'View linked account details and change password',
                 onTap: _openAccountManagement,
               ),
-              _buildSettingTile(
-                Icons.people_outline,
-                'Caregiver Access',
-                subtitle: _isAdolescentRole
-                    ? (_caregiverLinked
-                        ? 'Linked caregiver'
-                        : (_caregiverLinkStatus == 'pending'
-                            ? 'Link pending'
-                            : 'No caregiver linked'))
-                    : (_isCaregiverViewer
-                        ? (_caregiverDashboardState["linkedChildAccount"] == true
-                            ? 'Linked adolescent account'
-                            : 'No adolescent linked')
-                        : 'Available for adolescent accounts'),
-                onTap: _isAdolescentRole
-                    ? _showCaregiverSettingsDialog
-                    : (_isCaregiverViewer
-                        ? _showCaregiverLinkManagementDialog
-                        : () => _showFeatureDialog('Caregiver Access')),
-              ),
+              if (_isCaregiverViewer)
+                _buildSettingTile(
+                  Icons.family_restroom_outlined,
+                  'Manage Children',
+                  subtitle: _managedProfiles.isEmpty
+                      ? 'No child profiles yet'
+                      : '${_managedProfiles.length}/3 child profiles',
+                  onTap: _openManageChildren,
+                ),
+              if (!_isCaregiverViewer)
+                _buildSettingTile(
+                  Icons.people_outline,
+                  'Caregiver Access',
+                  subtitle: _isAdolescentRole
+                      ? (_caregiverLinked
+                          ? 'Linked caregiver'
+                          : (_caregiverLinkStatus == 'pending'
+                              ? 'Link pending'
+                              : 'No caregiver linked'))
+                      : 'Available for adolescent accounts',
+                  onTap: _isAdolescentRole
+                      ? _showCaregiverSettingsDialog
+                      : () => _showFeatureDialog('Caregiver Access'),
+                ),
               _buildSettingTile(
                 Icons.insert_drive_file_outlined,
                 'Export Health Data',
@@ -762,6 +1141,10 @@ class _ProfilePageState extends State<ProfilePage> {
   // ==========================================
 
   Widget _buildProfileCard() {
+    if (_isCaregiverViewer) {
+      return _buildCaregiverAccountCard();
+    }
+
     final age = _textValue(_user, ["ageYears", "age_years"]);
     final ckdStage = _textValue(_medicalProfile, ["ckdStage", "ckd_stage"]);
 
@@ -879,6 +1262,133 @@ class _ProfilePageState extends State<ProfilePage> {
                                 color: _canOpenEditProfile
                                     ? const Color(0xFF00A864)
                                     : const Color(0xFF90A4AE),
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCaregiverAccountCard() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF00C874),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF00C874).withOpacity(0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 70,
+            height: 70,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.8),
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: _isLoadingProfile
+                  ? const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Color(0xFF009688),
+                      ),
+                    )
+                  : Text(
+                      _caregiverInitials,
+                      style: const TextStyle(
+                        color: Color(0xFF009688),
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _isLoadingProfile ? "Loading account..." : _caregiverName,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _viewerEmail.isEmpty ? _viewerRoleLabel : _viewerEmail,
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.25),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Text(
+                        "Caregiver Account",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: _openAccountManagement,
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.manage_accounts_outlined,
+                              color: Color(0xFF00A864),
+                              size: 14,
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              "Account Settings",
+                              style: TextStyle(
+                                color: Color(0xFF00A864),
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold,
                               ),
@@ -1190,7 +1700,11 @@ class _ProfilePageState extends State<ProfilePage> {
                       setDialogState(() => _allowDataExport = value);
                       setState(() {
                         _allowDataExport = value;
-                        _user["allowDataExport"] = value;
+                        if (_isCaregiverViewer) {
+                          _viewer["allowDataExport"] = value;
+                        } else {
+                          _user["allowDataExport"] = value;
+                        }
                       });
                       try {
                         final response = await ApiService.updateProfile({
@@ -1209,7 +1723,11 @@ class _ProfilePageState extends State<ProfilePage> {
                         }
                         setState(() {
                           _allowDataExport = !value;
-                          _user["allowDataExport"] = !value;
+                          if (_isCaregiverViewer) {
+                            _viewer["allowDataExport"] = !value;
+                          } else {
+                            _user["allowDataExport"] = !value;
+                          }
                         });
                         ScaffoldMessenger.of(this.context).showSnackBar(
                           SnackBar(
@@ -1296,6 +1814,23 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                     const SizedBox(height: 16),
+                    if (!caregiverLinked)
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        activeColor: const Color(0xFF00C874),
+                        title: const Text('Consent confirmed without caregiver'),
+                        subtitle: const Text(
+                          'Required when no caregiver is linked.',
+                        ),
+                        value: consentConfirmed,
+                        onChanged: wantsCaregiverLink
+                            ? null
+                            : (value) {
+                                setDialogState(() {
+                                  consentConfirmed = value;
+                                });
+                              },
+                      ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       activeColor: const Color(0xFF00C874),
@@ -1318,23 +1853,6 @@ class _ProfilePageState extends State<ProfilePage> {
                               });
                             },
                     ),
-                    if (!caregiverLinked)
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        value: consentConfirmed,
-                        onChanged: wantsCaregiverLink
-                            ? null
-                            : (value) {
-                                setDialogState(() {
-                                  consentConfirmed = value ?? false;
-                                });
-                              },
-                        title: const Text('Consent confirmed without caregiver'),
-                        subtitle: const Text(
-                          'Required when no caregiver is linked.',
-                        ),
-                      ),
                     const SizedBox(height: 8),
                     Text(
                       'Link status: ${linkStatus.toUpperCase()}',
@@ -1543,10 +2061,17 @@ class _ProfilePageState extends State<ProfilePage> {
   Future<void> _showCaregiverLinkManagementDialog() async {
     final pageContext = context;
     bool isRemoving = false;
-    final linkedChildAccount =
+    final selectedProfile = _managedProfiles.where(
+      (profile) => profile.id == _selectedManagedProfileId,
+    );
+    final removableProfile = selectedProfile.isNotEmpty
+        ? selectedProfile.first
+        : null;
+    final linkedChildAccount = removableProfile?.canRemove == true ||
         _caregiverDashboardState["linkedChildAccount"] == true;
-    final linkedChildUserId =
-        _caregiverDashboardState["linkedChildUserId"]?.toString();
+    final linkedChildUserId = removableProfile?.canRemove == true
+        ? removableProfile!.id
+        : _caregiverDashboardState["linkedChildUserId"]?.toString();
 
     await showDialog<void>(
       context: context,
@@ -1575,7 +2100,9 @@ class _ProfilePageState extends State<ProfilePage> {
                   if (linkedChildAccount && linkedChildUserId != null) ...[
                     const SizedBox(height: 12),
                     Text(
-                      'Linked child ID: $linkedChildUserId',
+                      removableProfile == null
+                          ? 'Linked child ID: $linkedChildUserId'
+                          : 'Selected profile: ${removableProfile.name}',
                       style: const TextStyle(
                         color: Color(0xFF78909C),
                         fontSize: 12,
@@ -1605,6 +2132,7 @@ class _ProfilePageState extends State<ProfilePage> {
                               if (!mounted) return;
                               if (response["success"] == true) {
                                 Navigator.of(dialogContext).pop();
+                                _selectedManagedProfileId = null;
                                 await _loadProfile();
                                 if (!mounted) return;
                                 ScaffoldMessenger.of(pageContext).showSnackBar(

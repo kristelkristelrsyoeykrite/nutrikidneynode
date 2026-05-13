@@ -42,6 +42,11 @@ class FoodItem {
   });
 
   factory FoodItem.fromLog(Map<String, dynamic> data) {
+    final nutrients = data['finalNutrients'] is Map
+        ? Map<String, dynamic>.from(data['finalNutrients'] as Map)
+        : data['final_nutrients'] is Map
+            ? Map<String, dynamic>.from(data['final_nutrients'] as Map)
+            : const <String, dynamic>{};
     return FoodItem(
       id: data['id']?.toString(),
       foodId: data['foodId']?.toString(),
@@ -50,14 +55,15 @@ class FoodItem {
       name: data['name']?.toString() ?? 'Food',
       portion: data['portion']?.toString() ?? '1 serving',
       quantity: _asDouble(data['quantity'] ?? data['selectedQuantity'] ?? 1),
-      calories: _asInt(data['calories']),
+      calories: _asInt(data['calories'] ?? nutrients['calories']),
       time: _formatDisplayTime(data['createdAt']),
-      protein: _asDouble(data['protein']),
-      carbohydrate: _asDouble(data['carbohydrate']),
-      fat: _asDouble(data['fat']),
-      sodium: _asDouble(data['sodium']),
-      potassium: _asDouble(data['potassium']),
-      phosphorus: _asDouble(data['phosphorus']),
+      protein: _asDouble(data['protein'] ?? nutrients['protein']),
+      carbohydrate:
+          _asDouble(data['carbohydrate'] ?? nutrients['carbohydrate']),
+      fat: _asDouble(data['fat'] ?? nutrients['fat']),
+      sodium: _asDouble(data['sodium'] ?? nutrients['sodium']),
+      potassium: _asDouble(data['potassium'] ?? nutrients['potassium']),
+      phosphorus: _asDouble(data['phosphorus'] ?? nutrients['phosphorus']),
       source: data['source']?.toString() ?? 'manual_entry',
       needsManualReview: data['needsManualReview'] == true,
       raw: data['raw'] is Map

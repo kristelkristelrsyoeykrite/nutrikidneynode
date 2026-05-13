@@ -8,6 +8,8 @@ const {
 
 const FOOD_LOG_COLLECTION = "foodLogs";
 const DAILY_SUMMARY_COLLECTION = "dailyIntakeSummaries";
+const LINKED_ADOLESCENT_NUTRITION_ALERT_TYPE =
+  "linked_adolescent_nutrition_limit_alert";
 const KNOWN_ALLERGY_ALIASES = {
   milk: ["milk", "dairy", "cheese", "butter", "cream", "whey", "casein", "yogurt"],
   egg: ["egg", "eggs", "albumin", "mayonnaise", "mayo"],
@@ -478,19 +480,164 @@ async function recomputeDailySummary(childProfileId, date) {
   });
 
   const summaryId = `${childProfileId}_${date}`;
-  await db.collection(DAILY_SUMMARY_COLLECTION).doc(summaryId).set(
+  const summary = {
+    childProfileId,
+    date,
+    mealCount: count,
+    waterMl,
+    water_ml: waterMl,
+    fluid_ml: waterMl,
+    totals,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await db.collection(DAILY_SUMMARY_COLLECTION).doc(summaryId).set(summary, {
+    merge: true,
+  });
+
+  return summary;
+}
+
+function deviceTokensFromProfile(profile = {}) {
+  const raw = profile.deviceTokens;
+  if (!raw || typeof raw !== "object") return [];
+  return [
+    ...new Set(
+      Object.values(raw)
+        .filter((entry) => entry && typeof entry.token === "string")
+        .map((entry) => entry.token.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function linkedCaregiverIdForAdolescent(profile = {}) {
+  if (String(profile.role || "").trim().toLowerCase() !== "adolescent") {
+    return null;
+  }
+  const settings = profile.caregiverSettings || {};
+  if (settings.caregiverLinked === true && settings.caregiverId) {
+    return String(settings.caregiverId);
+  }
+  if (profile.caregiverUserId) return String(profile.caregiverUserId);
+  return null;
+}
+
+function exceededNutrients(summary = {}, childContext = {}) {
+  const totals = summary.totals || {};
+  const targets = childContext.targets || {};
+  return [
+    { key: "sodium", label: "Sodium", total: totals.sodium, limit: targets.sodium },
     {
-      childProfileId,
-      date,
-      mealCount: count,
-      waterMl,
-      water_ml: waterMl,
-      fluid_ml: waterMl,
-      totals,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      key: "potassium",
+      label: "Potassium",
+      total: totals.potassium,
+      limit: targets.potassium,
     },
-    { merge: true },
-  );
+    {
+      key: "phosphorus",
+      label: "Phosphorus",
+      total: totals.phosphorus,
+      limit: targets.phosphorus,
+    },
+  ].filter((item) => {
+    const total = numberOrNull(item.total);
+    const limit = numberOrNull(item.limit);
+    return total !== null && limit !== null && limit > 0 && total > limit;
+  });
+}
+
+async function notifyLinkedCaregiverForNutritionLimits(childProfileId, date, summary) {
+  try {
+    if (!childProfileId || !date || !summary) return;
+
+    const adolescentDoc = await db.collection("users").doc(childProfileId).get();
+    if (!adolescentDoc.exists) return;
+
+    const adolescent = adolescentDoc.data() || {};
+    const caregiverId = linkedCaregiverIdForAdolescent(adolescent);
+    if (!caregiverId) return;
+
+    const caregiverDoc = await db.collection("users").doc(caregiverId).get();
+    if (!caregiverDoc.exists) return;
+
+    const caregiver = caregiverDoc.data() || {};
+    const tokens = deviceTokensFromProfile(caregiver);
+    const childContext = await buildChildContext(childProfileId, childProfileId);
+    const exceeded = exceededNutrients(summary, childContext);
+    if (exceeded.length === 0) return;
+
+    const childName =
+      adolescent.childFullName ||
+      adolescent.fullName ||
+      adolescent.displayName ||
+      adolescent.name ||
+      "Your child";
+
+    for (const nutrient of exceeded) {
+      const stateId = `${caregiverId}_${childProfileId}_${date}_${nutrient.key}`;
+      const stateRef = db
+        .collection("notificationState")
+        .doc(`${LINKED_ADOLESCENT_NUTRITION_ALERT_TYPE}_${stateId}`);
+      const stateDoc = await stateRef.get();
+      if (stateDoc.exists) continue;
+
+      const body = `${childName} has exceeded the ${nutrient.label}. Please check your child.`;
+      const notificationPayload = {
+        userId: caregiverId,
+        profileUserId: childProfileId,
+        childProfileId,
+        type: LINKED_ADOLESCENT_NUTRITION_ALERT_TYPE,
+        title: "Nutrition Alert",
+        body,
+        nutrient: nutrient.key,
+        nutrientLabel: nutrient.label,
+        total: numberOrNull(nutrient.total),
+        limit: numberOrNull(nutrient.limit),
+        date,
+        read: false,
+        priority: "high",
+        color: "red",
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      await db.collection("notifications").add(notificationPayload);
+
+      if (tokens.length > 0) {
+        await admin.messaging().sendEachForMulticast({
+          tokens,
+          notification: {
+            title: "Nutrition Alert",
+            body,
+          },
+          data: {
+            type: LINKED_ADOLESCENT_NUTRITION_ALERT_TYPE,
+            userId: caregiverId,
+            profileUserId: childProfileId,
+            childProfileId,
+            nutrient: nutrient.key,
+            date,
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "nutrikidney_reminders",
+            },
+          },
+        });
+      }
+
+      await stateRef.set({
+        caregiverId,
+        childProfileId,
+        date,
+        nutrient: nutrient.key,
+        sentAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  } catch (error) {
+    console.error("LINKED_CAREGIVER_NUTRITION_ALERT ERROR:", error.message);
+  }
 }
 
 async function recomputeGamification(userId, date) {
@@ -544,7 +691,7 @@ router.post("/search", async (req, res) => {
     console.error("FOOD_SEARCH ERROR:", error.message);
     return res.status(error.statusCode || 500).json({
       success: false,
-      error: "Food search is temporarily unavailable.",
+      error: "Food search is temporarily unavailable. Please try again.",
       details: error.data,
     });
   }
@@ -560,7 +707,7 @@ router.get("/details/:foodId", async (req, res) => {
     console.error("FOOD_DETAILS ERROR:", error.message);
     return res.status(error.statusCode || 500).json({
       success: false,
-      error: "Food details are temporarily unavailable.",
+      error: "Food details are temporarily unavailable. Please try again.",
       details: error.data,
     });
   }
@@ -584,7 +731,7 @@ router.post("/details", async (req, res) => {
     console.error("FOOD_DETAILS ERROR:", error.message);
     return res.status(error.statusCode || 500).json({
       success: false,
-      error: "Food details are temporarily unavailable.",
+      error: "Food details are temporarily unavailable. Please try again.",
       details: error.data,
     });
   }
@@ -648,6 +795,7 @@ router.post("/logs/list", async (req, res) => {
   try {
     const {
       userId,
+      profileUserId,
       childProfileId,
       date,
       dateFrom,
@@ -667,24 +815,44 @@ router.post("/logs/list", async (req, res) => {
     const requestedLimit = Number(limit) || 100;
     let logs = [];
 
-    let query = db.collection(FOOD_LOG_COLLECTION);
-    if (date) {
-      query = query.where("date", "==", date);
-    } else if (dateFrom || dateTo) {
-      if (dateFrom) {
-        query = query.where("date", ">=", dateFrom);
-      }
-      if (dateTo) {
-        query = query.where("date", "<=", dateTo);
-      }
+    const requestedProfileId = childProfileId || profileUserId;
+    let snapshots;
+    if (requestedProfileId) {
+      snapshots = await Promise.all([
+        db
+          .collection(FOOD_LOG_COLLECTION)
+          .where("childProfileId", "==", requestedProfileId)
+          .get(),
+        db
+          .collection(FOOD_LOG_COLLECTION)
+          .where("userId", "==", requestedProfileId)
+          .get(),
+      ]);
     } else {
-      query = query.where("userId", "==", userId);
+      snapshots = [
+        await db
+          .collection(FOOD_LOG_COLLECTION)
+          .where("userId", "==", userId)
+          .get(),
+      ];
     }
 
-    const snapshot = await query.get();
-    logs = snapshot.docs.map(serializeFoodLog).filter((log) => {
-      if (log.userId !== userId) return false;
-      if (childProfileId && log.childProfileId !== childProfileId) return false;
+    const docsById = new Map();
+    snapshots.forEach((snapshot) => {
+      snapshot.docs.forEach((doc) => docsById.set(doc.id, doc));
+    });
+
+    logs = [...docsById.values()].map(serializeFoodLog).filter((log) => {
+      if (requestedProfileId) {
+        if (
+          log.childProfileId !== requestedProfileId &&
+          log.userId !== requestedProfileId
+        ) {
+          return false;
+        }
+      } else if (log.userId !== userId) {
+        return false;
+      }
       if (date && log.date !== date) return false;
       if (dateFrom && (!log.date || log.date < dateFrom)) return false;
       if (dateTo && (!log.date || log.date > dateTo)) return false;
@@ -714,6 +882,7 @@ router.post("/logs/add", async (req, res) => {
     if (!req.body.servingId && !req.body.serving_id) {
       const {
         userId,
+        profileUserId,
         childProfileId,
         mealType,
         date,
@@ -755,7 +924,7 @@ router.post("/logs/add", async (req, res) => {
       };
       const phosphorusGuide = phosphorusGuideFromRaw(raw);
       const candidatePayload = cleanObject({
-        childProfileId: childProfileId || userId,
+        childProfileId: childProfileId || profileUserId || userId,
         name,
         foodName: name,
         portion: portion || "1 serving",
@@ -766,7 +935,7 @@ router.post("/logs/add", async (req, res) => {
       });
       const { allergyCheck } = await evaluateAllergyAlert({
         userId,
-        childProfileId,
+        childProfileId: childProfileId || profileUserId,
         payload: candidatePayload,
       });
 
@@ -780,7 +949,7 @@ router.post("/logs/add", async (req, res) => {
 
       const payload = addAllergyMetadataToPayload(cleanObject({
         userId,
-        childProfileId: childProfileId || userId,
+        childProfileId: childProfileId || profileUserId || userId,
         mealType,
         date: logDate,
         loggedAt: admin.firestore.Timestamp.fromDate(loggedAtDate),
@@ -820,8 +989,13 @@ router.post("/logs/add", async (req, res) => {
 
       let dailySummaryStatus = "updated";
       try {
-        await recomputeDailySummary(payload.childProfileId, logDate);
-        await recomputeGamification(userId, logDate);
+        const summary = await recomputeDailySummary(payload.childProfileId, logDate);
+        await notifyLinkedCaregiverForNutritionLimits(
+          payload.childProfileId,
+          logDate,
+          summary,
+        );
+        await recomputeGamification(payload.childProfileId, logDate);
       } catch (summaryError) {
         console.error("FOOD_LOG_SUMMARY ERROR:", summaryError.message);
         dailySummaryStatus = "queued_for_retry";
@@ -849,6 +1023,7 @@ router.post("/logs/add", async (req, res) => {
 
     const {
       userId,
+      profileUserId,
       childProfileId,
       mealType,
       date,
@@ -903,8 +1078,9 @@ router.post("/logs/add", async (req, res) => {
     };
     const phosphorusGuide = phosphorusGuideFromRaw(raw);
     const now = admin.firestore.FieldValue.serverTimestamp();
+    const targetChildProfileId = childProfileId || profileUserId || userId;
     const candidatePayload = cleanObject({
-      childProfileId: childProfileId || userId,
+      childProfileId: targetChildProfileId,
       name,
       foodName: name,
       brandName: raw?.brand_name || raw?.brandName,
@@ -915,7 +1091,7 @@ router.post("/logs/add", async (req, res) => {
     });
     const { allergyCheck } = await evaluateAllergyAlert({
       userId,
-      childProfileId,
+      childProfileId: targetChildProfileId,
       payload: candidatePayload,
     });
 
@@ -929,7 +1105,7 @@ router.post("/logs/add", async (req, res) => {
 
     const payload = addAllergyMetadataToPayload(cleanObject({
       userId,
-      childProfileId: childProfileId || userId,
+      childProfileId: targetChildProfileId,
       mealType,
       date: logDate,
       loggedAt: admin.firestore.Timestamp.fromDate(loggedAtDate),
@@ -978,8 +1154,13 @@ router.post("/logs/add", async (req, res) => {
 
     let dailySummaryStatus = "updated";
     try {
-      await recomputeDailySummary(payload.childProfileId, logDate);
-      await recomputeGamification(userId, logDate);
+      const summary = await recomputeDailySummary(payload.childProfileId, logDate);
+      await notifyLinkedCaregiverForNutritionLimits(
+        payload.childProfileId,
+        logDate,
+        summary,
+      );
+      await recomputeGamification(payload.childProfileId, logDate);
     } catch (summaryError) {
       console.error("FOOD_LOG_SUMMARY ERROR:", summaryError.message);
       dailySummaryStatus = "queued_for_retry";
@@ -1017,6 +1198,8 @@ router.post("/logs/update", async (req, res) => {
   try {
     const {
       userId,
+      profileUserId,
+      childProfileId,
       foodLogId,
       mealType,
       date,
@@ -1053,7 +1236,13 @@ router.post("/logs/update", async (req, res) => {
     }
 
     const existing = doc.data() || {};
-    if (existing.userId !== userId) {
+    const requestedProfileId = childProfileId || profileUserId;
+    if (
+      existing.userId !== userId &&
+      (!requestedProfileId ||
+        (existing.childProfileId !== requestedProfileId &&
+          existing.userId !== requestedProfileId))
+    ) {
       return res.status(403).json({
         success: false,
         error: "Food log does not belong to this user",
@@ -1122,7 +1311,15 @@ router.post("/logs/update", async (req, res) => {
     let dailySummaryStatus = "updated";
     try {
       if (existing.childProfileId && existing.date) {
-        await recomputeDailySummary(existing.childProfileId, existing.date);
+        const summary = await recomputeDailySummary(
+          existing.childProfileId,
+          existing.date,
+        );
+        await notifyLinkedCaregiverForNutritionLimits(
+          existing.childProfileId,
+          existing.date,
+          summary,
+        );
         await recomputeGamification(userId, existing.date);
       }
       if (
@@ -1131,7 +1328,15 @@ router.post("/logs/update", async (req, res) => {
         (updatedLog.childProfileId !== existing.childProfileId ||
           updatedLog.date !== existing.date)
       ) {
-        await recomputeDailySummary(updatedLog.childProfileId, updatedLog.date);
+        const summary = await recomputeDailySummary(
+          updatedLog.childProfileId,
+          updatedLog.date,
+        );
+        await notifyLinkedCaregiverForNutritionLimits(
+          updatedLog.childProfileId,
+          updatedLog.date,
+          summary,
+        );
         await recomputeGamification(userId, updatedLog.date);
       }
     } catch (summaryError) {
@@ -1158,7 +1363,7 @@ router.post("/logs/update", async (req, res) => {
 
 router.post("/logs/delete", async (req, res) => {
   try {
-    const { userId, foodLogId } = req.body;
+    const { userId, profileUserId, childProfileId, foodLogId } = req.body;
 
     if (!userId || !foodLogId) {
       return res.status(400).json({
@@ -1178,7 +1383,13 @@ router.post("/logs/delete", async (req, res) => {
     }
 
     const existing = doc.data() || {};
-    if (existing.userId !== userId) {
+    const requestedProfileId = childProfileId || profileUserId;
+    if (
+      existing.userId !== userId &&
+      (!requestedProfileId ||
+        (existing.childProfileId !== requestedProfileId &&
+          existing.userId !== requestedProfileId))
+    ) {
       return res.status(403).json({
         success: false,
         error: "Food log does not belong to this user",

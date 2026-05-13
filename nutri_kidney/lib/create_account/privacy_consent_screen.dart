@@ -1,14 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:nutri_kidney/login/login.dart';
+import 'package:nutri_kidney/services/api_service.dart';
 import 'package:nutri_kidney/services/auth_service.dart';
 import 'package:nutri_kidney/utils/app_logger.dart';
 import 'health_profile1.dart';
+import '../main/dashboard.dart';
 
 /// Privacy consent screen for profile setup
 /// Blocking step - user must accept before proceeding
 /// NOTE: This has different content than the signup registration privacy dialog
 class PrivacyConsentScreen extends StatefulWidget {
-  const PrivacyConsentScreen({super.key});
+  const PrivacyConsentScreen({
+    super.key,
+    this.continueToHealthProfile = false,
+    this.goToDashboardAfterAccept = false,
+    this.isChildProfileSetup = false,
+  });
+
+  final bool continueToHealthProfile;
+  final bool goToDashboardAfterAccept;
+  final bool isChildProfileSetup;
 
   @override
   State<PrivacyConsentScreen> createState() => _PrivacyConsentScreenState();
@@ -17,7 +28,7 @@ class PrivacyConsentScreen extends StatefulWidget {
 class _PrivacyConsentScreenState extends State<PrivacyConsentScreen> {
   bool _hasAcceptedConsent = false;
 
-  void _handleAccept() {
+  Future<void> _handleAccept() async {
     if (!_hasAcceptedConsent) {
       AppLogger.warning(
         'User clicked accept without checking consent box',
@@ -37,9 +48,15 @@ class _PrivacyConsentScreenState extends State<PrivacyConsentScreen> {
       tag: LogTag.onboarding,
     );
 
-    Navigator.of(context).push(
+    await ApiService.updatePrivacyConsent(accepted: true);
+
+    Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (context) => const HealthProfile1Page(),
+        builder: (context) => widget.goToDashboardAfterAccept
+            ? const DashboardPage()
+            : HealthProfile1Page(
+                isChildProfileSetup: widget.isChildProfileSetup,
+              ),
       ),
     );
   }
