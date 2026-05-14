@@ -193,12 +193,28 @@ function serializeTimestamp(value) {
 
 function serializeFoodLog(doc) {
   const data = doc.data() || {};
+  const createdAt = serializeTimestamp(data.createdAt);
+  const loggedAt = serializeTimestamp(data.loggedAt) || data.loggedAt;
+  const normalizedLoggedAt = (() => {
+    const createdMs = timestampMillis(createdAt);
+    const loggedMs = timestampMillis(loggedAt);
+    if (!createdMs || !loggedMs) return loggedAt;
+    const diffMs = createdMs - loggedMs;
+    const eightHours = 8 * 60 * 60 * 1000;
+    if (Math.abs(diffMs - eightHours) <= 90 * 60 * 1000) {
+      // Older clients sent timezone-less timestamps; backend parsed them in UTC,
+      // shifting loggedAt by ~8 hours compared to createdAt (Manila offset).
+      return new Date(loggedMs + eightHours).toISOString();
+    }
+    return loggedAt;
+  })();
+
   return {
     id: doc.id,
     ...data,
-    createdAt: serializeTimestamp(data.createdAt),
+    createdAt,
     updatedAt: serializeTimestamp(data.updatedAt),
-    loggedAt: serializeTimestamp(data.loggedAt) || data.loggedAt,
+    loggedAt: normalizedLoggedAt,
     deletedAt: serializeTimestamp(data.deletedAt),
   };
 }
@@ -210,7 +226,17 @@ function parseLogDateTime(value) {
     throw error;
   }
 
-  const date = new Date(value);
+  const raw = String(value).trim();
+  // If the client sends an ISO string without timezone (common on mobile when using
+  // `toIso8601String()`), JS interprets it in the server's local timezone.
+  // The app uses Manila time; treat timezone-less ISO timestamps as Asia/Manila (+08:00)
+  // to preserve the intended clock time.
+  const hasTimezone = /([zZ]|[+-]\d{2}:\d{2})$/.test(raw);
+  const looksIsoWithoutTz =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(raw) && !hasTimezone;
+  const normalized = looksIsoWithoutTz ? `${raw}+08:00` : raw;
+
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) {
     const error = new Error("loggedAt must be a valid date-time");
     error.statusCode = 400;
