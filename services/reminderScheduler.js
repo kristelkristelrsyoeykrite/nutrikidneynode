@@ -22,33 +22,19 @@ function numberOrZero(value) {
   return Number.isFinite(num) ? num : 0;
 }
 
-function _textValue(value) {
-  if (!value) return "";
-  if (typeof value === "string") return value.trim();
-  if (typeof value !== "object") return String(value).trim();
-  if (value.encrypted === true) return "";
-
-  const firstName = typeof value.firstName === "string" ? value.firstName.trim() : "";
-  const lastName = typeof value.lastName === "string" ? value.lastName.trim() : "";
-  if (firstName || lastName) return `${firstName} ${lastName}`.trim();
-
-  const candidates = [
-    value.childFullName,
-    value.child_name,
-    value.childName,
-    value.fullName,
-    value.displayName,
-    value.name,
-  ];
-  for (const candidate of candidates) {
-    const text = _textValue(candidate);
-    if (text) return text;
+function safeDecryptHealthProfile(profileData) {
+  if (!profileData || typeof profileData !== "object") return profileData;
+  try {
+    return decryptHealthProfile(profileData);
+  } catch (_) {
+    // If ENCRYPTION_KEY is missing/misconfigured, don't break reminders.
+    return profileData;
   }
-
-  return "";
 }
 
 function displayNameFromProfile(profile = {}) {
+  // Match existing hydration reminder behavior, but guard against non-string values
+  // so we never end up with "Missed medication for [object Object]".
   const candidates = [
     profile.childFullName,
     profile.child_name,
@@ -57,10 +43,13 @@ function displayNameFromProfile(profile = {}) {
     profile.displayName,
     profile.name,
   ];
+
   for (const candidate of candidates) {
-    const text = _textValue(candidate);
+    if (typeof candidate !== "string") continue;
+    const text = candidate.trim();
     if (text) return text;
   }
+
   return "there";
 }
 
@@ -103,7 +92,7 @@ function getDirectManagedChildUserIds(user = {}) {
 
 async function getUserProfile(userId) {
   const doc = await db.collection("users").doc(userId).get();
-  return doc.exists ? decryptHealthProfile(doc.data() || {}) : null;
+  return doc.exists ? safeDecryptHealthProfile(doc.data() || {}) : null;
 }
 
 async function sendReminderToProfileRecipients({
@@ -437,7 +426,7 @@ async function checkMealReminders() {
     }
 
     for (const userDoc of docsById.values()) {
-      const user = decryptHealthProfile(userDoc.data() || {});
+      const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
       const directChildIds = isCaregiverRole(user.role)
         ? getDirectManagedChildUserIds(user)
