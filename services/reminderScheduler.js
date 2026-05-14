@@ -22,6 +22,48 @@ function numberOrZero(value) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function _textValue(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value !== "object") return String(value).trim();
+  if (value.encrypted === true) return "";
+
+  const firstName = typeof value.firstName === "string" ? value.firstName.trim() : "";
+  const lastName = typeof value.lastName === "string" ? value.lastName.trim() : "";
+  if (firstName || lastName) return `${firstName} ${lastName}`.trim();
+
+  const candidates = [
+    value.childFullName,
+    value.child_name,
+    value.childName,
+    value.fullName,
+    value.displayName,
+    value.name,
+  ];
+  for (const candidate of candidates) {
+    const text = _textValue(candidate);
+    if (text) return text;
+  }
+
+  return "";
+}
+
+function displayNameFromProfile(profile = {}) {
+  const candidates = [
+    profile.childFullName,
+    profile.child_name,
+    profile.childName,
+    profile.fullName,
+    profile.displayName,
+    profile.name,
+  ];
+  for (const candidate of candidates) {
+    const text = _textValue(candidate);
+    if (text) return text;
+  }
+  return "there";
+}
+
 function isCaregiverRole(role) {
   const normalized = String(role || "").trim().toLowerCase();
   return normalized === "parent_caregiver" || normalized === "caregiver";
@@ -426,7 +468,7 @@ async function checkMealReminders() {
         const profile = profileUserId === userId ? user : await getUserProfile(profileUserId);
         if (!profile) continue;
 
-        const childName = profile.childFullName || profile.child_name || "there";
+        const childName = displayNameFromProfile(profile);
 
         await sendReminderToProfileRecipients({
           caregiverUserId: isCaregiverRole(user.role) ? userId : null,
@@ -492,7 +534,7 @@ async function checkMedicationReminders() {
         const profile = profileUserId === userId ? user : await getUserProfile(profileUserId);
         if (!profile) continue;
 
-        const childName = profile.childFullName || profile.child_name || "there";
+        const childName = displayNameFromProfile(profile);
 
         await sendReminderToProfileRecipients({
           caregiverUserId: isCaregiverRole(user.role) ? userId : null,
@@ -580,7 +622,7 @@ async function checkHydrationReminders() {
           continue;
         }
 
-        const childName = profile.childFullName || profile.child_name || "there";
+        const childName = displayNameFromProfile(profile);
 
         await sendReminderToProfileRecipients({
           caregiverUserId: isCaregiverRole(user.role) ? userId : null,
@@ -638,7 +680,7 @@ async function checkMissedMedicationReminders() {
 
         if (medicationsSnapshot.empty) continue;
 
-        const childName = profile.childFullName || profile.child_name || "there";
+        const childName = displayNameFromProfile(profile);
 
         for (const medicationDoc of medicationsSnapshot.docs) {
           const medicationId = medicationDoc.id;
