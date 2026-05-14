@@ -1,5 +1,5 @@
 const { admin, db } = require("../firebase/admin");
-const { decryptHealthDocument } = require("../utils/encryption");
+const { decryptHealthDocument, decryptHealthProfile } = require("../utils/encryption");
 const {
   todayDateKey,
   ensureDoseRecordsForDate,
@@ -103,7 +103,7 @@ function getDirectManagedChildUserIds(user = {}) {
 
 async function getUserProfile(userId) {
   const doc = await db.collection("users").doc(userId).get();
-  return doc.exists ? doc.data() || {} : null;
+  return doc.exists ? decryptHealthProfile(doc.data() || {}) : null;
 }
 
 async function sendReminderToProfileRecipients({
@@ -437,7 +437,7 @@ async function checkMealReminders() {
     }
 
     for (const userDoc of docsById.values()) {
-      const user = userDoc.data();
+      const user = decryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
       const directChildIds = isCaregiverRole(user.role)
         ? getDirectManagedChildUserIds(user)
