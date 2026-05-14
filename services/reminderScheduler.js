@@ -4,6 +4,7 @@ const {
   todayDateKey,
   ensureDoseRecordsForDate,
   markOverdueDosesMissed,
+  getDoseRecordsForDate,
 } = require("../utils/medicationDoseRecords");
 
 /**
@@ -108,8 +109,9 @@ async function sendReminderToProfileRecipients({
   for (const targetUserId of targetUserIds) {
     await sendReminderToDevices(targetUserId, {
       ...reminderData,
-      // Keep the original profile id in the payload so the app can route correctly.
-      dataUserId: String(profileUserId || targetUserId),
+      // Keep the profile id separate from the recipient id so existing app-side
+      // user filtering still accepts caregiver-targeted pushes.
+      profileUserId: String(profileUserId || targetUserId),
     });
   }
 }
@@ -221,6 +223,20 @@ function medicationScheduleTimes(medication) {
 
 async function hasMedicationBeenTakenToday(userId) {
   return !(await hasPendingMedicationReminders(userId));
+}
+
+async function getMissedDoseRecordsForMedication({ userId, medicationId, dateKey }) {
+  const records = await getDoseRecordsForDate({ userId, dateKey });
+  return records.filter((record) => {
+    return (
+      String(record.medicationId || "") === String(medicationId) &&
+      String(record.status || "") === "missed"
+    );
+  });
+}
+
+function missedDoseReminderStateKey({ medicationId, expectedDate, expectedTime }) {
+  return `missed_medication_${medicationId}_${expectedDate}_${expectedTime}`;
 }
 
 /**
@@ -339,7 +355,13 @@ async function sendReminderToDevices(userId, reminderData) {
       },
       data: {
         type: reminderData.type,
-        userId: String(reminderData.dataUserId || userId),
+        userId: String(userId),
+        recipientUserId: String(userId),
+        profileUserId: String(
+          reminderData.profileUserId || userId,
+        ),
+        title: String(reminderData.title || ""),
+        body: String(reminderData.body || ""),
         timestamp: Date.now().toString(),
       },
       android: {
@@ -492,7 +514,7 @@ async function checkMedicationReminders() {
       .get();
 
     for (const userDoc of usersSnapshot.docs) {
-      const user = userDoc.data();
+      const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
       const directChildIds = isCaregiverRole(user.role)
         ? getDirectManagedChildUserIds(user)
@@ -558,7 +580,7 @@ async function checkHydrationReminders() {
       .get();
 
     for (const userDoc of usersSnapshot.docs) {
-      const user = userDoc.data();
+      const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
       const directChildIds = isCaregiverRole(user.role)
         ? getDirectManagedChildUserIds(user)
@@ -647,7 +669,7 @@ async function checkMissedMedicationReminders() {
       .get();
 
     for (const userDoc of usersSnapshot.docs) {
-      const user = userDoc.data();
+      const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
       const directChildIds = isCaregiverRole(user.role)
         ? getDirectManagedChildUserIds(user)
@@ -690,24 +712,43 @@ async function checkMissedMedicationReminders() {
             dateKey: today,
           });
 
-          const missedUpdates = await markOverdueDosesMissed({
+          await markOverdueDosesMissed({
             userId: profileUserId,
             medicationId,
             expectedDate: today,
             nowMs,
           });
 
-          for (const update of missedUpdates) {
-            const scheduledTime = String(update.expectedTime || "").trim();
-            const dueTimestamp = admin.firestore.Timestamp.fromDate(
-              dateForTodayClockTime(parseClockTime(scheduledTime)),
+          const missedDoseRecords = await getMissedDoseRecordsForMedication({
+            userId: profileUserId,
+            medicationId,
+            dateKey: today,
+          });
+
+          for (const doseRecord of missedDoseRecords) {
+            const scheduledTime = String(doseRecord.expectedTime || "").trim();
+            if (!scheduledTime) continue;
+            const expectedDate = String(doseRecord.expectedDate || today);
+            const stateKey = missedDoseReminderStateKey({
+              medicationId,
+              expectedDate,
+              expectedTime: scheduledTime,
+            });
+            const lastMissedSent = await getLastReminderTimestamp(
+              profileUserId,
+              stateKey,
             );
+            if (lastMissedSent !== 0) continue;
+
+            const dueTimestamp = doseRecord.expectedDateTime || null;
+            const title = `Missed Reminder for ${childName}`;
+            const body = `You missed your ${name} reminder at ${scheduledTime}. Please take your medication if possible.`;
 
             const missedNotification = {
               userId: profileUserId,
               type: "missed_medication_reminder",
-              title: "Missed Medication Reminder",
-              body: `You missed your ${name} reminder at ${scheduledTime}. Please take your medication if possible.`,
+              title,
+              body,
               timestamp: admin.firestore.FieldValue.serverTimestamp(),
               isMissed: true,
               priority: "high",
@@ -717,8 +758,8 @@ async function checkMissedMedicationReminders() {
               medicationName: name,
               scheduledTime,
               dueTime: dueTimestamp,
-              day: today,
-              doseRecordId: update.doseRecordId,
+              day: expectedDate,
+              doseRecordId: doseRecord.doseRecordId || doseRecord.id,
             };
 
             await db.collection("notifications").add(missedNotification);
@@ -729,11 +770,12 @@ async function checkMissedMedicationReminders() {
               profileUserId,
               reminderData: {
                 type: "missed_medication_reminder",
-                title: `Missed medication for ${childName}`,
-                body: `You missed your ${name} reminder at ${scheduledTime}. Please take your medication if possible.`,
+                title,
+                body,
               },
               includeProfileDevices: !isCaregiverRole(user.role),
             });
+            await updateLastReminderTimestamp(profileUserId, stateKey);
 
             console.log(
               `Marked missed + sent reminder to ${profileUserId} for ${medicationId} at ${scheduledTime}`,
