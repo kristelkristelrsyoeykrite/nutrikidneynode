@@ -106,14 +106,18 @@ async function sendReminderToProfileRecipients({
   if (caregiverUserId) targetUserIds.add(String(caregiverUserId));
   if (includeProfileDevices && profileUserId) targetUserIds.add(String(profileUserId));
 
+  const totals = { successful: 0, failed: 0, targetedUsers: targetUserIds.size };
   for (const targetUserId of targetUserIds) {
-    await sendReminderToDevices(targetUserId, {
+    const result = await sendReminderToDevices(targetUserId, {
       ...reminderData,
       // Keep the profile id separate from the recipient id so existing app-side
       // user filtering still accepts caregiver-targeted pushes.
       profileUserId: String(profileUserId || targetUserId),
     });
+    totals.successful += result?.successful || 0;
+    totals.failed += result?.failed || 0;
   }
+  return totals;
 }
 
 /**
@@ -775,7 +779,7 @@ async function checkMissedMedicationReminders() {
             await db.collection("notifications").add(missedNotification);
             await db.collection("upcomingReminders").add(missedNotification);
 
-            await sendReminderToProfileRecipients({
+            const deliveryResult = await sendReminderToProfileRecipients({
               caregiverUserId: isCaregiverRole(user.role) ? userId : null,
               profileUserId,
               reminderData: {
@@ -785,6 +789,12 @@ async function checkMissedMedicationReminders() {
               },
               includeProfileDevices: !isCaregiverRole(user.role),
             });
+            if ((deliveryResult?.successful || 0) <= 0) {
+              console.warn(
+                `Missed reminder stored but push was not delivered for ${profileUserId} at ${scheduledTime}`,
+              );
+              continue;
+            }
             await updateLastReminderTimestamp(profileUserId, stateKey);
 
             console.log(
