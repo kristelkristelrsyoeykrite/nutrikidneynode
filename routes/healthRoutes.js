@@ -450,6 +450,7 @@ router.post("/medications/mark-taken", async (req, res) => {
       markDoseTaken,
       todayDateKey,
       parseClockTime,
+      getActiveDoseWindow,
     } = require("../utils/medicationDoseRecords");
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
@@ -480,72 +481,74 @@ router.post("/medications/mark-taken", async (req, res) => {
       throw new Error("Medication has no scheduled time(s) to mark as taken.");
     }
 
-    const today = todayDateKey();
+    const nowMs = Date.now();
+    const today = todayDateKey(nowMs);
 
-    // Ensure today's dose records exist. Never overwrites final statuses.
+    let expectedDate = today;
+    let expectedTime = null;
+
+    if (candidateTimes.length <= 1) {
+      const only = parseClockTime(String(candidateTimes[0] || "").trim());
+      if (!only) {
+        throw new Error("Invalid dose time format. Expected HH:mm.");
+      }
+      expectedTime = only.text;
+    } else if (time) {
+      const parsed = parseClockTime(String(time || "").trim());
+      if (!parsed) {
+        throw new Error("Invalid dose time format. Expected HH:mm.");
+      }
+      expectedTime = parsed.text;
+    } else {
+      const window = getActiveDoseWindow({ medicationDoc: medDoc.data() || {}, nowMs });
+      if (!window?.active?.expectedDate || !window?.active?.expectedTime) {
+        throw new Error("Medication has no scheduled time(s) to mark as taken.");
+      }
+      expectedDate = window.active.expectedDate;
+      expectedTime = window.active.expectedTime;
+    }
+
+    // Ensure dose records exist for the target date (idempotent; never overwrites final statuses).
     await ensureDoseRecordsForDate({
       userId: medicationUserId,
       medicationId,
       medicationDoc: medDoc.data() || {},
-      dateKey: today,
+      dateKey: expectedDate,
     });
 
-    const doseTimesToMark =
-      candidateTimes.length <= 1
-        ? candidateTimes
-        : time
-          ? [time]
-          : [];
-
-    if (doseTimesToMark.length === 0) {
-      throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
-    }
-
-    const writes = doseTimesToMark.map(async (doseTime) => {
-      const timeText = String(doseTime || "").trim();
-      const parsed = parseClockTime(timeText);
-      if (!parsed) {
-        throw new Error("Invalid dose time format. Expected HH:mm.");
-      }
-
-      const doseUpdate = await markDoseTaken({
-        userId: medicationUserId,
-        medicationId,
-        expectedDate: today,
-        expectedTime: parsed.text,
-      });
-
-      // Backward compatibility: keep intake logs for existing dashboard logic.
-      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
-      await db
-        .collection("medicationIntakeLogs")
-        .doc(docId)
-        .set(
-          {
-            id: docId,
-            userId: medicationUserId,
-            medicationId,
-            date: today,
-            time: timeText,
-            takenAt: admin.firestore.FieldValue.serverTimestamp(),
-            source: "manual_mark_taken",
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        );
-
-      return doseUpdate;
+    const doseUpdate = await markDoseTaken({
+      userId: medicationUserId,
+      medicationId,
+      expectedDate,
+      expectedTime,
     });
 
-    const results = await Promise.all(writes);
+    // Backward compatibility: keep intake logs for existing dashboard logic.
+    const intakeLogId = `${medicationUserId}_${medicationId}_${expectedDate}_${expectedTime}`;
+    await db
+      .collection("medicationIntakeLogs")
+      .doc(intakeLogId)
+      .set(
+        {
+          id: intakeLogId,
+          userId: medicationUserId,
+          medicationId,
+          date: expectedDate,
+          time: expectedTime,
+          takenAt: admin.firestore.FieldValue.serverTimestamp(),
+          source: "manual_mark_taken",
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
 
     return res.status(200).json({
       success: true,
       message: "Medication marked as taken",
       medicationId,
-      date: today,
-      times: doseTimesToMark,
-      doseRecords: results,
+      date: expectedDate,
+      time: expectedTime,
+      doseRecord: doseUpdate,
     });
   } catch (error) {
     console.error("MEDICATION_MARK_TAKEN ERROR:", error.message);
@@ -565,6 +568,7 @@ router.post("/medications/mark-untaken", async (req, res) => {
       undoDoseTaken,
       todayDateKey,
       parseClockTime,
+      getActiveDoseWindow,
     } = require("../utils/medicationDoseRecords");
 
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
@@ -596,58 +600,61 @@ router.post("/medications/mark-untaken", async (req, res) => {
       throw new Error("Medication has no scheduled time(s) to undo.");
     }
 
-    const today = todayDateKey();
+    const nowMs = Date.now();
+    const today = todayDateKey(nowMs);
 
-    // Ensure today's dose records exist (idempotent).
+    let expectedDate = today;
+    let expectedTime = null;
+
+    if (candidateTimes.length <= 1) {
+      const only = parseClockTime(String(candidateTimes[0] || "").trim());
+      if (!only) {
+        throw new Error("Invalid dose time format. Expected HH:mm.");
+      }
+      expectedTime = only.text;
+    } else if (time) {
+      const parsed = parseClockTime(String(time || "").trim());
+      if (!parsed) {
+        throw new Error("Invalid dose time format. Expected HH:mm.");
+      }
+      expectedTime = parsed.text;
+    } else {
+      const window = getActiveDoseWindow({ medicationDoc: medDoc.data() || {}, nowMs });
+      if (!window?.active?.expectedDate || !window?.active?.expectedTime) {
+        throw new Error("Medication has no scheduled time(s) to undo.");
+      }
+      expectedDate = window.active.expectedDate;
+      expectedTime = window.active.expectedTime;
+    }
+
+    // Ensure dose records exist for the target date (idempotent).
     await ensureDoseRecordsForDate({
       userId: medicationUserId,
       medicationId,
       medicationDoc: medDoc.data() || {},
-      dateKey: today,
+      dateKey: expectedDate,
     });
 
-    const doseTimesToUndo =
-      candidateTimes.length <= 1
-        ? candidateTimes
-        : time
-          ? [time]
-          : [];
+    const undoResult = await undoDoseTaken({
+      userId: medicationUserId,
+      medicationId,
+      expectedDate,
+      expectedTime,
+      nowMs,
+    });
 
-    if (doseTimesToUndo.length === 0) {
-      throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
+    if (undoResult.changed) {
+      const intakeLogId = `${medicationUserId}_${medicationId}_${expectedDate}_${expectedTime}`;
+      await db.collection("medicationIntakeLogs").doc(intakeLogId).delete();
     }
-
-    const results = await Promise.all(
-      doseTimesToUndo.map(async (doseTime) => {
-        const timeText = String(doseTime || "").trim();
-        const parsed = parseClockTime(timeText);
-        if (!parsed) {
-          throw new Error("Invalid dose time format. Expected HH:mm.");
-        }
-
-        const undoResult = await undoDoseTaken({
-          userId: medicationUserId,
-          medicationId,
-          expectedDate: today,
-          expectedTime: parsed.text,
-        });
-
-        if (undoResult.changed) {
-          const intakeLogId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
-          await db.collection("medicationIntakeLogs").doc(intakeLogId).delete();
-        }
-
-        return undoResult;
-      }),
-    );
 
     return res.status(200).json({
       success: true,
       message: "Medication dose undo processed",
       medicationId,
-      date: today,
-      times: doseTimesToUndo,
-      doseRecords: results,
+      date: expectedDate,
+      time: expectedTime,
+      doseRecord: undoResult,
     });
   } catch (error) {
     console.error("MEDICATION_MARK_UNTAKEN ERROR:", error.message);

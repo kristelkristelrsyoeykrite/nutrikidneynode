@@ -9,6 +9,15 @@ function todayDateKey(nowMs = Date.now()) {
   return new Date(nowMs + MANILA_OFFSET_MS).toISOString().slice(0, 10);
 }
 
+function manilaNowParts(nowMs = Date.now()) {
+  const manila = new Date(nowMs + MANILA_OFFSET_MS);
+  return {
+    dateKey: manila.toISOString().slice(0, 10),
+    hour: manila.getUTCHours(),
+    minute: manila.getUTCMinutes(),
+  };
+}
+
 function parseClockTime(text) {
   if (typeof text !== "string") return null;
   const match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -35,6 +44,14 @@ function dateForManilaClock({ dateKey, clock }) {
   if (!parts || !clock) return null;
   // Build a UTC instant that corresponds to local Manila time (UTC+8, no DST).
   return new Date(Date.UTC(parts.year, parts.monthIndex, parts.day, clock.hour - 8, clock.minute, 0, 0));
+}
+
+function addDaysToDateKey(dateKey, deltaDays) {
+  const parts = manilaDatePartsFromKey(dateKey);
+  if (!parts || !Number.isFinite(deltaDays)) return null;
+  const baseUtcMs = Date.UTC(parts.year, parts.monthIndex, parts.day, 0, 0, 0, 0);
+  const next = new Date(baseUtcMs + deltaDays * 24 * 60 * 60 * 1000);
+  return next.toISOString().slice(0, 10);
 }
 
 function normalizeMedicationSchedule(medication) {
@@ -153,6 +170,49 @@ function uniqueClocks(clocks) {
 
 function doseRecordId({ userId, medicationId, expectedDate, expectedTime }) {
   return `${userId}_${medicationId}_${expectedDate}_${expectedTime}`;
+}
+
+function getActiveDoseWindow({ medicationDoc, nowMs = Date.now() }) {
+  const now = manilaNowParts(nowMs);
+  const clocks = expectedTimesForDate({ medicationDoc, dateKey: now.dateKey });
+  if (clocks.length === 0) return null;
+
+  const nowMinutes = now.hour * 60 + now.minute;
+  const minutesList = clocks.map((c) => c.hour * 60 + c.minute);
+
+  let activeIndex = -1;
+  for (let i = 0; i < minutesList.length; i += 1) {
+    if (minutesList[i] <= nowMinutes) activeIndex = i;
+    else break;
+  }
+
+  let activeClock = null;
+  let activeDate = now.dateKey;
+  let nextClock = null;
+  let nextDate = now.dateKey;
+
+  if (activeIndex === -1) {
+    // Before the first scheduled time: active is yesterday's last dose window.
+    activeClock = clocks[clocks.length - 1];
+    activeDate = addDaysToDateKey(now.dateKey, -1);
+    nextClock = clocks[0];
+    nextDate = now.dateKey;
+  } else {
+    activeClock = clocks[activeIndex];
+    if (activeIndex < clocks.length - 1) {
+      nextClock = clocks[activeIndex + 1];
+      nextDate = now.dateKey;
+    } else {
+      nextClock = clocks[0];
+      nextDate = addDaysToDateKey(now.dateKey, 1);
+    }
+  }
+
+  return {
+    active: { expectedDate: activeDate, expectedTime: activeClock.text },
+    next: nextClock ? { expectedDate: nextDate, expectedTime: nextClock.text } : null,
+    scheduleDate: now.dateKey,
+  };
 }
 
 async function ensureDoseRecordsForDate({ userId, medicationId, medicationDoc, dateKey }) {
@@ -313,16 +373,26 @@ async function getDoseRecordsForDate({ userId, dateKey }) {
   return snapshot.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
 }
 
+async function getDoseRecord({ userId, medicationId, expectedDate, expectedTime }) {
+  const docId = doseRecordId({ userId, medicationId, expectedDate, expectedTime });
+  const snap = await db.collection("medicationDoseRecords").doc(docId).get();
+  if (!snap.exists) return null;
+  return { id: snap.id, ...(snap.data() || {}) };
+}
+
 module.exports = {
   GRACE_PERIOD_MS,
   UNDO_WINDOW_MS,
   todayDateKey,
+  manilaNowParts,
   parseClockTime,
   expectedTimesForDate,
+  getActiveDoseWindow,
   ensureDoseRecordsForDate,
   markDoseTaken,
   undoDoseTaken,
   markOverdueDosesMissed,
   getDoseRecordsForDate,
+  getDoseRecord,
   doseRecordId,
 };
