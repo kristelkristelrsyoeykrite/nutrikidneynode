@@ -918,8 +918,9 @@ router.post("/delete-medication", async (req, res) => {
       });
     }
 
-    const existing = doc.data() || {};
-    if (existing.userId && existing.userId !== medicationUserId) {
+    const existing = decryptHealthDocument(doc.data() || {});
+    const ownerId = String(existing.userId || existing.uid || "").trim();
+    if (ownerId && String(ownerId) !== String(medicationUserId)) {
       return res.status(403).json({
         success: false,
         error: "Medication does not belong to this user",

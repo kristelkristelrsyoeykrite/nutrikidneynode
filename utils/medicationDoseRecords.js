@@ -262,7 +262,7 @@ async function markDoseTaken({ userId, medicationId, expectedDate, expectedTime 
     }
     const data = snap.data() || {};
     const status = String(data.status || "pending");
-    if (status !== "pending") {
+    if (status === "taken") {
       return { changed: false, status };
     }
     tx.update(ref, {
