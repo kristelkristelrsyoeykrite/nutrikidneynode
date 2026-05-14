@@ -239,6 +239,15 @@ function missedDoseReminderStateKey({ medicationId, expectedDate, expectedTime }
   return `missed_medication_${medicationId}_${expectedDate}_${expectedTime}`;
 }
 
+function formatClockTimeForNotification(value) {
+  const clock = parseClockTime(value);
+  if (!clock) return String(value || "").trim();
+
+  const period = clock.hour >= 12 ? "PM" : "AM";
+  const hour12 = clock.hour % 12 || 12;
+  return `${hour12}:${String(clock.minute).padStart(2, "0")} ${period}`;
+}
+
 /**
  * Check if hydration target has been met today
  */
@@ -741,8 +750,9 @@ async function checkMissedMedicationReminders() {
             if (lastMissedSent !== 0) continue;
 
             const dueTimestamp = doseRecord.expectedDateTime || null;
+            const displayTime = formatClockTimeForNotification(scheduledTime);
             const title = `Missed Reminder for ${childName}`;
-            const body = `You missed your ${name} reminder at ${scheduledTime}. Please take your medication if possible.`;
+            const body = `You missed your ${name} reminder at ${displayTime}. Please take your medication if possible.`;
 
             const missedNotification = {
               userId: profileUserId,
