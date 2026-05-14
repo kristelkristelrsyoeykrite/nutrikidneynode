@@ -9,10 +9,6 @@ const AWARDS = {
     title: "14-Day Streak",
     description: "Logged meals and hydration daily for 14 days.",
   },
-  rainbow_eater: {
-    title: "Rainbow Eater",
-    description: "Logged foods from 5 color groups.",
-  },
   hydration_hero: {
     title: "Hydration Hero",
     description: "Met the water goal 10 times.",
@@ -308,7 +304,6 @@ async function recomputeGamificationForDate({ admin, db, userId, date }) {
 
   const currentStreak = await countBackCompleteDays(db, userId, date);
   const waterGoalMetCount = statuses.filter((day) => day.metWaterGoal === true).length;
-  const uniqueFoodColors = new Set(statuses.flatMap((day) => day.foodColors || []));
   const points = statuses.reduce((sum, day) => sum + numberOrZero(day.points), 0);
   const previousStatusDoc = await userRef.collection("gamification").doc("status").get();
   const previous = previousStatusDoc.exists ? previousStatusDoc.data() || {} : {};
@@ -318,7 +313,6 @@ async function recomputeGamificationForDate({ admin, db, userId, date }) {
 
   if (currentStreak >= 7) await unlockAward({ admin, db, userId, awardId: "seven_day_streak", unlockedAwards });
   if (currentStreak >= 14) await unlockAward({ admin, db, userId, awardId: "fourteen_day_streak", unlockedAwards });
-  if (uniqueFoodColors.size >= 5) await unlockAward({ admin, db, userId, awardId: "rainbow_eater", unlockedAwards });
   if (waterGoalMetCount >= 10) await unlockAward({ admin, db, userId, awardId: "hydration_hero", unlockedAwards });
 
   const lastSeven = statuses.slice(-7);
