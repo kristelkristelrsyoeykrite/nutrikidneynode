@@ -294,14 +294,6 @@ async function undoDoseTaken({ userId, medicationId, expectedDate, expectedTime,
     if (!takenAtDate) {
       throw new Error("Cannot undo: missing taken timestamp.");
     }
-    if (nowMs - takenAtDate.getTime() > UNDO_WINDOW_MS) {
-      throw new Error("Undo window expired.");
-    }
-
-    const expectedDateTime = data.expectedDateTime?.toDate?.();
-    if (expectedDateTime && nowMs >= expectedDateTime.getTime() + GRACE_PERIOD_MS) {
-      throw new Error("Cannot undo after the missed grace period.");
-    }
 
     tx.update(ref, {
       status: "pending",
