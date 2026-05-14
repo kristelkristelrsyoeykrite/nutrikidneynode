@@ -194,27 +194,15 @@ function serializeTimestamp(value) {
 function serializeFoodLog(doc) {
   const data = doc.data() || {};
   const createdAt = serializeTimestamp(data.createdAt);
-  const loggedAt = serializeTimestamp(data.loggedAt) || data.loggedAt;
-  const normalizedLoggedAt = (() => {
-    const createdMs = timestampMillis(createdAt);
-    const loggedMs = timestampMillis(loggedAt);
-    if (!createdMs || !loggedMs) return loggedAt;
-    const diffMs = createdMs - loggedMs;
-    const eightHours = 8 * 60 * 60 * 1000;
-    if (Math.abs(diffMs - eightHours) <= 90 * 60 * 1000) {
-      // Older clients sent timezone-less timestamps; backend parsed them in UTC,
-      // shifting loggedAt by ~8 hours compared to createdAt (Manila offset).
-      return new Date(loggedMs + eightHours).toISOString();
-    }
-    return loggedAt;
-  })();
-
   return {
     id: doc.id,
     ...data,
     createdAt,
     updatedAt: serializeTimestamp(data.updatedAt),
-    loggedAt: normalizedLoggedAt,
+    // Use createdAt as the source of truth for "logged time" in the app UI.
+    // This avoids timezone parsing issues for historical logs where loggedAt
+    // may have been stored with an ambiguous timezone.
+    loggedAt: createdAt,
     deletedAt: serializeTimestamp(data.deletedAt),
   };
 }
