@@ -287,6 +287,128 @@ function registerRecordRoutes(router, deps) {
     }
   });
 
+  router.post("/delete-measurement", async (req, res) => {
+    console.log("Delete measurement requested:", req.body);
+
+    try {
+      const { userId, profileUserId, metricType, recalculateNutritionTargets } =
+        req.body;
+
+      if (!userId) throw new Error("Missing userId");
+      if (!metricType) throw new Error("Missing metricType");
+
+      const profileOwnerId = await resolveWritableProfileUserId(
+        userId,
+        profileUserId,
+      );
+      const userDoc = await db.collection("users").doc(profileOwnerId).get();
+      if (!userDoc.exists) {
+        return res.status(404).json({
+          success: false,
+          error: "User profile not found",
+        });
+      }
+
+      const user = userDoc.data() || {};
+      const anthropometricRecords = sortByNewest(
+        uniqueDocumentsById([
+          ...(await getUserDocuments("anthropometrics", profileOwnerId)),
+          ...(await getDocumentsByField(
+            "anthropometrics",
+            "medicalProfileId",
+            user.medicalProfileId,
+          )),
+        ]),
+      );
+      const currentAnthropometrics = anthropometricRecords[0] || null;
+      if (!currentAnthropometrics?.id) {
+        return res.status(200).json({
+          success: true,
+          deleted: false,
+          message: "No anthropometrics record to update",
+        });
+      }
+
+      const metric = String(metricType).trim().toLowerCase();
+      const updates = {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      const del = admin.firestore.FieldValue.delete();
+      const clearUserBmi = async () => {
+        await db.collection("users").doc(profileOwnerId).set(
+          {
+            bmi: del,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+      };
+
+      if (metric === "weight") {
+        updates.weight_kg = del;
+        updates.weight = del;
+      } else if (metric === "height") {
+        updates.height_cm = del;
+        updates.height = del;
+      } else if (metric === "bmi") {
+        updates.bmi = del;
+        await clearUserBmi();
+      } else if (metric === "blood pressure") {
+        updates.bloodPressure = del;
+        updates.blood_pressure = del;
+        updates.systolic = del;
+        updates.diastolic = del;
+      } else if (metric === "heart rate") {
+        updates.heartRate = del;
+        updates.heart_rate = del;
+      } else {
+        throw new Error("Unsupported anthropometric measurement type");
+      }
+
+      // If weight/height changes, BMI may now be invalid; clear it to avoid stale displays.
+      if (metric === "weight" || metric === "height") {
+        updates.bmi = del;
+        await clearUserBmi();
+      }
+
+      await archiveCurrentRecord(
+        currentAnthropometrics,
+        "historicalAnthropometrics",
+      );
+      await archiveAndDeleteExtraCurrentRecords({
+        records: anthropometricRecords,
+        keepId: currentAnthropometrics.id,
+        currentCollectionName: "anthropometrics",
+        historicalCollectionName: "historicalAnthropometrics",
+      });
+
+      const docRef = db
+        .collection("anthropometrics")
+        .doc(currentAnthropometrics.id);
+      await docRef.set(updates, { merge: true });
+
+      const recalculation =
+        recalculateNutritionTargets === true
+          ? await recalculateNutritionArtifacts(profileOwnerId)
+          : null;
+
+      return res.status(200).json({
+        success: true,
+        deleted: true,
+        anthropometricId: docRef.id,
+        updates,
+        recalculation,
+      });
+    } catch (error) {
+      console.error("DELETE_MEASUREMENT ERROR:", error.message);
+      return res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
   router.post("/save-lab-result", async (req, res) => {
     console.log("Save lab result requested:", req.body);
 
