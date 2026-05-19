@@ -1,6 +1,8 @@
 const { admin, db } = require("../firebase/admin");
 const { decryptHealthDocument, decryptHealthProfile } = require("../utils/encryption");
 
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+
 /**
  * Backend Reminder Scheduler
  * 
@@ -50,8 +52,7 @@ function displayNameFromProfile(profile = {}) {
 
 function todayDateKey() {
   // Use Manila time to match how schedules are stored/displayed in the app.
-  const manilaOffsetMs = 8 * 60 * 60 * 1000;
-  return new Date(Date.now() + manilaOffsetMs).toISOString().slice(0, 10);
+  return new Date(Date.now() + MANILA_OFFSET_MS).toISOString().slice(0, 10);
 }
 
 async function deleteSnapshotInBatches(snapshot) {
@@ -177,19 +178,17 @@ function parseClockTime(value) {
   const minute = Number(match[2]);
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-  return { hour, minute, text };
+  return {
+    hour,
+    minute,
+    text: `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`,
+  };
 }
 
 function dateForTodayClockTime(clock) {
-  const now = new Date();
+  const [year, month, day] = todayDateKey().split("-").map(Number);
   return new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    clock.hour,
-    clock.minute,
-    0,
-    0,
+    Date.UTC(year, month - 1, day, clock.hour, clock.minute) - MANILA_OFFSET_MS,
   );
 }
 

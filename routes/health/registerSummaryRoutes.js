@@ -23,6 +23,7 @@ function registerSummaryRoutes(router, deps) {
     analyticsPeriodLabel,
     decryptHealthProfile,
   } = deps;
+  const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 
   function requestMeta(req, extra = {}) {
     const body = req.body && typeof req.body === "object" ? req.body : {};
@@ -67,9 +68,14 @@ function registerSummaryRoutes(router, deps) {
     return parsed ? [parsed.text] : [];
   }
 
+  function manilaMinutesForDate(now) {
+    const manilaNow = new Date(now.getTime() + MANILA_OFFSET_MS);
+    return manilaNow.getUTCHours() * 60 + manilaNow.getUTCMinutes();
+  }
+
   function nextUpcomingDoseTime({ times, takenTimes, now }) {
     const taken = new Set(takenTimes || []);
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const nowMinutes = manilaMinutesForDate(now);
     const remaining = [];
 
     for (const timeText of times) {
@@ -88,7 +94,7 @@ function registerSummaryRoutes(router, deps) {
 
   function countMissedDoses({ times, takenTimes, now, graceMinutes = 5 }) {
     const taken = new Set(takenTimes || []);
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const nowMinutes = manilaMinutesForDate(now);
     const threshold = nowMinutes - graceMinutes;
     let missed = 0;
 
