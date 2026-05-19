@@ -671,6 +671,15 @@ async function checkMissedMedicationReminders() {
       const targetUserIds = reminderTargetIdsForUser(userId, user);
 
       for (const targetUserId of targetUserIds) {
+        let targetProfile = user;
+        if (targetUserId !== userId) {
+          const targetDoc = await db.collection("users").doc(targetUserId).get();
+          targetProfile = targetDoc.exists
+            ? safeDecryptHealthProfile(targetDoc.data() || {})
+            : {};
+        }
+        const childName = displayNameFromProfile(targetProfile);
+
         const medicationsSnapshot = await db
           .collection("medications")
           .where("userId", "==", targetUserId)
@@ -711,7 +720,7 @@ async function checkMissedMedicationReminders() {
             const missedNotification = {
               userId: targetUserId,
               type: "missed_medication_reminder",
-              title: "Missed Medication Reminder",
+              title: `Missed medication for ${childName}`,
               body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
               timestamp: admin.firestore.FieldValue.serverTimestamp(),
               isMissed: true,
@@ -728,8 +737,6 @@ async function checkMissedMedicationReminders() {
             await db.collection("notifications").add(missedNotification);
             await db.collection("upcomingReminders").add(missedNotification);
 
-            const childName =
-              targetUserId === userId ? displayNameFromProfile(user) : "your child";
             await sendReminderToDevices(
               targetUserId,
               {
@@ -759,8 +766,13 @@ async function checkMissedMedicationReminders() {
  */
 async function runReminderScheduler() {
   try {
+    const manilaTime = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Manila",
+      dateStyle: "short",
+      timeStyle: "medium",
+    }).format(new Date());
     console.log(
-      `[Reminders] Scheduler running at ${new Date().toISOString()}`
+      `[Reminders] Scheduler running at ${new Date().toISOString()} (${manilaTime} Asia/Manila)`
     );
 
     // Only backend-generate alerts that are tied to an actual scheduled dose.

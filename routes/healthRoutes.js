@@ -86,6 +86,63 @@ async function deleteQuerySnapshot(snapshot) {
   return deleted;
 }
 
+async function resolveMissedMedicationArtifacts({
+  medicationId,
+  profileUserId,
+  date,
+  scheduledTimes = [],
+}) {
+  if (!medicationId || !profileUserId || !date) return;
+
+  const timeSet = new Set(
+    scheduledTimes.map((time) => normalizeClockTime(time)).filter(Boolean),
+  );
+
+  const matchesDose = (data = {}) => {
+    const sameUser = String(data.userId || "") === String(profileUserId);
+    const sameMedication = String(data.medicationId || "") === String(medicationId);
+    const sameDay = !data.day || String(data.day) === String(date);
+    const scheduledTime = normalizeClockTime(data.scheduledTime || data.time);
+    const sameTime = timeSet.size === 0 || timeSet.has(scheduledTime);
+    return sameUser && sameMedication && sameDay && sameTime;
+  };
+
+  for (const collectionName of ["notifications", "upcomingReminders"]) {
+    const snapshot = await db
+      .collection(collectionName)
+      .where("medicationId", "==", String(medicationId))
+      .limit(100)
+      .get();
+
+    const batch = db.batch();
+    let pendingWrites = 0;
+    for (const doc of snapshot.docs) {
+      const data = doc.data() || {};
+      if (!matchesDose(data)) continue;
+
+      if (collectionName === "notifications") {
+        batch.set(
+          doc.ref,
+          {
+            read: true,
+            isMissed: false,
+            resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+            resolvedBy: "manual_mark_taken",
+          },
+          { merge: true },
+        );
+      } else {
+        batch.delete(doc.ref);
+      }
+      pendingWrites += 1;
+    }
+
+    if (pendingWrites > 0) {
+      await batch.commit();
+    }
+  }
+}
+
 async function cleanupMedicationReminderArtifacts({
   medicationId,
   profileUserId,
@@ -104,7 +161,7 @@ async function cleanupMedicationReminderArtifacts({
 
   const today = todayDateKey();
   for (const time of scheduledTimes) {
-    const timeText = String(time || "").trim();
+    const timeText = normalizeClockTime(time);
     if (!timeText) continue;
     await db
       .collection("medicationIntakeLogs")
@@ -693,6 +750,12 @@ router.post("/medications/mark-taken", async (req, res) => {
     });
 
     await Promise.all(writes);
+    await resolveMissedMedicationArtifacts({
+      medicationId,
+      profileUserId: logUserId,
+      date: today,
+      scheduledTimes: doseTimesToMark,
+    });
 
     return res.status(200).json({
       success: true,
