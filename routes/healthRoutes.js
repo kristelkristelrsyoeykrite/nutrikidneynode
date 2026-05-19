@@ -77,6 +77,59 @@ function canAccessMedication(medication = {}, targetProfileId, requesterUserId) 
   return owners.some((owner) => owner === target || owner === requester);
 }
 
+function linkedChildIdsFromCaregiver(profile = {}) {
+  const ids = new Set();
+  for (const value of [
+    profile.activeDirectChildProfileId,
+    profile.linkedChildUserId,
+    profile.childProfileId,
+  ]) {
+    const id = String(value || "").trim();
+    if (id) ids.add(id);
+  }
+
+  if (Array.isArray(profile.linkedChildren)) {
+    for (const child of profile.linkedChildren) {
+      for (const value of [child?.userId, child?.uid, child?.id]) {
+        const id = String(value || "").trim();
+        if (id) ids.add(id);
+      }
+    }
+  }
+
+  return ids;
+}
+
+async function canAccessProfile(requesterUserId, targetProfileUserId) {
+  const requester = String(requesterUserId || "").trim();
+  const target = String(targetProfileUserId || "").trim();
+  if (!requester || !target) return false;
+  if (requester === target) return true;
+
+  const requesterDoc = await db.collection("users").doc(requester).get();
+  if (requesterDoc.exists) {
+    const requesterProfile = decryptHealthProfile(requesterDoc.data() || {});
+    if (linkedChildIdsFromCaregiver(requesterProfile).has(target)) {
+      return true;
+    }
+  }
+
+  const targetDoc = await db.collection("users").doc(target).get();
+  if (targetDoc.exists) {
+    const targetProfile = decryptHealthProfile(targetDoc.data() || {});
+    const caregiverIds = [
+      targetProfile.caregiverUserId,
+      targetProfile.caregiverId,
+      targetProfile.caregiverSettings?.caregiverId,
+    ].map((value) => String(value || "").trim());
+    if (caregiverIds.includes(requester)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function deleteQuerySnapshot(snapshot) {
   if (snapshot.empty) return 0;
   let deleted = 0;
@@ -815,6 +868,82 @@ router.post("/medications/mark-untaken", async (req, res) => {
     });
   } catch (error) {
     console.error("MEDICATION_MARK_UNTAKEN ERROR:", error.message);
+    return res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+router.post("/missed-medication-reminders", async (req, res) => {
+  console.log("Missed medication reminders requested:", requestMeta(req, {
+    profileUserId: req.body?.profileUserId,
+  }));
+
+  try {
+    const { userId, uid, profileUserId, childProfileId, limit } = req.body || {};
+    const requesterUserId = userId || uid;
+    const targetProfileUserId = medicationTargetId({
+      userId: profileUserId || childProfileId || requesterUserId,
+      profileUserId,
+      childProfileId,
+    });
+
+    if (!requesterUserId || !targetProfileUserId) {
+      throw new Error("Missing userId and/or profileUserId");
+    }
+
+    const allowed = await canAccessProfile(requesterUserId, targetProfileUserId);
+    if (!allowed) {
+      return res.status(403).json({
+        success: false,
+        error: "You do not have access to this profile's reminders",
+      });
+    }
+
+    const snapshot = await db
+      .collection("notifications")
+      .where("userId", "==", String(targetProfileUserId))
+      .where("type", "==", "missed_medication_reminder")
+      .where("isMissed", "==", true)
+      .where("read", "==", false)
+      .limit(50)
+      .get();
+
+    const remindersByDose = new Map();
+    for (const doc of snapshot.docs) {
+      const data = doc.data() || {};
+      const reminder = { id: doc.id, ...data };
+      const doseKey = [
+        data.medicationId || "",
+        data.scheduledWindowStart || data.windowStart || "",
+        data.day || data.date || "",
+        normalizeClockTime(data.scheduledTime || data.time) || "",
+      ].join("|");
+      const key = doseKey.replace(/\|/g, "") ? doseKey : doc.id;
+      const existing = remindersByDose.get(key);
+      const existingTime = existing?.timestamp?.toMillis
+        ? existing.timestamp.toMillis()
+        : 0;
+      const currentTime = data.timestamp?.toMillis ? data.timestamp.toMillis() : 0;
+      if (!existing || currentTime >= existingTime) {
+        remindersByDose.set(key, reminder);
+      }
+    }
+
+    const reminders = Array.from(remindersByDose.values()).sort((a, b) => {
+      const aTime = a.timestamp?.toMillis ? a.timestamp.toMillis() : 0;
+      const bTime = b.timestamp?.toMillis ? b.timestamp.toMillis() : 0;
+      return bTime - aTime;
+    });
+
+    return res.status(200).json({
+      success: true,
+      profileUserId: targetProfileUserId,
+      reminders: reminders.slice(0, Number(limit) > 0 ? Number(limit) : 20),
+    });
+  } catch (error) {
+    console.error("MISSED_MEDICATION_REMINDERS ERROR:", error.message);
     return res.status(400).json({
       success: false,
       error: error.message,
