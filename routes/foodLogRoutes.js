@@ -5,6 +5,10 @@ const fatSecretBridge = require("../services/fatSecretBridgeService");
 const {
   recomputeGamificationForDate,
 } = require("../services/gamificationService");
+const {
+  decryptHealthDocument,
+  decryptHealthProfile,
+} = require("../utils/encryption");
 
 const FOOD_LOG_COLLECTION = "foodLogs";
 const HYDRATION_LOG_COLLECTION = "hydrationLog";
@@ -357,17 +361,19 @@ async function getDocData(collection, id) {
 }
 
 async function buildChildContext(userId, requestedChildProfileId) {
-  const user = await getDocData("users", userId);
+  const rawUser = await getDocData("users", userId);
+  const user = rawUser ? decryptHealthProfile(rawUser) : null;
   const childProfileId = requestedChildProfileId || userId;
   const medicalProfileId =
     user?.medicalProfileId || user?.medical_profile_id || requestedChildProfileId;
   const nutritionTargetId =
     user?.baselineNutritionTargetId || user?.nutritionTargetId;
 
-  const medicalProfile =
+  const rawMedicalProfile =
     (await getDocData("medicalProfile", medicalProfileId)) ||
     (await getDocData("childProfiles", childProfileId)) ||
     {};
+  const medicalProfile = decryptHealthDocument(rawMedicalProfile);
   const targets =
     (await getDocData("nutritionTargets", nutritionTargetId)) || {};
 
