@@ -14,9 +14,18 @@ const {
   decryptHealthDocument,
 } = require("../utils/encryption");
 
+function requestMeta(req, extra = {}) {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  return {
+    uid: body.uid || body.userId || body.profileUserId || body.childProfileId,
+    keys: Object.keys(body).length,
+    ...extra,
+  };
+}
+
 //////////////////// STEP 1 - Just collect data ////////////////////
 router.post("/step1", async (req, res) => {
-  console.log("Step 1 received:", req.body);
+  console.log("Step 1 received:", requestMeta(req));
   
   try {
     res.json({
@@ -34,7 +43,7 @@ router.post("/step1", async (req, res) => {
 
 //////////////////// STEP 2 - Just collect data ////////////////////
 router.post("/step2", async (req, res) => {
-  console.log("Step 2 received:", req.body);
+  console.log("Step 2 received:", requestMeta(req));
   
   try {
     res.json({
@@ -54,7 +63,7 @@ router.post("/step2", async (req, res) => {
 
 //////////////// STEP 3 - Just collect data ///////////////////////////
 router.post("/step3", async (req, res) => {
-  console.log("Step 3 received:", req.body);
+  console.log("Step 3 received:", requestMeta(req));
 
   try {
     res.json({
@@ -74,7 +83,7 @@ router.post("/step3", async (req, res) => {
 //////////////////// STEP 4 - Just collect data //////////////////////
 
 router.post("/step4", async (req, res) => {
-  console.log("Step 4 received:", req.body);
+  console.log("Step 4 received:", requestMeta(req));
 
   try {
     res.json({
@@ -92,7 +101,10 @@ router.post("/step4", async (req, res) => {
 });
 
 router.post("/phase2-decision-support", async (req, res) => {
-  console.log("Phase 2 decision support received:", req.body);
+  console.log("Phase 2 decision support received:", requestMeta(req, {
+    hasLabs: Boolean(req.body.labs || req.body.potassium || req.body.creatinine),
+    hasIntake: Boolean(req.body.intake),
+  }));
 
   try {
     const profile = req.body.profile || {
@@ -191,7 +203,9 @@ router.post("/medications/scan", async (req, res) => {
 });
 
 router.post("/medications/confirm", async (req, res) => {
-  console.log("Medication confirm requested:", req.body);
+  console.log("Medication confirm requested:", requestMeta(req, {
+    hasRawOcrText: Boolean(req.body.rawOcrText || req.body.raw_ocr_text),
+  }));
 
   try {
     const {
@@ -325,7 +339,12 @@ router.get("/medications", async (req, res) => {
 });
 
 router.put("/medications/:medicationId", async (req, res) => {
-  console.log("Medication REST update requested:", req.params, req.body);
+  console.log("Medication REST update requested:", {
+    medicationId: req.params.medicationId,
+    ...requestMeta(req, {
+      hasRawOcrText: Boolean(req.body.rawOcrText || req.body.raw_ocr_text),
+    }),
+  });
 
   try {
     const medicationId = req.params.medicationId;
@@ -375,9 +394,8 @@ router.put("/medications/:medicationId", async (req, res) => {
       });
     }
 
-    const existing = decryptHealthDocument(doc.data() || {});
-    const ownerId = String(existing.userId || existing.uid || existing.childProfileId || "").trim();
-    if (ownerId && ownerId !== String(medicationUserId)) {
+    const existing = doc.data() || {};
+    if (existing.userId && existing.userId !== medicationUserId) {
       return res.status(403).json({
         success: false,
         error: "Medication does not belong to this user",
@@ -443,16 +461,11 @@ router.put("/medications/:medicationId", async (req, res) => {
  * This writes a per-day/per-time intake log so missed doses can still be identified.
  */
 router.post("/medications/mark-taken", async (req, res) => {
-  console.log("Mark medication taken requested:", req.body);
+  console.log("Mark medication taken requested:", requestMeta(req, {
+    medicationId: req.body.medicationId,
+  }));
 
   try {
-    const {
-      ensureDoseRecordsForDate,
-      markDoseTaken,
-      todayDateKey,
-      parseClockTime,
-      getActiveDoseWindow,
-    } = require("../utils/medicationDoseRecords");
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
 
@@ -482,74 +495,48 @@ router.post("/medications/mark-taken", async (req, res) => {
       throw new Error("Medication has no scheduled time(s) to mark as taken.");
     }
 
-    const nowMs = Date.now();
-    const today = todayDateKey(nowMs);
+    const today = todayDateKey();
 
-    let expectedDate = today;
-    let expectedTime = null;
+    const doseTimesToMark =
+      candidateTimes.length <= 1
+        ? candidateTimes
+        : time
+          ? [time]
+          : [];
 
-    if (candidateTimes.length <= 1) {
-      const only = parseClockTime(String(candidateTimes[0] || "").trim());
-      if (!only) {
-        throw new Error("Invalid dose time format. Expected HH:mm.");
-      }
-      expectedTime = only.text;
-    } else if (time) {
-      const parsed = parseClockTime(String(time || "").trim());
-      if (!parsed) {
-        throw new Error("Invalid dose time format. Expected HH:mm.");
-      }
-      expectedTime = parsed.text;
-    } else {
-      const window = getActiveDoseWindow({ medicationDoc: medDoc.data() || {}, nowMs });
-      if (!window?.active?.expectedDate || !window?.active?.expectedTime) {
-        throw new Error("Medication has no scheduled time(s) to mark as taken.");
-      }
-      expectedDate = window.active.expectedDate;
-      expectedTime = window.active.expectedTime;
+    if (doseTimesToMark.length === 0) {
+      throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
     }
 
-    // Ensure dose records exist for the target date (idempotent; never overwrites final statuses).
-    await ensureDoseRecordsForDate({
-      userId: medicationUserId,
-      medicationId,
-      medicationDoc: medDoc.data() || {},
-      dateKey: expectedDate,
+    const writes = doseTimesToMark.map((doseTime) => {
+      const timeText = String(doseTime || "").trim();
+      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+      return db
+        .collection("medicationIntakeLogs")
+        .doc(docId)
+        .set(
+          {
+            id: docId,
+            userId: medicationUserId,
+            medicationId,
+            date: today,
+            time: timeText,
+            takenAt: admin.firestore.FieldValue.serverTimestamp(),
+            source: "manual_mark_taken",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
     });
 
-    const doseUpdate = await markDoseTaken({
-      userId: medicationUserId,
-      medicationId,
-      expectedDate,
-      expectedTime,
-    });
-
-    // Backward compatibility: keep intake logs for existing dashboard logic.
-    const intakeLogId = `${medicationUserId}_${medicationId}_${expectedDate}_${expectedTime}`;
-    await db
-      .collection("medicationIntakeLogs")
-      .doc(intakeLogId)
-      .set(
-        {
-          id: intakeLogId,
-          userId: medicationUserId,
-          medicationId,
-          date: expectedDate,
-          time: expectedTime,
-          takenAt: admin.firestore.FieldValue.serverTimestamp(),
-          source: "manual_mark_taken",
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
+    await Promise.all(writes);
 
     return res.status(200).json({
       success: true,
       message: "Medication marked as taken",
       medicationId,
-      date: expectedDate,
-      time: expectedTime,
-      doseRecord: doseUpdate,
+      date: today,
+      times: doseTimesToMark,
     });
   } catch (error) {
     console.error("MEDICATION_MARK_TAKEN ERROR:", error.message);
@@ -561,17 +548,11 @@ router.post("/medications/mark-taken", async (req, res) => {
 });
 
 router.post("/medications/mark-untaken", async (req, res) => {
-  console.log("Mark medication untaken requested:", req.body);
+  console.log("Mark medication untaken requested:", requestMeta(req, {
+    medicationId: req.body.medicationId,
+  }));
 
   try {
-    const {
-      ensureDoseRecordsForDate,
-      undoDoseTaken,
-      todayDateKey,
-      parseClockTime,
-      getActiveDoseWindow,
-    } = require("../utils/medicationDoseRecords");
-
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
 
@@ -598,64 +579,36 @@ router.post("/medications/mark-untaken", async (req, res) => {
       scheduledTimes.length > 0 ? scheduledTimes : startTime ? [startTime] : [];
 
     if (candidateTimes.length === 0) {
-      throw new Error("Medication has no scheduled time(s) to undo.");
+      throw new Error("Medication has no scheduled time(s) to mark as untaken.");
     }
 
-    const nowMs = Date.now();
-    const today = todayDateKey(nowMs);
+    const today = todayDateKey();
 
-    let expectedDate = today;
-    let expectedTime = null;
+    const doseTimesToUnmark =
+      candidateTimes.length <= 1
+        ? candidateTimes
+        : time
+          ? [time]
+          : [];
 
-    if (candidateTimes.length <= 1) {
-      const only = parseClockTime(String(candidateTimes[0] || "").trim());
-      if (!only) {
-        throw new Error("Invalid dose time format. Expected HH:mm.");
-      }
-      expectedTime = only.text;
-    } else if (time) {
-      const parsed = parseClockTime(String(time || "").trim());
-      if (!parsed) {
-        throw new Error("Invalid dose time format. Expected HH:mm.");
-      }
-      expectedTime = parsed.text;
-    } else {
-      const window = getActiveDoseWindow({ medicationDoc: medDoc.data() || {}, nowMs });
-      if (!window?.active?.expectedDate || !window?.active?.expectedTime) {
-        throw new Error("Medication has no scheduled time(s) to undo.");
-      }
-      expectedDate = window.active.expectedDate;
-      expectedTime = window.active.expectedTime;
+    if (doseTimesToUnmark.length === 0) {
+      throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
     }
 
-    // Ensure dose records exist for the target date (idempotent).
-    await ensureDoseRecordsForDate({
-      userId: medicationUserId,
-      medicationId,
-      medicationDoc: medDoc.data() || {},
-      dateKey: expectedDate,
+    const writes = doseTimesToUnmark.map((doseTime) => {
+      const timeText = String(doseTime || "").trim();
+      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+      return db.collection("medicationIntakeLogs").doc(docId).delete();
     });
 
-    const undoResult = await undoDoseTaken({
-      userId: medicationUserId,
-      medicationId,
-      expectedDate,
-      expectedTime,
-      nowMs,
-    });
-
-    if (undoResult.changed) {
-      const intakeLogId = `${medicationUserId}_${medicationId}_${expectedDate}_${expectedTime}`;
-      await db.collection("medicationIntakeLogs").doc(intakeLogId).delete();
-    }
+    await Promise.all(writes);
 
     return res.status(200).json({
       success: true,
-      message: "Medication dose undo processed",
+      message: "Medication marked as untaken",
       medicationId,
-      date: expectedDate,
-      time: expectedTime,
-      doseRecord: undoResult,
+      date: today,
+      times: doseTimesToUnmark,
     });
   } catch (error) {
     console.error("MEDICATION_MARK_UNTAKEN ERROR:", error.message);
@@ -719,7 +672,7 @@ router.delete("/medications/:medicationId", async (req, res) => {
  * Stores alarm-like medication schedules.
  */
 router.post("/save-medication", async (req, res) => {
-  console.log("Save medication requested:", req.body);
+  console.log("Save medication requested:", requestMeta(req));
 
   try {
     const {
@@ -803,7 +756,9 @@ router.post("/save-medication", async (req, res) => {
 });
 
 router.post("/update-medication", async (req, res) => {
-  console.log("Update medication requested:", req.body);
+  console.log("Update medication requested:", requestMeta(req, {
+    medicationId: req.body.medicationId,
+  }));
 
   try {
     const {
@@ -918,7 +873,9 @@ router.post("/update-medication", async (req, res) => {
 });
 
 router.post("/delete-medication", async (req, res) => {
-  console.log("Delete medication requested:", req.body);
+  console.log("Delete medication requested:", requestMeta(req, {
+    medicationId: req.body.medicationId,
+  }));
 
   try {
     const { userId, uid, profileUserId, childProfileId, medicationId } = req.body;
@@ -938,9 +895,8 @@ router.post("/delete-medication", async (req, res) => {
       });
     }
 
-    const existing = decryptHealthDocument(doc.data() || {});
-    const ownerId = String(existing.userId || existing.uid || "").trim();
-    if (ownerId && String(ownerId) !== String(medicationUserId)) {
+    const existing = doc.data() || {};
+    if (existing.userId && existing.userId !== medicationUserId) {
       return res.status(403).json({
         success: false,
         error: "Medication does not belong to this user",
@@ -1809,71 +1765,6 @@ registerProfileRoutes(router, {
   decryptHealthProfile,
   encryptHealthDocument,
   decryptHealthDocument,
-});
-
-/**
- * TEST ENDPOINT - Create a missed medication reminder manually
- * For testing and debugging the missed medication reminder system
- */
-router.post("/test-missed-medication", async (req, res) => {
-  console.log("TEST: Creating missed medication reminder...");
-  
-  try {
-    if (process.env.ALLOW_TEST_ENDPOINTS !== "true") {
-      return res.status(403).json({
-        success: false,
-        error: "Test endpoints are disabled.",
-      });
-    }
-
-    const { userId, uid } = req.body;
-    const medicationUserId = userId || uid;
-
-    if (!medicationUserId) {
-      return res.status(400).json({
-        success: false,
-        error: "userId or uid is required",
-      });
-    }
-
-    // Create a missed medication notification
-    const missedNotification = {
-      userId: medicationUserId,
-      type: "missed_medication_reminder",
-      title: "Missed Medication Reminder",
-      body: "You missed your medication reminder 1 hour ago. Please take your medication if possible.",
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      isMissed: true,
-      priority: "high",
-      color: "red",
-      read: false,
-    };
-
-    // Store in notifications collection
-    const notifRef = await db.collection("notifications").add(missedNotification);
-    
-    // Add to upcoming reminders
-    await db.collection("upcomingReminders").add({
-      ...missedNotification,
-      scheduledTime: admin.firestore.FieldValue.serverTimestamp(),
-      isMissed: true,
-      dueTime: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    console.log("TEST: Created missed medication reminder for user:", medicationUserId);
-
-    return res.status(200).json({
-      success: true,
-      message: "Test missed medication reminder created successfully",
-      notificationId: notifRef.id,
-    });
-  } catch (error) {
-    console.error("TEST_MISSED_MEDICATION ERROR:", error.message);
-    return res.status(400).json({
-      success: false,
-      error: error.message,
-    });
-  }
 });
 
 module.exports = router;

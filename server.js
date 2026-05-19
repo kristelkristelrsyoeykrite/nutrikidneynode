@@ -34,14 +34,18 @@ loadLocalEnv();
 
 const { admin, db, auth } = require("./firebase/admin");
 const {
+  encryptValue,
   encryptHealthProfile,
   decryptHealthProfile,
 } = require("./utils/encryption");
 const {
   isValidAuthenticatorCode,
   normalizeSecuritySettings,
+  toPublicSecuritySettings,
   verifyTotpCode,
 } = require("./services/authenticatorMfaService");
+const { caregiverLinkCodeDocId } = require("./utils/caregiverLinkCodes");
+const { createRateLimiter, identityKey } = require("./utils/rateLimiter");
 const { initializeReminderScheduler } = require("./services/reminderScheduler");
 
 const app = express();
@@ -54,6 +58,27 @@ app.get("/", (req, res) => {
 });
 
 const PASSWORD_KEYLEN = 64;
+
+const authAttemptLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyPrefix: "auth",
+  keyGenerator: (req) => identityKey(req, ["email", "phoneNumber", "uid"]),
+});
+
+const verificationAttemptLimiter = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 12,
+  keyPrefix: "verification",
+  keyGenerator: (req) => identityKey(req, ["email", "phoneNumber", "uid"]),
+});
+
+const passwordResetLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  keyPrefix: "password-reset",
+  keyGenerator: (req) => identityKey(req, ["email", "phoneNumber", "uid"]),
+});
 
 // Normalize phone number to E.164 format (+63XXXXXXXXXX)
 // Firebase requires E.164 format for phone numbers
@@ -503,8 +528,12 @@ async function savePasswordSecret(uid, password) {
 ////////////////////// SIGNUP ROUTE //////////////////////
 // This endpoint only validates signup data. Does NOT create user yet.
 // User creation happens only AFTER verification (phone OTP or email link).
-app.post("/signup", async (req, res) => {
-  console.log("SIGNUP received:", req.body);
+app.post("/signup", verificationAttemptLimiter, async (req, res) => {
+  console.log("SIGNUP received:", {
+    email: req.body.email,
+    hasPhoneNumber: Boolean(req.body.phoneNumber),
+    userRole: req.body.userRole,
+  });
 
   const { email, phoneNumber, password, fullName, userRole } = req.body;
 
@@ -596,8 +625,11 @@ app.post("/signup", async (req, res) => {
 
 ////////////////////// CHECK USER EXISTS //////////////////////
 // Check if email or phone number already exists in the system
-app.post("/check-user", async (req, res) => {
-  console.log("CHECK_USER received:", req.body);
+app.post("/check-user", verificationAttemptLimiter, async (req, res) => {
+  console.log("CHECK_USER received:", {
+    email: req.body.email,
+    hasPhoneNumber: Boolean(req.body.phoneNumber),
+  });
 
   const { email, phoneNumber } = req.body;
 
@@ -707,8 +739,11 @@ app.post("/check-user", async (req, res) => {
 });
 
 ////////////////////// VERIFY PHONE PASSWORD //////////////////////
-app.post("/verify-phone-password", async (req, res) => {
-  console.log("VERIFY_PHONE_PASSWORD received:", req.body);
+app.post("/verify-phone-password", authAttemptLimiter, async (req, res) => {
+  console.log("VERIFY_PHONE_PASSWORD received:", {
+    hasPhoneNumber: Boolean(req.body.phoneNumber),
+    hasPassword: Boolean(req.body.password),
+  });
 
   const { phoneNumber, password } = req.body;
 
@@ -792,7 +827,11 @@ app.post("/verify-phone-password", async (req, res) => {
 });
 
 app.post("/api/user/profile-status", async (req, res) => {
-  console.log("PROFILE_STATUS received:", req.body);
+  console.log("PROFILE_STATUS received:", {
+    uid: req.body.uid,
+    hasEmail: Boolean(req.body.email),
+    hasPhoneNumber: Boolean(req.body.phoneNumber),
+  });
 
   const { uid, email, phoneNumber } = req.body;
 
@@ -872,7 +911,7 @@ app.post("/api/user/profile-status", async (req, res) => {
 });
 
 ////////////////////// RESET PASSWORD //////////////////////
-app.post("/reset-password", async (req, res) => {
+app.post("/reset-password", passwordResetLimiter, async (req, res) => {
   console.log("RESET_PASSWORD received:", {
     ...req.body,
     newPassword: req.body.newPassword ? "[REDACTED]" : undefined,
@@ -950,8 +989,10 @@ app.post("/reset-password", async (req, res) => {
 
 ////////////////////// VERIFY EMAIL DOMAIN //////////////////////
 // Check if email domain has mail servers (MX records)
-app.post("/verify-email-domain", async (req, res) => {
-  console.log("VERIFY_EMAIL_DOMAIN received:", req.body);
+app.post("/verify-email-domain", verificationAttemptLimiter, async (req, res) => {
+  console.log("VERIFY_EMAIL_DOMAIN received:", {
+    hasEmail: Boolean(req.body.email),
+  });
 
   const { email } = req.body;
 
@@ -1027,8 +1068,10 @@ app.post("/verify-email-domain", async (req, res) => {
 
 ////////////////////// SEND EMAIL VERIFICATION TOKEN //////////////////////
 // This endpoint is now kept for compatibility but email sending is done on client
-app.post("/send-email-verification", async (req, res) => {
-  console.log("SEND_EMAIL_VERIFICATION received (client handles email now):", req.body);
+app.post("/send-email-verification", verificationAttemptLimiter, async (req, res) => {
+  console.log("SEND_EMAIL_VERIFICATION received (client handles email now):", {
+    hasEmail: Boolean(req.body.email),
+  });
 
   const { email } = req.body;
 
@@ -1057,8 +1100,10 @@ app.post("/send-email-verification", async (req, res) => {
 ////////////////////// VERIFY EMAIL TOKEN //////////////////////
 // Called by frontend after user verifies email in Firebase
 // Just needs to confirm verification happened client-side
-app.post("/verify-email-token", async (req, res) => {
-  console.log("VERIFY_EMAIL_TOKEN received:", req.body);
+app.post("/verify-email-token", verificationAttemptLimiter, async (req, res) => {
+  console.log("VERIFY_EMAIL_TOKEN received:", {
+    hasEmail: Boolean(req.body.email),
+  });
 
   const { email } = req.body;
 
@@ -1087,8 +1132,12 @@ app.post("/verify-email-token", async (req, res) => {
 });
 
 ////////////////////// VERIFY EMAIL AND CREATE USER //////////////////////
-app.post("/verify-email-and-create-user", async (req, res) => {
-  console.log("VERIFY_EMAIL_AND_CREATE_USER received:", req.body);
+app.post("/verify-email-and-create-user", verificationAttemptLimiter, async (req, res) => {
+  console.log("VERIFY_EMAIL_AND_CREATE_USER received:", {
+    email: req.body.email,
+    hasPhoneNumber: Boolean(req.body.phoneNumber),
+    userRole: req.body.userRole,
+  });
 
   const { email, phoneNumber, password, fullName, userRole } = req.body;
 
@@ -1183,8 +1232,13 @@ app.post("/verify-email-and-create-user", async (req, res) => {
   }
 });
 // Called after phone OTP is verified by client
-app.post("/verify-phone-and-create-user", async (req, res) => {
-  console.log("VERIFY_PHONE_AND_CREATE_USER received:", req.body);
+app.post("/verify-phone-and-create-user", verificationAttemptLimiter, async (req, res) => {
+  console.log("VERIFY_PHONE_AND_CREATE_USER received:", {
+    email: req.body.email,
+    hasPhoneNumber: Boolean(req.body.phoneNumber),
+    uid: req.body.uid,
+    userRole: req.body.userRole,
+  });
   console.log("VERIFY_PHONE_AND_CREATE_USER UID:", req.body.uid);
   
   const { email, phoneNumber, password, fullName, uid, userRole } = req.body;
@@ -1303,10 +1357,13 @@ app.post("/verify-phone-and-create-user", async (req, res) => {
 
 ////////////////////// CREATE USER (Firebase Auth) //////////////////////
 // Create a new user in Firebase Auth (called during signup after user provides credentials)
-app.post("/api/user/create", async (req, res) => {
+app.post("/api/user/create", verificationAttemptLimiter, async (req, res) => {
   console.log("CREATE_USER received:", {
-    ...req.body,
-    password: req.body.password ? "[REDACTED]" : undefined,
+    email: req.body.email,
+    hasPhoneNumber: Boolean(req.body.phoneNumber),
+    hasPassword: Boolean(req.body.password),
+    userRole: req.body.userRole,
+    privacyConsentAccepted: req.body.privacyConsentAccepted === true,
   });
 
   const {
@@ -1490,8 +1547,10 @@ app.post("/api/user/create", async (req, res) => {
 // Email verification links are sent by the Flutter Firebase SDK.
 // Keep this endpoint as a compatibility no-op for older clients so the backend
 // does not try to generate links and fail with auth/internal-error.
-app.post("/api/user/send-email-verification", async (req, res) => {
-  console.log("SEND_EMAIL_VERIFICATION received for UID:", req.body.uid);
+app.post("/api/user/send-email-verification", verificationAttemptLimiter, async (req, res) => {
+  console.log("SEND_EMAIL_VERIFICATION received:", {
+    hasUid: Boolean(req.body.uid),
+  });
 
   const { uid } = req.body;
 
@@ -1530,8 +1589,11 @@ app.post("/api/user/send-email-verification", async (req, res) => {
 
 ////////////////////// VERIFY PHONE OTP REQUEST //////////////////////
 // Request OTP to be sent to phone number
-app.post("/api/user/send-phone-otp", async (req, res) => {
-  console.log("SEND_PHONE_OTP received for UID:", req.body.uid);
+app.post("/api/user/send-phone-otp", verificationAttemptLimiter, async (req, res) => {
+  console.log("SEND_PHONE_OTP received:", {
+    hasUid: Boolean(req.body.uid),
+    hasPhoneNumber: Boolean(req.body.phoneNumber),
+  });
 
   const { uid, phoneNumber } = req.body;
 
@@ -1583,8 +1645,10 @@ app.post("/api/user/send-phone-otp", async (req, res) => {
 
 ////////////////////// COMPLETE EMAIL VERIFICATION //////////////////////
 // Mark email as verified after user clicks verification link
-app.post("/api/user/complete-email-verification", async (req, res) => {
-  console.log("COMPLETE_EMAIL_VERIFICATION received for UID:", req.body.uid);
+app.post("/api/user/complete-email-verification", verificationAttemptLimiter, async (req, res) => {
+  console.log("COMPLETE_EMAIL_VERIFICATION received:", {
+    hasUid: Boolean(req.body.uid),
+  });
 
   const { uid } = req.body;
 
@@ -1644,8 +1708,10 @@ app.post("/api/user/complete-email-verification", async (req, res) => {
 
 ////////////////////// COMPLETE PHONE VERIFICATION //////////////////////
 // Mark phone as verified after OTP confirmation
-app.post("/api/user/complete-phone-verification", async (req, res) => {
-  console.log("COMPLETE_PHONE_VERIFICATION received for UID:", req.body.uid);
+app.post("/api/user/complete-phone-verification", verificationAttemptLimiter, async (req, res) => {
+  console.log("COMPLETE_PHONE_VERIFICATION received:", {
+    hasUid: Boolean(req.body.uid),
+  });
 
   const { uid } = req.body;
 
@@ -1691,7 +1757,10 @@ app.post("/api/user/complete-phone-verification", async (req, res) => {
 ////////////////////// SAVE USER PROFILE (after verification) //////////////////////
 // Save/update user profile in Firestore with verified status
 app.post("/api/user/profile/save", async (req, res) => {
-  console.log("SAVE_USER_PROFILE received for UID:", req.body.uid);
+  console.log("SAVE_USER_PROFILE received:", {
+    hasUid: Boolean(req.body.uid),
+    keys: Object.keys(req.body || {}).length,
+  });
 
   const { uid, fullName, email, phoneNumber, status, userRole } = req.body;
 
@@ -1835,7 +1904,7 @@ app.post("/api/user/caregiver-child-age", async (req, res) => {
   }
 });
 
-app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
+app.post("/api/user/generate-caregiver-link-code", verificationAttemptLimiter, async (req, res) => {
   const { uid, userId } = req.body;
   const resolvedUid = uid || userId;
 
@@ -1877,12 +1946,14 @@ app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
     }
 
     let code = generateLinkingCode();
+    let codeDocId = caregiverLinkCodeDocId(code);
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const existingCodeDoc = await db.collection("caregiverLinkCodes").doc(code).get();
+      const existingCodeDoc = await db.collection("caregiverLinkCodes").doc(codeDocId).get();
       if (!existingCodeDoc.exists) {
         break;
       }
       code = generateLinkingCode();
+      codeDocId = caregiverLinkCodeDocId(code);
     }
     const linkedAccountChild =
       linkedChildren.find((child) => child?.type !== "direct") || null;
@@ -1896,8 +1967,8 @@ app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
     const expiresAtTimestamp = admin.firestore.Timestamp.fromDate(expiresAt);
 
-    await db.collection("caregiverLinkCodes").doc(code).set({
-      code,
+    await db.collection("caregiverLinkCodes").doc(codeDocId).set({
+      codeHash: codeDocId,
       caregiverUserId: resolvedUid,
       status: "active",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1909,7 +1980,8 @@ app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
         linkedChildAccount: Boolean(existingLinkedChildUserId),
         linkedChildUserId: existingLinkedChildUserId,
         linkStatus: "pending",
-        activeLinkingCode: code,
+        activeLinkingCode: admin.firestore.FieldValue.delete(),
+        activeLinkingCodeHash: codeDocId,
         linkCodeExpiresAt: expiresAtTimestamp,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
@@ -1930,7 +2002,7 @@ app.post("/api/user/generate-caregiver-link-code", async (req, res) => {
   }
 });
 
-app.post("/api/user/link-caregiver-account", async (req, res) => {
+app.post("/api/user/link-caregiver-account", verificationAttemptLimiter, async (req, res) => {
   const { uid, userId, linkingCode } = req.body;
   const adolescentUserId = uid || userId;
   const normalizedCode = String(linkingCode || "").trim().toUpperCase();
@@ -1967,8 +2039,13 @@ app.post("/api/user/link-caregiver-account", async (req, res) => {
       });
     }
 
-    const codeRef = db.collection("caregiverLinkCodes").doc(normalizedCode);
-    const codeDoc = await codeRef.get();
+    let codeRef = db.collection("caregiverLinkCodes").doc(caregiverLinkCodeDocId(normalizedCode));
+    let codeDoc = await codeRef.get();
+    if (!codeDoc.exists) {
+      // Legacy fallback for unexpired plaintext document IDs created before hashed storage.
+      codeRef = db.collection("caregiverLinkCodes").doc(normalizedCode);
+      codeDoc = await codeRef.get();
+    }
     if (!codeDoc.exists) {
       return res.status(404).json({
         success: false,
@@ -1988,6 +2065,7 @@ app.post("/api/user/link-caregiver-account", async (req, res) => {
       await codeRef.set(
         {
           status: "expired",
+          code: admin.firestore.FieldValue.delete(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true },
@@ -2059,8 +2137,9 @@ app.post("/api/user/link-caregiver-account", async (req, res) => {
           linkedChildUserId: adolescentUserId,
           linkedChildren: nextLinkedChildren,
           linkStatus: "linked",
-          activeLinkingCode: null,
-          linkCodeExpiresAt: null,
+          activeLinkingCode: admin.firestore.FieldValue.delete(),
+          activeLinkingCodeHash: admin.firestore.FieldValue.delete(),
+          linkCodeExpiresAt: admin.firestore.FieldValue.delete(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true },
@@ -2075,6 +2154,7 @@ app.post("/api/user/link-caregiver-account", async (req, res) => {
       codeRef.set(
         {
           status: "used",
+          code: admin.firestore.FieldValue.delete(),
           linkedAdolescentUserId: adolescentUserId,
           usedAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2156,8 +2236,9 @@ app.post("/api/user/unlink-caregiver-child", async (req, res) => {
           null,
         linkedChildren: nextLinkedChildren,
         linkStatus: nextLinkedChildren.length > 0 ? "linked" : "pending",
-        activeLinkingCode: null,
-        linkCodeExpiresAt: null,
+        activeLinkingCode: admin.firestore.FieldValue.delete(),
+        activeLinkingCodeHash: admin.firestore.FieldValue.delete(),
+        linkCodeExpiresAt: admin.firestore.FieldValue.delete(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -2420,8 +2501,10 @@ app.post("/api/user/archive-direct-child-profile", async (req, res) => {
 
 ////////////////////// LOGIN (EMAIL/PASSWORD) //////////////////////
 // Authenticate user with email and password
-app.post("/api/user/login", async (req, res) => {
-  console.log("LOGIN received for email:", req.body.email);
+app.post("/api/user/login", authAttemptLimiter, async (req, res) => {
+  console.log("LOGIN received:", {
+    hasEmail: Boolean(req.body.email),
+  });
 
   const { email, password } = req.body;
 
@@ -2505,7 +2588,7 @@ app.post("/api/user/login", async (req, res) => {
       needsProfileSetup: buildNeedsProfileSetup(profile, true),
       mfaRequired: securitySettings.mfaEnabled,
       mfaMethod: securitySettings.mfaMethod,
-      securitySettings,
+      securitySettings: toPublicSecuritySettings(securitySettings),
     });
   } catch (error) {
     console.error("LOGIN ERROR:", error.code || error.message);
@@ -2525,7 +2608,9 @@ app.post("/api/user/login", async (req, res) => {
 });
 
 app.post("/api/user/security-settings", async (req, res) => {
-  console.log("SECURITY_SETTINGS received for UID:", req.body.uid);
+  console.log("SECURITY_SETTINGS received:", {
+    hasUid: Boolean(req.body.uid),
+  });
 
   const { uid } = req.body;
 
@@ -2555,7 +2640,7 @@ app.post("/api/user/security-settings", async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      securitySettings,
+      securitySettings: toPublicSecuritySettings(securitySettings),
     });
   } catch (error) {
     console.error("SECURITY_SETTINGS ERROR:", error.code || error.message);
@@ -2566,7 +2651,7 @@ app.post("/api/user/security-settings", async (req, res) => {
   }
 });
 
-app.post("/api/user/update-security-settings", async (req, res) => {
+app.post("/api/user/update-security-settings", authAttemptLimiter, async (req, res) => {
   console.log("UPDATE_SECURITY_SETTINGS received:", {
     uid: req.body.uid,
     mfaEnabled: req.body.mfaEnabled,
@@ -2632,16 +2717,18 @@ app.post("/api/user/update-security-settings", async (req, res) => {
     await userRef.set(
       {
         mfaEnabled,
-        mfaSecret: securitySettings.mfaSecret || null,
-        mfaTempSecret: null,
+        mfaSecret: admin.firestore.FieldValue.delete(),
+        mfaTempSecret: admin.firestore.FieldValue.delete(),
         securitySettings: {
           mfaEnabled,
           mfaMethod: requestedMethod,
           authenticatorEnabled: mfaEnabled && requestedMethod === "authenticator",
           emailMfaEnabled: false,
           mfaEmail: securitySettings.mfaEmail,
-          mfaSecret: securitySettings.mfaSecret || null,
-          mfaTempSecret: null,
+          mfaSecret: securitySettings.mfaSecret
+            ? encryptValue(securitySettings.mfaSecret)
+            : admin.firestore.FieldValue.delete(),
+          mfaTempSecret: admin.firestore.FieldValue.delete(),
           emailChallengeCodeHash: admin.firestore.FieldValue.delete(),
           emailChallengeExpiresAt: admin.firestore.FieldValue.delete(),
           emailChallengePurpose: admin.firestore.FieldValue.delete(),
@@ -2660,11 +2747,9 @@ app.post("/api/user/update-security-settings", async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Security settings updated",
-      securitySettings: normalizeSecuritySettings({
+      securitySettings: toPublicSecuritySettings(normalizeSecuritySettings({
         ...profile,
         mfaEnabled,
-        mfaSecret: securitySettings.mfaSecret || null,
-        mfaTempSecret: null,
         securitySettings: {
           ...(profile.securitySettings || {}),
           mfaEnabled,
@@ -2673,9 +2758,8 @@ app.post("/api/user/update-security-settings", async (req, res) => {
           emailMfaEnabled: false,
           mfaEmail: securitySettings.mfaEmail,
           mfaSecret: securitySettings.mfaSecret || null,
-          mfaTempSecret: null,
         },
-      }),
+      })),
     });
   } catch (error) {
     console.error("UPDATE_SECURITY_SETTINGS ERROR:", error.code || error.message);
@@ -2687,7 +2771,10 @@ app.post("/api/user/update-security-settings", async (req, res) => {
 });
 
 app.post("/api/user/reminder-settings", async (req, res) => {
-  console.log("REMINDER_SETTINGS received:", req.body);
+  console.log("REMINDER_SETTINGS received:", {
+    uid: req.body.uid,
+    profileUserId: req.body.profileUserId,
+  });
 
   const actingUserId = req.body.uid;
   const requestedProfileUserId = req.body.profileUserId;
@@ -2713,7 +2800,13 @@ app.post("/api/user/reminder-settings", async (req, res) => {
 });
 
 app.post("/api/user/update-reminder-settings", async (req, res) => {
-  console.log("UPDATE_REMINDER_SETTINGS received:", req.body);
+  console.log("UPDATE_REMINDER_SETTINGS received:", {
+    uid: req.body.uid,
+    profileUserId: req.body.profileUserId,
+    hasMealReminders: Boolean(req.body.mealReminders),
+    hasMedicationReminders: Boolean(req.body.medicationReminders),
+    hasHydrationReminders: Boolean(req.body.hydrationReminders),
+  });
 
   const actingUserId = req.body.uid;
   const requestedProfileUserId = req.body.profileUserId;
@@ -2997,8 +3090,10 @@ app.post("/api/reminders/clear-do-not-remind", async (req, res) => {
 
 ////////////////////// SEND PASSWORD RESET //////////////////////
 // Send password reset email
-app.post("/api/user/send-password-reset", async (req, res) => {
-  console.log("SEND_PASSWORD_RESET received for email:", req.body.email);
+app.post("/api/user/send-password-reset", passwordResetLimiter, async (req, res) => {
+  console.log("SEND_PASSWORD_RESET received:", {
+    hasEmail: Boolean(req.body.email),
+  });
 
   const { email } = req.body;
 
@@ -3033,7 +3128,7 @@ app.post("/api/user/send-password-reset", async (req, res) => {
 
 ////////////////////// VERIFY PASSWORD RESET CODE //////////////////////
 // Verify and process password reset code
-app.post("/api/user/reset-password", async (req, res) => {
+app.post("/api/user/reset-password", passwordResetLimiter, async (req, res) => {
   console.log("RESET_PASSWORD received");
 
   const { oobCode, newPassword } = req.body;
@@ -3053,19 +3148,7 @@ app.post("/api/user/reset-password", async (req, res) => {
     // Confirm password reset in Firebase
     await admin.auth().confirmPasswordReset(oobCode, newPassword);
     
-    // Update password hash in Firestore
-    const crypto = require('crypto');
-    const salt = crypto.randomBytes(16).toString('hex');
-    const hash = crypto.scryptSync(newPassword, Buffer.from(salt, 'hex'), 64).toString('hex');
-    
-    await db.collection("userSecrets").doc(user.uid).set(
-      {
-        passwordSalt: salt,
-        passwordHash: hash,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    await savePasswordSecret(user.uid, newPassword);
 
     console.log("RESET_PASSWORD: Successfully reset password for user:", user.uid);
 
@@ -3084,7 +3167,7 @@ app.post("/api/user/reset-password", async (req, res) => {
   }
 });
 
-app.post("/api/user/change-password", async (req, res) => {
+app.post("/api/user/change-password", authAttemptLimiter, async (req, res) => {
   console.log("CHANGE_PASSWORD received:", {
     uid: req.body.uid,
     verificationContact: req.body.verificationContact,

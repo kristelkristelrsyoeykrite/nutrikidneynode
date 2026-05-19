@@ -3,14 +3,6 @@ function registerSummaryRoutes(router, deps) {
     getGamificationSummary,
     recomputeGamificationForDate,
   } = require("../../services/gamificationService");
-  const {
-    ensureDoseRecordsForDate,
-    getDoseRecordsForDate,
-    markOverdueDosesMissed,
-    expectedTimesForDate,
-    getActiveDoseWindow,
-    getDoseRecord,
-  } = require("../../utils/medicationDoseRecords");
 
   const {
     admin,
@@ -32,6 +24,16 @@ function registerSummaryRoutes(router, deps) {
     decryptHealthProfile,
   } = deps;
 
+  function requestMeta(req, extra = {}) {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    return {
+      userId: body.userId,
+      profileUserId: body.profileUserId,
+      keys: Object.keys(body).length,
+      ...extra,
+    };
+  }
+
   function parseClockTime(value) {
     const text = String(value || "").trim();
     const match = text.match(/^(\d{1,2}):(\d{2})$/);
@@ -47,9 +49,22 @@ function registerSummaryRoutes(router, deps) {
     };
   }
 
-  function medicationScheduleTimes(medication, dateKey = todayDateKey()) {
-    const clocks = expectedTimesForDate({ medicationDoc: medication, dateKey });
-    return clocks.map((c) => c.text).filter(Boolean);
+  function medicationScheduleTimes(medication) {
+    const times = [];
+    const scheduledTimes =
+      medication?.scheduled_times ?? medication?.scheduledTimes;
+    if (Array.isArray(scheduledTimes)) {
+      for (const entry of scheduledTimes) {
+        const parsed = parseClockTime(entry);
+        if (parsed) times.push(parsed.text);
+      }
+    }
+
+    if (times.length > 0) return Array.from(new Set(times));
+
+    const startTime = medication?.start_time ?? medication?.startTime;
+    const parsed = parseClockTime(startTime);
+    return parsed ? [parsed.text] : [];
   }
 
   function nextUpcomingDoseTime({ times, takenTimes, now }) {
@@ -198,7 +213,9 @@ function registerSummaryRoutes(router, deps) {
             : null,
         linkedChildren: enrichedLinkedChildren,
         linkStatus: viewer.linkStatus || "none",
-        activeLinkingCode: viewer.activeLinkingCode || null,
+        hasActiveLinkingCode: Boolean(
+          viewer.activeLinkingCodeHash || viewer.activeLinkingCode,
+        ),
         linkCodeExpiresAt: toIsoString(viewer.linkCodeExpiresAt),
       };
 
@@ -257,7 +274,9 @@ function registerSummaryRoutes(router, deps) {
   }
 
   router.post("/dashboard-summary", async (req, res) => {
-    console.log("Dashboard summary requested:", req.body);
+    console.log("Dashboard summary requested:", requestMeta(req, {
+      date: req.body.date,
+    }));
 
     try {
       const { userId, profileUserId, date } = req.body;
@@ -334,37 +353,6 @@ function registerSummaryRoutes(router, deps) {
       );
       const today = todayDateKey();
       const now = new Date();
-
-      // Ensure today's dose records exist for all medications (idempotent).
-      await Promise.all(
-        medications.map((medication) =>
-          ensureDoseRecordsForDate({
-            userId: dataUserId,
-            medicationId: medication.id,
-            medicationDoc: medication,
-            dateKey: today,
-          }),
-        ),
-      );
-
-      // Mark overdue pending doses as missed on-demand (keeps UI correct even if
-      // the background scheduler is sleeping/offline).
-      await Promise.all(
-        medications.map((medication) =>
-          markOverdueDosesMissed({
-            userId: dataUserId,
-            medicationId: medication.id,
-            expectedDate: today,
-            nowMs: now.getTime(),
-          }),
-        ),
-      );
-
-      const allDoseRecords = await getDoseRecordsForDate({
-        userId: dataUserId,
-        dateKey: today,
-      });
-
       const medicationsWithDoseStatus = await Promise.all(
         medications.map(async (medication) => {
           const times = medicationScheduleTimes(medication);
@@ -372,117 +360,40 @@ function registerSummaryRoutes(router, deps) {
             return { ...medication, takenTimesToday: [], nextDoseTime: null };
           }
 
-          const doseRecords = allDoseRecords
-            .filter((r) => String(r.medicationId) === String(medication.id))
-            .sort((a, b) => String(a.expectedTime || "").localeCompare(String(b.expectedTime || "")));
+          const logIds = times.map(
+            (timeText) => `${dataUserId}_${medication.id}_${today}_${timeText}`,
+          );
+          const logs = await Promise.all(
+            logIds.map((id) =>
+              db.collection("medicationIntakeLogs").doc(id).get(),
+            ),
+          );
 
-          const takenTimesToday = doseRecords
-            .filter((r) => String(r.status) === "taken")
-            .map((r) => r.expectedTime)
-            .filter(Boolean);
-
-          const missedCountToday = doseRecords.filter((r) => String(r.status) === "missed").length;
-
-          const window = getActiveDoseWindow({ medicationDoc: medication, nowMs: now.getTime() });
-          const activeDoseRef = window?.active || null;
-          if (activeDoseRef?.expectedDate && activeDoseRef.expectedDate !== today) {
-            await ensureDoseRecordsForDate({
-              userId: dataUserId,
-              medicationId: medication.id,
-              medicationDoc: medication,
-              dateKey: activeDoseRef.expectedDate,
-            });
-          }
-
-          const activeDoseRecord =
-            activeDoseRef?.expectedDate && activeDoseRef?.expectedTime
-              ? await getDoseRecord({
-                  userId: dataUserId,
-                  medicationId: medication.id,
-                  expectedDate: activeDoseRef.expectedDate,
-                  expectedTime: activeDoseRef.expectedTime,
-                })
-              : null;
-
-          const nextDoseRef = window?.next || null;
-          if (nextDoseRef?.expectedDate && nextDoseRef.expectedDate !== today) {
-            await ensureDoseRecordsForDate({
-              userId: dataUserId,
-              medicationId: medication.id,
-              medicationDoc: medication,
-              dateKey: nextDoseRef.expectedDate,
-            });
-          }
-
-          const nextDoseRecord =
-            nextDoseRef?.expectedDate && nextDoseRef?.expectedTime
-              ? await getDoseRecord({
-                  userId: dataUserId,
-                  medicationId: medication.id,
-                  expectedDate: nextDoseRef.expectedDate,
-                  expectedTime: nextDoseRef.expectedTime,
-                })
-              : null;
-
-          let effectiveDoseRef = activeDoseRef;
-          let effectiveDoseRecord = activeDoseRecord;
-          let isPreTakenNextDose = false;
-
-          if (
-            effectiveDoseRef &&
-            effectiveDoseRecord &&
-            String(effectiveDoseRecord.status || "pending") !== "taken" &&
-            nextDoseRef &&
-            nextDoseRecord &&
-            String(nextDoseRecord.status || "pending") === "taken"
-          ) {
-            const nextExpected = nextDoseRecord.expectedDateTime?.toDate?.();
-            if (nextExpected && nextExpected.getTime() > now.getTime()) {
-              effectiveDoseRef = nextDoseRef;
-              effectiveDoseRecord = nextDoseRecord;
-              isPreTakenNextDose = true;
+          const takenTimesToday = [];
+          for (let i = 0; i < logs.length; i += 1) {
+            if (logs[i].exists) {
+              takenTimesToday.push(times[i]);
             }
           }
 
-          const pendingFuture = doseRecords.filter((r) => {
-            if (String(r.status) !== "pending") return false;
-            const dt = r.expectedDateTime?.toDate?.();
-            return dt ? dt.getTime() > now.getTime() : false;
+          const nextDoseTime = nextUpcomingDoseTime({
+            times,
+            takenTimes: takenTimesToday,
+            now,
           });
-          pendingFuture.sort((a, b) => {
-            const aDt = a.expectedDateTime?.toDate?.()?.getTime?.() || 0;
-            const bDt = b.expectedDateTime?.toDate?.()?.getTime?.() || 0;
-            return aDt - bDt;
+
+          const missedCountToday = countMissedDoses({
+            times,
+            takenTimes: takenTimesToday,
+            now,
+            graceMinutes: 5,
           });
-          const nextDoseTime = pendingFuture.length > 0 ? pendingFuture[0].expectedTime : null;
 
           return {
             ...medication,
             takenTimesToday,
             nextDoseTime,
             missedCountToday,
-            activeDose: activeDoseRef
-              ? {
-                  expectedDate: activeDoseRef.expectedDate,
-                  expectedTime: activeDoseRef.expectedTime,
-                  status: activeDoseRecord?.status || "pending",
-                  takenAt: activeDoseRecord?.takenAt || null,
-                }
-              : null,
-            doseWindow: effectiveDoseRef
-              ? {
-                  expectedDate: effectiveDoseRef.expectedDate,
-                  expectedTime: effectiveDoseRef.expectedTime,
-                  status: effectiveDoseRecord?.status || "pending",
-                  takenAt: effectiveDoseRecord?.takenAt || null,
-                  preTaken: isPreTakenNextDose,
-                }
-              : null,
-            doseRecordsToday: doseRecords.map((r) => ({
-              expectedTime: r.expectedTime,
-              status: r.status,
-              takenAt: r.takenAt || null,
-            })),
           };
         }),
       );
@@ -529,7 +440,10 @@ function registerSummaryRoutes(router, deps) {
   });
 
   router.post("/analytics-summary", async (req, res) => {
-    console.log("Analytics summary requested:", req.body);
+    console.log("Analytics summary requested:", requestMeta(req, {
+      range: req.body.range,
+      hasEndDate: Boolean(req.body.endDate),
+    }));
 
     try {
       const { userId, profileUserId, range, endDate } = req.body;
@@ -626,7 +540,7 @@ function registerSummaryRoutes(router, deps) {
   });
 
   router.post("/health-summary", async (req, res) => {
-    console.log("Health summary requested:", req.body);
+    console.log("Health summary requested:", requestMeta(req));
 
     try {
       const { userId, profileUserId } = req.body;
@@ -733,34 +647,6 @@ function registerSummaryRoutes(router, deps) {
 
       const today = todayDateKey();
       const now = new Date();
-
-      await Promise.all(
-        medications.map((medication) =>
-          ensureDoseRecordsForDate({
-            userId: dataUserId,
-            medicationId: medication.id,
-            medicationDoc: medication,
-            dateKey: today,
-          }),
-        ),
-      );
-
-      await Promise.all(
-        medications.map((medication) =>
-          markOverdueDosesMissed({
-            userId: dataUserId,
-            medicationId: medication.id,
-            expectedDate: today,
-            nowMs: now.getTime(),
-          }),
-        ),
-      );
-
-      const allDoseRecords = await getDoseRecordsForDate({
-        userId: dataUserId,
-        dateKey: today,
-      });
-
       const medicationsWithDoseStatus = await Promise.all(
         medications.map(async (medication) => {
           const times = medicationScheduleTimes(medication);
@@ -768,117 +654,40 @@ function registerSummaryRoutes(router, deps) {
             return { ...medication, takenTimesToday: [], nextDoseTime: null };
           }
 
-          const doseRecords = allDoseRecords
-            .filter((r) => String(r.medicationId) === String(medication.id))
-            .sort((a, b) => String(a.expectedTime || "").localeCompare(String(b.expectedTime || "")));
+          const logIds = times.map(
+            (timeText) => `${dataUserId}_${medication.id}_${today}_${timeText}`,
+          );
+          const logs = await Promise.all(
+            logIds.map((id) =>
+              db.collection("medicationIntakeLogs").doc(id).get(),
+            ),
+          );
 
-          const takenTimesToday = doseRecords
-            .filter((r) => String(r.status) === "taken")
-            .map((r) => r.expectedTime)
-            .filter(Boolean);
-
-          const missedCountToday = doseRecords.filter((r) => String(r.status) === "missed").length;
-
-          const window = getActiveDoseWindow({ medicationDoc: medication, nowMs: now.getTime() });
-          const activeDoseRef = window?.active || null;
-          if (activeDoseRef?.expectedDate && activeDoseRef.expectedDate !== today) {
-            await ensureDoseRecordsForDate({
-              userId: dataUserId,
-              medicationId: medication.id,
-              medicationDoc: medication,
-              dateKey: activeDoseRef.expectedDate,
-            });
-          }
-
-          const activeDoseRecord =
-            activeDoseRef?.expectedDate && activeDoseRef?.expectedTime
-              ? await getDoseRecord({
-                  userId: dataUserId,
-                  medicationId: medication.id,
-                  expectedDate: activeDoseRef.expectedDate,
-                  expectedTime: activeDoseRef.expectedTime,
-                })
-              : null;
-
-          const nextDoseRef = window?.next || null;
-          if (nextDoseRef?.expectedDate && nextDoseRef.expectedDate !== today) {
-            await ensureDoseRecordsForDate({
-              userId: dataUserId,
-              medicationId: medication.id,
-              medicationDoc: medication,
-              dateKey: nextDoseRef.expectedDate,
-            });
-          }
-
-          const nextDoseRecord =
-            nextDoseRef?.expectedDate && nextDoseRef?.expectedTime
-              ? await getDoseRecord({
-                  userId: dataUserId,
-                  medicationId: medication.id,
-                  expectedDate: nextDoseRef.expectedDate,
-                  expectedTime: nextDoseRef.expectedTime,
-                })
-              : null;
-
-          let effectiveDoseRef = activeDoseRef;
-          let effectiveDoseRecord = activeDoseRecord;
-          let isPreTakenNextDose = false;
-
-          if (
-            effectiveDoseRef &&
-            effectiveDoseRecord &&
-            String(effectiveDoseRecord.status || "pending") !== "taken" &&
-            nextDoseRef &&
-            nextDoseRecord &&
-            String(nextDoseRecord.status || "pending") === "taken"
-          ) {
-            const nextExpected = nextDoseRecord.expectedDateTime?.toDate?.();
-            if (nextExpected && nextExpected.getTime() > now.getTime()) {
-              effectiveDoseRef = nextDoseRef;
-              effectiveDoseRecord = nextDoseRecord;
-              isPreTakenNextDose = true;
+          const takenTimesToday = [];
+          for (let i = 0; i < logs.length; i += 1) {
+            if (logs[i].exists) {
+              takenTimesToday.push(times[i]);
             }
           }
 
-          const pendingFuture = doseRecords.filter((r) => {
-            if (String(r.status) !== "pending") return false;
-            const dt = r.expectedDateTime?.toDate?.();
-            return dt ? dt.getTime() > now.getTime() : false;
+          const nextDoseTime = nextUpcomingDoseTime({
+            times,
+            takenTimes: takenTimesToday,
+            now,
           });
-          pendingFuture.sort((a, b) => {
-            const aDt = a.expectedDateTime?.toDate?.()?.getTime?.() || 0;
-            const bDt = b.expectedDateTime?.toDate?.()?.getTime?.() || 0;
-            return aDt - bDt;
+
+          const missedCountToday = countMissedDoses({
+            times,
+            takenTimes: takenTimesToday,
+            now,
+            graceMinutes: 5,
           });
-          const nextDoseTime = pendingFuture.length > 0 ? pendingFuture[0].expectedTime : null;
 
           return {
             ...medication,
             takenTimesToday,
             nextDoseTime,
             missedCountToday,
-            activeDose: activeDoseRef
-              ? {
-                  expectedDate: activeDoseRef.expectedDate,
-                  expectedTime: activeDoseRef.expectedTime,
-                  status: activeDoseRecord?.status || "pending",
-                  takenAt: activeDoseRecord?.takenAt || null,
-                }
-              : null,
-            doseWindow: effectiveDoseRef
-              ? {
-                  expectedDate: effectiveDoseRef.expectedDate,
-                  expectedTime: effectiveDoseRef.expectedTime,
-                  status: effectiveDoseRecord?.status || "pending",
-                  takenAt: effectiveDoseRecord?.takenAt || null,
-                  preTaken: isPreTakenNextDose,
-                }
-              : null,
-            doseRecordsToday: doseRecords.map((r) => ({
-              expectedTime: r.expectedTime,
-              status: r.status,
-              takenAt: r.takenAt || null,
-            })),
           };
         }),
       );

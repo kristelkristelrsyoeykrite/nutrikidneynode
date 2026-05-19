@@ -845,7 +845,7 @@ router.post("/search", async (req, res) => {
     console.error("FOOD_SEARCH ERROR:", error.message);
     return res.status(error.statusCode || 500).json({
       success: false,
-      error: "Food search is temporarily unavailable.",
+      error: "Food search is temporarily unavailable. Please try again.",
       details: error.data,
     });
   }
@@ -861,7 +861,7 @@ router.get("/details/:foodId", async (req, res) => {
     console.error("FOOD_DETAILS ERROR:", error.message);
     return res.status(error.statusCode || 500).json({
       success: false,
-      error: "Food details are temporarily unavailable.",
+      error: "Food details are temporarily unavailable. Please try again.",
       details: error.data,
     });
   }
@@ -885,7 +885,7 @@ router.post("/details", async (req, res) => {
     console.error("FOOD_DETAILS ERROR:", error.message);
     return res.status(error.statusCode || 500).json({
       success: false,
-      error: "Food details are temporarily unavailable.",
+      error: "Food details are temporarily unavailable. Please try again.",
       details: error.data,
     });
   }

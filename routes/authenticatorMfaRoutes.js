@@ -8,8 +8,24 @@ const {
   normalizeSecuritySettings,
   verifyTotpCode,
 } = require("../services/authenticatorMfaService");
+const { encryptValue } = require("../utils/encryption");
+const { createRateLimiter, identityKey } = require("../utils/rateLimiter");
 
 const router = express.Router();
+
+const mfaSetupLimiter = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 8,
+  keyPrefix: "mfa-setup",
+  keyGenerator: (req) => identityKey(req, ["uid", "email"]),
+});
+
+const mfaVerifyLimiter = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 6,
+  keyPrefix: "mfa-verify",
+  keyGenerator: (req) => identityKey(req, ["uid"]),
+});
 
 function isProfileCompleteForMfa(profile = {}) {
   const normalizedRole = String(profile.role || "").trim().toLowerCase();
@@ -34,7 +50,7 @@ function isProfileCompleteForMfa(profile = {}) {
   return Boolean(profile.baselineNutritionTargetId && profile.medicalProfileId);
 }
 
-router.post("/setup/start", async (req, res) => {
+router.post("/setup/start", mfaSetupLimiter, async (req, res) => {
   console.log("MFA_AUTHENTICATOR_SETUP_START received:", {
     uid: req.body.uid,
     email: req.body.email,
@@ -101,10 +117,14 @@ router.post("/setup/start", async (req, res) => {
       {
         // We do NOT set mfaEnabled or authenticatorEnabled to true here.
         // Enrollment setup is a pending state.
-        mfaTempSecret: tempSecret,
+        mfaSecret: admin.firestore.FieldValue.delete(),
+        mfaTempSecret: admin.firestore.FieldValue.delete(),
         securitySettings: {
           ...(profile.securitySettings || {}),
-          mfaTempSecret: tempSecret,
+          mfaSecret: securitySettings.mfaSecret
+            ? encryptValue(securitySettings.mfaSecret)
+            : admin.firestore.FieldValue.delete(),
+          mfaTempSecret: encryptValue(tempSecret),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -131,7 +151,7 @@ router.post("/setup/start", async (req, res) => {
   }
 });
 
-router.post("/setup/verify", async (req, res) => {
+router.post("/setup/verify", mfaVerifyLimiter, async (req, res) => {
   console.log("MFA_AUTHENTICATOR_SETUP_VERIFY received:", {
     uid: req.body.uid,
   });
@@ -174,15 +194,15 @@ router.post("/setup/verify", async (req, res) => {
     await userRef.set(
       {
         mfaEnabled: true,
-        mfaSecret: securitySettings.mfaTempSecret,
-        mfaTempSecret: null,
+        mfaSecret: admin.firestore.FieldValue.delete(),
+        mfaTempSecret: admin.firestore.FieldValue.delete(),
         securitySettings: {
           ...(profile.securitySettings || {}),
           mfaEnabled: true,
           mfaMethod: "authenticator",
           authenticatorEnabled: true,
-          mfaSecret: securitySettings.mfaTempSecret,
-          mfaTempSecret: null,
+          mfaSecret: encryptValue(securitySettings.mfaTempSecret),
+          mfaTempSecret: admin.firestore.FieldValue.delete(),
           mfaVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
@@ -212,7 +232,7 @@ router.post("/setup/verify", async (req, res) => {
   }
 });
 
-router.post("/verify", async (req, res) => {
+router.post("/verify", mfaVerifyLimiter, async (req, res) => {
   console.log("MFA_AUTHENTICATOR_VERIFY received:", {
     uid: req.body.uid,
   });
@@ -250,6 +270,21 @@ router.post("/verify", async (req, res) => {
         error: "Invalid authenticator code",
       });
     }
+
+    await db.collection("users").doc(uid).set(
+      {
+        mfaSecret: admin.firestore.FieldValue.delete(),
+        mfaTempSecret: admin.firestore.FieldValue.delete(),
+        securitySettings: {
+          ...(profile.securitySettings || {}),
+          mfaSecret: encryptValue(securitySettings.mfaSecret),
+          mfaTempSecret: admin.firestore.FieldValue.delete(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
 
     return res.status(200).json({
       success: true,

@@ -1,11 +1,5 @@
 const { admin, db } = require("../firebase/admin");
 const { decryptHealthDocument, decryptHealthProfile } = require("../utils/encryption");
-const {
-  todayDateKey,
-  ensureDoseRecordsForDate,
-  markOverdueDosesMissed,
-  getDoseRecordsForDate,
-} = require("../utils/medicationDoseRecords");
 
 /**
  * Backend Reminder Scheduler
@@ -54,70 +48,10 @@ function displayNameFromProfile(profile = {}) {
   return "there";
 }
 
-function isCaregiverRole(role) {
-  const normalized = String(role || "").trim().toLowerCase();
-  return normalized === "parent_caregiver" || normalized === "caregiver";
-}
-
-function isDirectManagedChildEntry(child = {}) {
-  if (child?.type === "direct") return true;
-  if (
-    child?.relationship === "adolescent" ||
-    child?.type === "linked" ||
-    child?.type === "adolescent"
-  ) {
-    return false;
-  }
-  const childAgeGroup = String(child?.childAgeGroup || "");
-  if (
-    childAgeGroup === "5-12" ||
-    childAgeGroup === "5-13" ||
-    childAgeGroup === "13-18-direct"
-  ) {
-    return true;
-  }
-  const age = Number(child?.age ?? child?.ageYears);
-  if (Number.isFinite(age)) return age < 13;
-  return true;
-}
-
-function getDirectManagedChildUserIds(user = {}) {
-  const linkedChildren = Array.isArray(user.linkedChildren)
-    ? user.linkedChildren
-    : [];
-  return linkedChildren
-    .filter((child) => isDirectManagedChildEntry(child))
-    .map((child) => child?.userId || child?.uid || child?.id)
-    .filter((id) => typeof id === "string" && id.trim().length > 0);
-}
-
-async function getUserProfile(userId) {
-  const doc = await db.collection("users").doc(userId).get();
-  return doc.exists ? safeDecryptHealthProfile(doc.data() || {}) : null;
-}
-
-async function sendReminderToProfileRecipients({
-  caregiverUserId,
-  profileUserId,
-  reminderData,
-  includeProfileDevices = true,
-}) {
-  const targetUserIds = new Set();
-  if (caregiverUserId) targetUserIds.add(String(caregiverUserId));
-  if (includeProfileDevices && profileUserId) targetUserIds.add(String(profileUserId));
-
-  const totals = { successful: 0, failed: 0, targetedUsers: targetUserIds.size };
-  for (const targetUserId of targetUserIds) {
-    const result = await sendReminderToDevices(targetUserId, {
-      ...reminderData,
-      // Keep the profile id separate from the recipient id so existing app-side
-      // user filtering still accepts caregiver-targeted pushes.
-      profileUserId: String(profileUserId || targetUserId),
-    });
-    totals.successful += result?.successful || 0;
-    totals.failed += result?.failed || 0;
-  }
-  return totals;
+function todayDateKey() {
+  // Use Manila time to match how schedules are stored/displayed in the app.
+  const manilaOffsetMs = 8 * 60 * 60 * 1000;
+  return new Date(Date.now() + manilaOffsetMs).toISOString().slice(0, 10);
 }
 
 /**
@@ -229,29 +163,6 @@ async function hasMedicationBeenTakenToday(userId) {
   return !(await hasPendingMedicationReminders(userId));
 }
 
-async function getMissedDoseRecordsForMedication({ userId, medicationId, dateKey }) {
-  const records = await getDoseRecordsForDate({ userId, dateKey });
-  return records.filter((record) => {
-    return (
-      String(record.medicationId || "") === String(medicationId) &&
-      String(record.status || "") === "missed"
-    );
-  });
-}
-
-function missedDoseReminderStateKey({ medicationId, expectedDate, expectedTime }) {
-  return `missed_medication_${medicationId}_${expectedDate}_${expectedTime}`;
-}
-
-function formatClockTimeForNotification(value) {
-  const clock = parseClockTime(value);
-  if (!clock) return String(value || "").trim();
-
-  const period = clock.hour >= 12 ? "PM" : "AM";
-  const hour12 = clock.hour % 12 || 12;
-  return `${hour12}:${String(clock.minute).padStart(2, "0")} ${period}`;
-}
-
 /**
  * Check if hydration target has been met today
  */
@@ -345,7 +256,7 @@ async function sendReminderToDevices(userId, reminderData) {
       return;
     }
 
-    const user = userDoc.data();
+    const user = safeDecryptHealthProfile(userDoc.data() || {});
     const deviceTokens = user.deviceTokens || {};
 
     const validTokens = [
@@ -368,13 +279,7 @@ async function sendReminderToDevices(userId, reminderData) {
       },
       data: {
         type: reminderData.type,
-        userId: String(userId),
-        recipientUserId: String(userId),
-        profileUserId: String(
-          reminderData.profileUserId || userId,
-        ),
-        title: String(reminderData.title || ""),
-        body: String(reminderData.body || ""),
+        userId: userId,
         timestamp: Date.now().toString(),
       },
       android: {
@@ -429,44 +334,15 @@ async function checkMealReminders() {
   console.log("[Reminders] Checking meal reminders...");
 
   try {
-    // Firestore doesn't support OR queries well here, so merge the 4 meal toggles.
-    const [breakfastSnap, lunchSnap, snackSnap, dinnerSnap] =
-      await Promise.all([
-        db
-          .collection("users")
-          .where("reminderSettings.mealReminders.breakfast", "==", true)
-          .get(),
-        db
-          .collection("users")
-          .where("reminderSettings.mealReminders.lunch", "==", true)
-          .get(),
-        db
-          .collection("users")
-          .where("reminderSettings.mealReminders.snack", "==", true)
-          .get(),
-        db
-          .collection("users")
-          .where("reminderSettings.mealReminders.dinner", "==", true)
-          .get(),
-      ]);
+    // Get all users with meal reminders enabled
+    const usersSnapshot = await db
+      .collection("users")
+      .where("reminderSettings.mealReminders.enabled", "==", true)
+      .get();
 
-    const docsById = new Map();
-    for (const doc of [
-      ...breakfastSnap.docs,
-      ...lunchSnap.docs,
-      ...snackSnap.docs,
-      ...dinnerSnap.docs,
-    ]) {
-      docsById.set(doc.id, doc);
-    }
-
-    for (const userDoc of docsById.values()) {
+    for (const userDoc of usersSnapshot.docs) {
       const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
-      const directChildIds = isCaregiverRole(user.role)
-        ? getDirectManagedChildUserIds(user)
-        : [];
-      const targetProfileIds = [...new Set([userId, ...directChildIds])];
 
       // Skip if "do not remind me" was just clicked
       if (user.reminderSettings?.dontRemindUntil) {
@@ -476,37 +352,28 @@ async function checkMealReminders() {
         }
       }
 
-      for (const profileUserId of targetProfileIds) {
-        // Check if meal was logged today
-        const mealLogged = await hasMealBeenLoggedToday(profileUserId);
-        if (mealLogged) {
-          continue; // Already logged, don't remind
-        }
-
-        // Check if enough time passed since last reminder (per profile)
-        const lastReminder = await getLastReminderTimestamp(profileUserId, "meal");
-        if (!shouldRemindAgain(lastReminder, 30)) {
-          continue; // Too soon to remind again
-        }
-
-        const profile = profileUserId === userId ? user : await getUserProfile(profileUserId);
-        if (!profile) continue;
-
-        const childName = displayNameFromProfile(profile);
-
-        await sendReminderToProfileRecipients({
-          caregiverUserId: isCaregiverRole(user.role) ? userId : null,
-          profileUserId,
-          reminderData: {
-            type: "meal_reminder",
-            title: `Reminder for ${childName}!`,
-            body: "Have you eaten? Log your meal to track your nutrition.",
-          },
-          includeProfileDevices: !isCaregiverRole(user.role),
-        });
-
-        await updateLastReminderTimestamp(profileUserId, "meal");
+      // Check if meal was logged today
+      const mealLogged = await hasMealBeenLoggedToday(userId);
+      if (mealLogged) {
+        continue; // Already logged, don't remind
       }
+
+      // Check if enough time passed since last reminder
+      const lastReminder = await getLastReminderTimestamp(userId, "meal");
+      if (!shouldRemindAgain(lastReminder, 30)) {
+        continue; // Too soon to remind again
+      }
+
+      const childName = displayNameFromProfile(user);
+
+      // Send reminder
+      await sendReminderToDevices(userId, {
+        type: "meal_reminder",
+        title: `Reminder for ${childName}!`,
+        body: "Have you eaten? Log your meal to track your nutrition.",
+      });
+
+      await updateLastReminderTimestamp(userId, "meal");
     }
   } catch (error) {
     console.error("Error in meal reminder check:", error.message);
@@ -529,10 +396,6 @@ async function checkMedicationReminders() {
     for (const userDoc of usersSnapshot.docs) {
       const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
-      const directChildIds = isCaregiverRole(user.role)
-        ? getDirectManagedChildUserIds(user)
-        : [];
-      const targetProfileIds = [...new Set([userId, ...directChildIds])];
 
       // Skip if "do not remind me" was just clicked
       if (user.reminderSettings?.dontRemindUntil) {
@@ -542,37 +405,28 @@ async function checkMedicationReminders() {
         }
       }
 
-      for (const profileUserId of targetProfileIds) {
-        // Stop reminding once all medication statuses are marked as Taken.
-        const hasPendingMedication = await hasPendingMedicationReminders(profileUserId);
-        if (!hasPendingMedication) {
-          continue;
-        }
-
-        // Check if enough time passed since last reminder (per profile)
-        const lastReminder = await getLastReminderTimestamp(profileUserId, "medication");
-        if (!shouldRemindAgain(lastReminder, 24 * 60)) {
-          continue; // Too soon to remind again
-        }
-
-        const profile = profileUserId === userId ? user : await getUserProfile(profileUserId);
-        if (!profile) continue;
-
-        const childName = displayNameFromProfile(profile);
-
-        await sendReminderToProfileRecipients({
-          caregiverUserId: isCaregiverRole(user.role) ? userId : null,
-          profileUserId,
-          reminderData: {
-            type: "medication_reminder",
-            title: `Reminder for ${childName}!`,
-            body: "Don't forget to take your medication.",
-          },
-          includeProfileDevices: !isCaregiverRole(user.role),
-        });
-
-        await updateLastReminderTimestamp(profileUserId, "medication");
+      // Stop reminding once all medication statuses are marked as Taken.
+      const hasPendingMedication = await hasPendingMedicationReminders(userId);
+      if (!hasPendingMedication) {
+        continue;
       }
+
+      // Check if enough time passed since last reminder
+      const lastReminder = await getLastReminderTimestamp(userId, "medication");
+      if (!shouldRemindAgain(lastReminder, 24 * 60)) {
+        continue; // Too soon to remind again
+      }
+
+      const childName = displayNameFromProfile(user);
+
+      // Send reminder
+      await sendReminderToDevices(userId, {
+        type: "medication_reminder",
+        title: `Reminder for ${childName}!`,
+        body: "Don't forget to take your medication.",
+      });
+
+      await updateLastReminderTimestamp(userId, "medication");
     }
   } catch (error) {
     console.error("Error in medication reminder check:", error.message);
@@ -595,12 +449,30 @@ async function checkHydrationReminders() {
     for (const userDoc of usersSnapshot.docs) {
       const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
-      const directChildIds = isCaregiverRole(user.role)
-        ? getDirectManagedChildUserIds(user)
-        : [];
-      const targetProfileIds = [...new Set([userId, ...directChildIds])];
+      const medicalProfileId = String(user.medicalProfileId || "").trim();
+      if (!medicalProfileId) {
+        continue;
+      }
 
       // Get fluid restriction limit
+      const medicalProfileDoc = await db
+        .collection("medicalProfile")
+        .doc(medicalProfileId)
+        .get();
+
+      if (!medicalProfileDoc.exists) {
+        continue;
+      }
+
+      const medicalProfile = medicalProfileDoc.data();
+      const fluidLimitMl = numberOrZero(
+        medicalProfile.fluid_limit_ml ?? medicalProfile.fluidLimitMl
+      );
+
+      if (fluidLimitMl <= 0) {
+        continue; // No fluid restriction
+      }
+
       // Skip if "do not remind me" was just clicked
       if (user.reminderSettings?.dontRemindUntil) {
         const dontRemindUntil = user.reminderSettings.dontRemindUntil.toMillis?.() || 0;
@@ -609,58 +481,32 @@ async function checkHydrationReminders() {
         }
       }
 
-      for (const profileUserId of targetProfileIds) {
-        const profile = profileUserId === userId ? user : await getUserProfile(profileUserId);
-        if (!profile) continue;
-
-        const medicalProfileId = String(profile.medicalProfileId || "").trim();
-        if (!medicalProfileId) continue;
-
-        const medicalProfileDoc = await db
-          .collection("medicalProfile")
-          .doc(medicalProfileId)
-          .get();
-
-        if (!medicalProfileDoc.exists) continue;
-
-        const medicalProfile = medicalProfileDoc.data();
-        const fluidLimitMl = numberOrZero(
-          medicalProfile.fluid_limit_ml ?? medicalProfile.fluidLimitMl,
-        );
-
-        if (fluidLimitMl <= 0) continue; // No fluid restriction
-
-        // Check if hydration target was met
-        const hydrationMet = await hasHydrationTargetBeenMetToday(
-          profileUserId,
-          fluidLimitMl,
-        );
-        if (hydrationMet) {
-          continue; // Target met, don't remind
-        }
-
-        // Check if enough time passed since last reminder (per profile)
-        const lastReminder = await getLastReminderTimestamp(profileUserId, "hydration");
-        if (!shouldRemindAgain(lastReminder, 120)) {
-          // 2 hour interval for hydration
-          continue;
-        }
-
-        const childName = displayNameFromProfile(profile);
-
-        await sendReminderToProfileRecipients({
-          caregiverUserId: isCaregiverRole(user.role) ? userId : null,
-          profileUserId,
-          reminderData: {
-            type: "hydration_reminder",
-            title: `Reminder for ${childName}!`,
-            body: `Log your fluid intake. Goal: ${fluidLimitMl}mL`,
-          },
-          includeProfileDevices: !isCaregiverRole(user.role),
-        });
-
-        await updateLastReminderTimestamp(profileUserId, "hydration");
+      // Check if hydration target was met
+      const hydrationMet = await hasHydrationTargetBeenMetToday(
+        userId,
+        fluidLimitMl
+      );
+      if (hydrationMet) {
+        continue; // Target met, don't remind
       }
+
+      // Check if enough time passed since last reminder
+      const lastReminder = await getLastReminderTimestamp(userId, "hydration");
+      if (!shouldRemindAgain(lastReminder, 120)) {
+        // 2 hour interval for hydration
+        continue;
+      }
+
+      const childName = displayNameFromProfile(user);
+
+      // Send reminder
+      await sendReminderToDevices(userId, {
+        type: "hydration_reminder",
+        title: `Reminder for ${childName}!`,
+        body: `Log your fluid intake. Goal: ${fluidLimitMl}mL`,
+      });
+
+      await updateLastReminderTimestamp(userId, "hydration");
     }
   } catch (error) {
     console.error("Error in hydration reminder check:", error.message);
@@ -684,123 +530,80 @@ async function checkMissedMedicationReminders() {
     for (const userDoc of usersSnapshot.docs) {
       const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
-      const directChildIds = isCaregiverRole(user.role)
-        ? getDirectManagedChildUserIds(user)
-        : [];
-      const targetProfileIds = [...new Set([userId, ...directChildIds])];
+
+      const missedThresholdMs = 5 * 60 * 1000;
+      const medicationsSnapshot = await db
+        .collection("medications")
+        .where("userId", "==", userId)
+        .get();
+
+      if (medicationsSnapshot.empty) continue;
 
       const nowMs = Date.now();
       const today = todayDateKey();
 
-      for (const profileUserId of targetProfileIds) {
-        const profile = profileUserId === userId ? user : await getUserProfile(profileUserId);
-        if (!profile) continue;
+      for (const medicationDoc of medicationsSnapshot.docs) {
+        const medicationId = medicationDoc.id;
+        const medication = decryptHealthDocument(medicationDoc.data() || {});
+        const name =
+          String(
+            medication.medication_name ??
+              medication.medicationName ??
+              medication.name ??
+              "Medication",
+          ).trim() || "Medication";
 
-        // Pull the profile's medications so we can determine which scheduled doses are missed.
-        const medicationsSnapshot = await db
-          .collection("medications")
-          .where("userId", "==", profileUserId)
-          .get();
+        for (const clock of medicationScheduleTimes(medication)) {
+          const scheduled = dateForTodayClockTime(clock);
+          const scheduledMs = scheduled.getTime();
+          if (scheduledMs > nowMs) continue;
+          if (nowMs - scheduledMs < missedThresholdMs) continue;
 
-        if (medicationsSnapshot.empty) continue;
+          const intakeLogId = `${userId}_${medicationId}_${today}_${clock.text}`;
+          const intakeLog = await db
+            .collection("medicationIntakeLogs")
+            .doc(intakeLogId)
+            .get();
+          if (intakeLog.exists) continue;
 
-        const childName = displayNameFromProfile(profile);
+          const stateKey = `missed_medication_${medicationId}_${today}_${clock.text}`;
+          const lastMissedSent = await getLastReminderTimestamp(userId, stateKey);
+          if (lastMissedSent !== 0) continue;
 
-        for (const medicationDoc of medicationsSnapshot.docs) {
-          const medicationId = medicationDoc.id;
-          const medication = decryptHealthDocument(medicationDoc.data() || {});
-          const name =
-            String(
-              medication.medication_name ??
-                medication.medicationName ??
-                medication.name ??
-                "Medication",
-            ).trim() || "Medication";
+          const dueTimestamp = admin.firestore.Timestamp.fromDate(scheduled);
 
-          // Generate today's dose records and mark overdue pending ones as missed.
-          await ensureDoseRecordsForDate({
-            userId: profileUserId,
+          const missedNotification = {
+            userId,
+            type: "missed_medication_reminder",
+            title: "Missed Medication Reminder",
+            body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            isMissed: true,
+            priority: "high",
+            color: "red",
+            read: false,
             medicationId,
-            medicationDoc: medicationDoc.data() || {},
-            dateKey: today,
+            medicationName: name,
+            scheduledTime: clock.text,
+            dueTime: dueTimestamp,
+            day: today,
+          };
+
+          await db.collection("notifications").add(missedNotification);
+          await db.collection("upcomingReminders").add(missedNotification);
+
+          const childName = displayNameFromProfile(user);
+          await sendReminderToDevices(userId, {
+            type: "missed_medication_reminder",
+            title: `Missed medication for ${childName}`,
+            body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
           });
 
-          await markOverdueDosesMissed({
-            userId: profileUserId,
-            medicationId,
-            expectedDate: today,
-            nowMs,
-          });
+          await updateLastReminderTimestamp(userId, stateKey);
 
-          const missedDoseRecords = await getMissedDoseRecordsForMedication({
-            userId: profileUserId,
-            medicationId,
-            dateKey: today,
-          });
-
-          for (const doseRecord of missedDoseRecords) {
-            const scheduledTime = String(doseRecord.expectedTime || "").trim();
-            if (!scheduledTime) continue;
-            const expectedDate = String(doseRecord.expectedDate || today);
-            const stateKey = missedDoseReminderStateKey({
-              medicationId,
-              expectedDate,
-              expectedTime: scheduledTime,
-            });
-            const lastMissedSent = await getLastReminderTimestamp(
-              profileUserId,
-              stateKey,
-            );
-            if (lastMissedSent !== 0) continue;
-
-            const dueTimestamp = doseRecord.expectedDateTime || null;
-            const displayTime = formatClockTimeForNotification(scheduledTime);
-            const title = `Missed Reminder for ${childName}`;
-            const body = `You missed your ${name} reminder at ${displayTime}. Please take your medication if possible.`;
-
-            const missedNotification = {
-              userId: profileUserId,
-              type: "missed_medication_reminder",
-              title,
-              body,
-              timestamp: admin.firestore.FieldValue.serverTimestamp(),
-              isMissed: true,
-              priority: "high",
-              color: "red",
-              read: false,
-              medicationId,
-              medicationName: name,
-              scheduledTime,
-              dueTime: dueTimestamp,
-              day: expectedDate,
-              doseRecordId: doseRecord.doseRecordId || doseRecord.id,
-            };
-
-            await db.collection("notifications").add(missedNotification);
-            await db.collection("upcomingReminders").add(missedNotification);
-
-            const deliveryResult = await sendReminderToProfileRecipients({
-              caregiverUserId: isCaregiverRole(user.role) ? userId : null,
-              profileUserId,
-              reminderData: {
-                type: "missed_medication_reminder",
-                title,
-                body,
-              },
-              includeProfileDevices: !isCaregiverRole(user.role),
-            });
-            if ((deliveryResult?.successful || 0) <= 0) {
-              console.warn(
-                `Missed reminder stored but push was not delivered for ${profileUserId} at ${scheduledTime}`,
-              );
-              continue;
-            }
-            await updateLastReminderTimestamp(profileUserId, stateKey);
-
-            console.log(
-              `Marked missed + sent reminder to ${profileUserId} for ${medicationId} at ${scheduledTime}`,
-            );
-          }
+          console.log(
+            `Sent missed medication reminder to ${userId} for ${medicationId} at ${clock.text}`,
+          );
         }
       }
     }
