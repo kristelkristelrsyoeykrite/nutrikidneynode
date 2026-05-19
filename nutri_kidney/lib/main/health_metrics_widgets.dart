@@ -261,6 +261,7 @@ class HealthMetricsVitalCard extends StatelessWidget {
     required this.unit,
     required this.icon,
     required this.color,
+    this.onTap,
   });
 
   final String title;
@@ -268,49 +269,57 @@ class HealthMetricsVitalCard extends StatelessWidget {
   final String unit;
   final IconData icon;
   final Color color;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Row(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.shade200),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, color: color, size: 20),
-              const SizedBox(width: 8),
+              Row(
+                children: [
+                  Icon(icon, color: color, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Color(0xFF90A4AE),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
               Text(
-                title,
+                value,
                 style: const TextStyle(
-                  color: Color(0xFF90A4AE),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
+                  color: Color(0xFF37474F),
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
+              if (value != 'Not set')
+                Text(
+                  unit,
+                  style: const TextStyle(color: Color(0xFFB0BEC5), fontSize: 12),
+                ),
             ],
           ),
-          const SizedBox(height: 12),
-          Text(
-            value,
-            style: const TextStyle(
-              color: Color(0xFF37474F),
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          if (value != 'Not set')
-            Text(
-              unit,
-              style: const TextStyle(color: Color(0xFFB0BEC5), fontSize: 12),
-            ),
-        ],
+        ),
       ),
     );
   }

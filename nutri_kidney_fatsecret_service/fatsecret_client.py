@@ -12,7 +12,9 @@ Algorithm overview:
 4. Return raw data for normalization
 """
 import requests
+import time
 from typing import Dict, Any, List, Optional
+from threading import RLock
 from requests_oauthlib import OAuth1Session
 from error_handler import (
     CredentialsError,
@@ -46,6 +48,9 @@ class FatSecretClient:
         self.config = get_config()
         self._validate_credentials()
         self._session = self._create_oauth_session()
+        self._search_cache: Dict[str, Dict[str, Any]] = {}
+        self._search_cache_lock = RLock()
+        self._search_cache_ttl_seconds = 24 * 60 * 60
 
     def _validate_credentials(self) -> None:
         """Ensure API credentials are available."""
@@ -85,8 +90,7 @@ class FatSecretClient:
 
         for attempt in range(2):
             try:
-                session = self._create_oauth_session()
-                response = session.get(
+                response = self._session.get(
                     self.BASE_URL,
                     params=params,
                     timeout=self.config.REQUEST_TIMEOUT,
@@ -104,6 +108,8 @@ class FatSecretClient:
                             attempt + 1,
                             params.get("method"),
                         )
+                        # Refresh the OAuth session once and retry.
+                        self._session = self._create_oauth_session()
                         continue
 
                     raise FatSecretAPIError(
@@ -168,6 +174,13 @@ class FatSecretClient:
             raise ValidationError("Food query must be less than 100 characters")
         
         logger.info(f"Searching foods: {query}, page {page}")
+
+        normalized_key = f"{' '.join(query.lower().split())}|{int(page)}"
+        now = time.time()
+        with self._search_cache_lock:
+            cached = self._search_cache.get(normalized_key)
+            if cached and cached.get("expires_at", 0) > now:
+                return dict(cached.get("value") or {})
         
         params = {
             "method": "foods.search",
@@ -187,11 +200,19 @@ class FatSecretClient:
         if not isinstance(foods, list):
             foods = [foods]
         
-        return {
+        result = {
             "foods": foods,
             "total_results": len(foods),
             "query": query,
         }
+
+        with self._search_cache_lock:
+            self._search_cache[normalized_key] = {
+                "expires_at": now + self._search_cache_ttl_seconds,
+                "value": result,
+            }
+
+        return result
 
     def get_food_details(self, food_id: str) -> Dict[str, Any]:
         """

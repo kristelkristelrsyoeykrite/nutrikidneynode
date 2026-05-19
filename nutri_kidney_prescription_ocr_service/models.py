@@ -25,3 +25,5 @@ class MedicationScanResponse(BaseModel):
     extractedText: str
     medications: list[MedicationDraft]
     count: int
+    processingMode: str = Field(default="fast", description="fast | fallback")
+    ocrQuality: int = Field(default=0, description="0-100 quality score of OCR text")

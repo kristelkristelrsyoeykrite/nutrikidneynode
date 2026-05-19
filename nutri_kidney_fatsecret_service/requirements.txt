@@ -7,3 +7,5 @@ fastapi
 uvicorn
 google-cloud-vision
 spacy
+python-multipart
+requests-oauthlib

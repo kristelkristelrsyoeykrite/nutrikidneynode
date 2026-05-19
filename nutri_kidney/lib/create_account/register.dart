@@ -102,6 +102,8 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _isPasswordValid(String password) {
     // 1. Minimum 8 characters
     if (password.length < 8) return false;
+    // 2. Contains at least one uppercase letter
+    if (!RegExp(r'[A-Z]').hasMatch(password)) return false;
     // 2. Contains at least one number
     if (!RegExp(r'[0-9]').hasMatch(password)) return false;
     // 3. Contains at least one special character
@@ -212,15 +214,18 @@ class _RegisterPageState extends State<RegisterPage> {
                     ),
 
                     // Helpful text so the user knows the strict password rules
-                    const Padding(
-                      padding: EdgeInsets.only(top: 6, left: 4),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6, left: 4),
                       child: Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          'Password must be at least 8 characters and include a number and special character.',
+                          'Password must be at least 8 characters and include an uppercase letter, a number, and a special character.',
                           style: TextStyle(
                             fontSize: 11,
-                            color: Color(0xFF90A4AE),
+                            color: _passwordController.text.isNotEmpty &&
+                                    !_isPasswordValid(_passwordController.text)
+                                ? Colors.red
+                                : const Color(0xFF90A4AE),
                           ),
                         ),
                       ),
@@ -843,7 +848,9 @@ Future<void> _signupUser() async {
   }
   if (!_isPasswordValid(password)) {
     AppLogger.warning('Signup rejected: Weak password', tag: LogTag.signup);
-    _showErrorDialog("Password must be at least 8 characters and include a number and special character.");
+    _showErrorDialog(
+      "Password must be at least 8 characters and include an uppercase letter, a number, and a special character.",
+    );
     return;
   }
 

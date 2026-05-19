@@ -136,6 +136,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
 
   bool _isPasswordStrong(String password) {
     if (password.length < 8) return false;
+    if (!RegExp(r'[A-Z]').hasMatch(password)) return false;
     if (!RegExp(r'[0-9]').hasMatch(password)) return false;
     if (!RegExp(r'[!@#\$%^&*(),.?":{}|<>]').hasMatch(password)) return false;
     return true;
@@ -192,12 +193,14 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     String label, {
     Widget? suffixIcon,
     String? hintText,
+    TextStyle? hintStyle,
     String? errorText,
     bool readOnly = false,
   }) {
     return InputDecoration(
       labelText: label,
       hintText: hintText,
+      hintStyle: hintStyle,
       errorText: errorText,
       filled: true,
       fillColor: readOnly ? const Color(0xFFEFF3F1) : const Color(0xFFF8FBFA),
@@ -380,7 +383,12 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
                         obscureText: !_showNewPassword,
                         decoration: _fieldDecoration(
                           'New Password',
-                          hintText: 'At least 8 characters, with a number and symbol',
+                          hintText:
+                              'At least 8 characters, with uppercase, number, and symbol',
+                          hintStyle: const TextStyle(
+                            color: Colors.red,
+                            fontSize: 12,
+                          ),
                           suffixIcon: IconButton(
                             onPressed: () {
                               setState(() {
@@ -398,7 +406,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
                           final text = value ?? '';
                           if (text.isEmpty) return 'New password is required';
                           if (!_isPasswordStrong(text)) {
-                            return 'Use at least 8 characters, a number, and a symbol';
+                            return 'Use at least 8 characters, an uppercase letter, a number, and a symbol';
                           }
                           return null;
                         },

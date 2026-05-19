@@ -1,5 +1,5 @@
 const { admin, db } = require("../firebase/admin");
-const { decryptHealthDocument } = require("../utils/encryption");
+const { decryptHealthDocument, decryptHealthProfile } = require("../utils/encryption");
 
 /**
  * Backend Reminder Scheduler
@@ -15,6 +15,37 @@ const { decryptHealthDocument } = require("../utils/encryption");
 function numberOrZero(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
+}
+
+function safeDecryptHealthProfile(profileData) {
+  if (!profileData || typeof profileData !== "object") return profileData;
+  try {
+    return decryptHealthProfile(profileData);
+  } catch (_) {
+    // If ENCRYPTION_KEY is missing/misconfigured, don't break reminders.
+    return profileData;
+  }
+}
+
+function displayNameFromProfile(profile = {}) {
+  // Match existing hydration reminder behavior, but guard against non-string values
+  // so we never end up with "Missed medication for [object Object]".
+  const candidates = [
+    profile.childFullName,
+    profile.child_name,
+    profile.childName,
+    profile.fullName,
+    profile.displayName,
+    profile.name,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const text = candidate.trim();
+    if (text) return text;
+  }
+
+  return "there";
 }
 
 function todayDateKey() {
@@ -225,7 +256,7 @@ async function sendReminderToDevices(userId, reminderData) {
       return;
     }
 
-    const user = userDoc.data();
+    const user = safeDecryptHealthProfile(userDoc.data() || {});
     const deviceTokens = user.deviceTokens || {};
 
     const validTokens = [
@@ -310,7 +341,7 @@ async function checkMealReminders() {
       .get();
 
     for (const userDoc of usersSnapshot.docs) {
-      const user = userDoc.data();
+      const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
 
       // Skip if "do not remind me" was just clicked
@@ -333,7 +364,7 @@ async function checkMealReminders() {
         continue; // Too soon to remind again
       }
 
-      const childName = user.childFullName || user.child_name || "there";
+      const childName = displayNameFromProfile(user);
 
       // Send reminder
       await sendReminderToDevices(userId, {
@@ -363,7 +394,7 @@ async function checkMedicationReminders() {
       .get();
 
     for (const userDoc of usersSnapshot.docs) {
-      const user = userDoc.data();
+      const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
 
       // Skip if "do not remind me" was just clicked
@@ -386,7 +417,7 @@ async function checkMedicationReminders() {
         continue; // Too soon to remind again
       }
 
-      const childName = user.childFullName || user.child_name || "there";
+      const childName = displayNameFromProfile(user);
 
       // Send reminder
       await sendReminderToDevices(userId, {
@@ -416,7 +447,7 @@ async function checkHydrationReminders() {
       .get();
 
     for (const userDoc of usersSnapshot.docs) {
-      const user = userDoc.data();
+      const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
       const medicalProfileId = String(user.medicalProfileId || "").trim();
       if (!medicalProfileId) {
@@ -466,7 +497,7 @@ async function checkHydrationReminders() {
         continue;
       }
 
-      const childName = user.childFullName || user.child_name || "there";
+      const childName = displayNameFromProfile(user);
 
       // Send reminder
       await sendReminderToDevices(userId, {
@@ -497,7 +528,7 @@ async function checkMissedMedicationReminders() {
       .get();
 
     for (const userDoc of usersSnapshot.docs) {
-      const user = userDoc.data();
+      const user = safeDecryptHealthProfile(userDoc.data() || {});
       const userId = userDoc.id;
 
       const missedThresholdMs = 5 * 60 * 1000;
@@ -561,7 +592,7 @@ async function checkMissedMedicationReminders() {
           await db.collection("notifications").add(missedNotification);
           await db.collection("upcomingReminders").add(missedNotification);
 
-          const childName = user.childFullName || user.child_name || "there";
+          const childName = displayNameFromProfile(user);
           await sendReminderToDevices(userId, {
             type: "missed_medication_reminder",
             title: `Missed medication for ${childName}`,
@@ -590,13 +621,10 @@ async function runReminderScheduler() {
       `[Reminders] Scheduler running at ${new Date().toISOString()}`
     );
 
-    // Run all reminder checks in parallel
-    await Promise.all([
-      checkMealReminders(),
-      checkMedicationReminders(),
-      checkMissedMedicationReminders(),
-      checkHydrationReminders(),
-    ]);
+    // Only backend-generate alerts that are tied to an actual scheduled dose.
+    // Meal, hydration, and generic medication reminders are scheduled locally
+    // by the Flutter app; sending them here caused extra "unscheduled" pushes.
+    await checkMissedMedicationReminders();
 
     console.log("[Reminders] Scheduler check complete");
   } catch (error) {

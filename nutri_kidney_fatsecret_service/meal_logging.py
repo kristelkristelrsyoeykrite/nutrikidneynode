@@ -21,7 +21,7 @@ from config import get_config
 from error_handler import NoResultsError, ValidationError, FatSecretAPIError
 from error_handler import TimeoutError as ServiceTimeoutError
 from fatsecret_client import FatSecretClient
-from image_recognition import ImageRecognitionHandler
+from food_matcher import FoodMatcher
 from models import (
     ChildProfileContext,
     MealFoodDetailsResult,
@@ -39,16 +39,6 @@ from response_formatter import ResponseFormatter
 from phosphorus_service import get_phosphorus_guide
 
 logger = logging.getLogger(__name__)
-
-try:
-    from rapidfuzz import fuzz
-except ImportError:  # pragma: no cover - local fallback when dependency is missing.
-    fuzz = None
-
-try:
-    import spacy
-except ImportError:  # pragma: no cover - optional enhancement for adjective cleanup.
-    spacy = None
 
 
 _SPACY_NLP = None
@@ -181,7 +171,11 @@ class MealLoggingService:
     def __init__(self, fatsecret_client: Optional[FatSecretClient] = None):
         self.config = get_config()
         self.fatsecret_client = fatsecret_client or FatSecretClient()
-        self.image_handler = ImageRecognitionHandler(self.fatsecret_client)
+        self.image_handler = None
+        self.food_matcher = FoodMatcher(
+            weak_labels=self.GENERIC_GOOGLE_LABELS,
+            prep_tokens=self.PREPARATION_TOKENS,
+        )
         self._food_details_cache: Dict[str, Dict[str, Any]] = {}
 
     def search(self, query: str, page: int = 0) -> Dict[str, Any]:
@@ -229,29 +223,78 @@ class MealLoggingService:
         5. Use RapidFuzz to select the best FatSecret search result.
         6. Return the selected food details and serving nutrients.
         """
+        if self.image_handler is None:
+            # Lazy import to keep FastAPI startup fast (PIL/vision deps live here).
+            from image_recognition import ImageRecognitionHandler
+
+            self.image_handler = ImageRecognitionHandler(self.fatsecret_client)
+
         detection = self.image_handler.detect_food_candidates(image_data, content_type)
         warnings = detection.get("warnings", [])
         source = detection.get("source", "manual")
         candidates = detection.get("candidates", [])
 
         if source == "fatsecret" and candidates:
-            selected = candidates[0]
+            # Do not blindly trust the first FatSecret recognition item.
+            # Rank candidates via foods.search + matcher before picking a food_id.
+            label_candidates = [
+                str(item.get("food_name") or "").strip()
+                for item in (candidates or [])
+                if item.get("food_name")
+            ]
+            selected = None
+            if label_candidates:
+                selected = self._best_fatsecret_match(label_candidates)
+
+            if not selected:
+                selected = candidates[0]
+
             food_id = selected.get("food_id")
-            if not food_id:
+            if not food_id and selected.get("food_name"):
                 selected = self._best_fatsecret_match(selected.get("food_name", "food"))
                 food_id = selected["food_id"]
 
             details = self._get_raw_food_details(str(food_id))
             food = self._build_food_details_result(details)
+
+            raw_confidence = selected.get("confidence")
+            if isinstance(raw_confidence, str):
+                confidence_bucket = raw_confidence
+            elif "score" in selected:
+                confidence_bucket = self.food_matcher.confidence_bucket(
+                    float(selected.get("score") or 0.0)
+                )
+            else:
+                try:
+                    numeric_confidence = float(raw_confidence or 0.0)
+                except Exception:
+                    numeric_confidence = 0.0
+                confidence_bucket = (
+                    "high"
+                    if numeric_confidence >= 0.85
+                    else "medium"
+                    if numeric_confidence >= 0.65
+                    else "low"
+                )
+
             return ResponseFormatter.success_response(
                 "meal_logging_image_recognition",
                 {
                     "source": "fatsecret",
                     "matched_label": selected.get("food_name") or food.food_name,
-                    "match_score": selected.get("confidence"),
+                    "match_score": selected.get("score") or selected.get("confidence"),
+                    "match_confidence": confidence_bucket,
+                    "needs_confirmation": (confidence_bucket != "high"),
+                    "suggested_matches": selected.get("top_matches") or [],
                     "food": food.model_dump(),
                     "warnings": warnings,
-                    "message": "Food recognized with FatSecret image recognition.",
+                    "message": (
+                        "Food recognized with FatSecret image recognition."
+                        if confidence_bucket == "high"
+                        else "Is this the food you logged? Please confirm the suggested match."
+                        if confidence_bucket == "medium"
+                        else "We couldn't confidently match this food. Please choose from the suggested matches."
+                    ),
                 },
             )
 
@@ -298,10 +341,19 @@ class MealLoggingService:
                 "dish_labels": label_analysis["dish_labels"],
                 "ingredient_labels": label_analysis["ingredient_labels"],
                 "match_score": selected["score"],
+                "match_confidence": selected.get("confidence") or "unknown",
+                "needs_confirmation": (selected.get("confidence") != "high"),
+                "suggested_matches": selected.get("top_matches") or [],
                 "food": food.model_dump(),
                 "recognized_foods": recognized_foods,
                 "warnings": warnings,
-                "message": "Food recognized with Google Vision and matched to FatSecret.",
+                "message": (
+                    "Food recognized with Google Vision and matched to FatSecret."
+                    if selected.get("confidence") == "high"
+                    else "Is this the food you logged? Please confirm the suggested match."
+                    if selected.get("confidence") == "medium"
+                    else "We couldn't confidently match this food. Please choose from the suggested matches."
+                ),
             },
         )
 
@@ -765,72 +817,85 @@ class MealLoggingService:
         raise ValidationError("Selected serving is no longer valid. Reload the serving list.")
 
     def _best_fatsecret_match(self, query: Any) -> Dict[str, Any]:
-        raw_queries = query if isinstance(query, list) else [query]
-        queries = self._expand_image_match_queries(raw_queries)
-        logger.info(
-            "Image fallback queries expanded from %s to %s",
-            raw_queries,
-            queries,
+        raw_labels = query if isinstance(query, list) else [query]
+        cleaned_labels = self.food_matcher.clean_detected_labels(
+            [str(value) for value in raw_labels if value is not None]
         )
+        if not cleaned_labels:
+            cleaned_labels = self._expand_image_match_queries(raw_labels)
+
+        logger.info("Image fallback labels cleaned from %s to %s", raw_labels, cleaned_labels)
+
         best = None
         best_score = -1.0
+        best_ranked = []
         last_timeout = None
 
-        for raw_query in queries:
-            search_query = " ".join(str(raw_query or "").strip().split())
-            if len(search_query) < 2:
-                continue
-            logger.info("Trying FatSecret fallback search query: '%s'", search_query)
-            search_tokens = self._food_tokens(search_query)
-            required_prep_tokens = search_tokens & self.PREPARATION_TOKENS
-
-            try:
-                raw_results = self.fatsecret_client.search_foods(search_query, 0)
-            except ServiceTimeoutError as e:
-                logger.warning(
-                    "FatSecret image fallback search timed out for '%s'; trying next label",
-                    search_query,
-                )
-                last_timeout = e
-                continue
-            except Exception as e:
-                logger.warning(
-                    "FatSecret image fallback search failed for '%s': %s",
-                    search_query,
-                    str(e),
-                )
+        for label in cleaned_labels[:4]:
+            search_variations = self.food_matcher.generate_search_queries(label)
+            if not search_variations:
                 continue
 
-            foods = raw_results.get("foods", [])
-            for food in foods:
-                if not food.get("food_id"):
+            logger.info("Image fallback search variations for '%s': %s", label, search_variations)
+
+            candidates = []
+            seen = set()
+            for search_query in search_variations:
+                try:
+                    raw_results = self.fatsecret_client.search_foods(search_query, 0)
+                except ServiceTimeoutError as e:
+                    logger.warning(
+                        "FatSecret image fallback search timed out for '%s'; trying next query",
+                        search_query,
+                    )
+                    last_timeout = e
                     continue
-                food_name = str(food.get("food_name") or "")
-                haystack = " ".join(
-                    str(value)
-                    for value in [
-                        food_name,
-                        food.get("brand_name"),
-                        food.get("food_description"),
-                    ]
-                    if value
-                )
-                candidate_tokens = self._food_tokens(haystack)
-                if required_prep_tokens and not required_prep_tokens.intersection(candidate_tokens):
+                except Exception as e:
+                    logger.warning(
+                        "FatSecret image fallback search failed for '%s': %s",
+                        search_query,
+                        str(e),
+                    )
                     continue
 
-                name_score = self._image_match_score(search_query, food_name)
-                full_score = self._image_match_score(search_query, haystack)
-                score = max(name_score, full_score - 10)
-                if score > best_score:
-                    best = {
-                        "food_id": str(food["food_id"]),
-                        "food_name": food.get("food_name"),
-                        "score": round(score, 2),
-                        "matched_query": search_query,
-                        "raw_match": food,
-                    }
-                    best_score = score
+                foods = (raw_results or {}).get("foods", [])[:10]
+                for candidate in self.food_matcher.build_candidates(foods, matched_query=search_query):
+                    if candidate.food_id in seen:
+                        continue
+                    seen.add(candidate.food_id)
+                    candidates.append(candidate)
+
+            ranked = self.food_matcher.rank(
+                label,
+                candidates,
+                get_details=None,  # details fetched after selection
+            )
+            if not ranked:
+                continue
+
+            top = ranked[0]
+            if top.score > best_score:
+                best_score = top.score
+                best_ranked = ranked[:3]
+                best = {
+                    "food_id": top.candidate.food_id,
+                    "food_name": top.candidate.food_name,
+                    "score": round(top.score, 2),
+                    "matched_query": top.candidate.matched_query or label,
+                    "raw_match": top.candidate.raw or {},
+                    "confidence": self.food_matcher.confidence_bucket(top.score),
+                    "top_matches": [
+                        {
+                            "food_id": item.candidate.food_id,
+                            "food_name": item.candidate.food_name,
+                            "score": round(item.score, 2),
+                            "matched_query": item.candidate.matched_query,
+                            "food_type": item.candidate.food_type,
+                            "brand_name": item.candidate.brand_name,
+                        }
+                        for item in best_ranked
+                    ],
+                }
 
             if best and best_score >= 85:
                 break
@@ -878,8 +943,12 @@ class MealLoggingService:
 
     @staticmethod
     def _fuzzy_score(query: str, candidate: str) -> float:
-        if fuzz is not None:
+        try:
+            from rapidfuzz import fuzz  # type: ignore
+
             return float(fuzz.token_set_ratio(query, candidate))
+        except Exception:
+            pass
         return SequenceMatcher(None, query.lower(), candidate.lower()).ratio() * 100
 
     def _image_match_score(self, query: str, candidate: str) -> float:
@@ -1026,7 +1095,9 @@ class MealLoggingService:
             return _SPACY_NLP
 
         _SPACY_LOAD_ATTEMPTED = True
-        if spacy is None:
+        try:
+            import spacy  # type: ignore
+        except Exception:
             logger.info("spaCy not installed; using simple adjective fallback list")
             return None
 

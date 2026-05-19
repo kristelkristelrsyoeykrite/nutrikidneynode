@@ -679,6 +679,7 @@ router.post("/save-medication", async (req, res) => {
 
     const medicationNameValue = medication_name || medicationName || name;
     const medicationUserId = profileUserId || childProfileId || userId || uid;
+    const requestedChildProfileId = profileUserId || childProfileId;
 
     if (!medicationUserId || !medicationNameValue || !frequency_type || !start_time) {
       throw new Error("Missing required medication fields");
@@ -687,6 +688,7 @@ router.post("/save-medication", async (req, res) => {
     const medicationPayload = cleanObject({
       userId: medicationUserId,
       uid: medicationUserId,
+      childProfileId: requestedChildProfileId || medicationUserId,
       name: medicationNameValue,
       medicationName: medicationNameValue,
       medication_name: medicationNameValue,
@@ -759,10 +761,11 @@ router.post("/update-medication", async (req, res) => {
       status,
     } = req.body;
 
-    const medicationUserId = profileUserId || childProfileId || userId || uid;
+    const requesterUserId = userId || uid;
+    const targetProfileId = profileUserId || childProfileId || userId || uid;
     const medicationNameValue = medication_name || medicationName || name;
 
-    if (!medicationUserId || !medicationId) {
+    if (!targetProfileId || !medicationId) {
       throw new Error("Missing required medication update fields");
     }
 
@@ -776,8 +779,21 @@ router.post("/update-medication", async (req, res) => {
       });
     }
 
-    const existing = doc.data() || {};
-    if (existing.userId && existing.userId !== medicationUserId) {
+    const existing = decryptHealthDocument(doc.data() || {});
+    const ownerId = String(
+      existing.userId || existing.uid || existing.childProfileId || "",
+    ).trim();
+    const normalizedTargetProfileId = String(targetProfileId || "").trim();
+    const normalizedRequesterId = String(requesterUserId || "").trim();
+    const ownerMatchesTarget =
+      ownerId && normalizedTargetProfileId && ownerId === normalizedTargetProfileId;
+    const ownerMatchesRequester =
+      ownerId && normalizedRequesterId && ownerId === normalizedRequesterId;
+
+    // Allow updates if the medication belongs to either:
+    // - the selected profile (child/self), or
+    // - the requester (caregiver) for legacy records.
+    if (ownerId && !ownerMatchesTarget && !ownerMatchesRequester) {
       return res.status(403).json({
         success: false,
         error: "Medication does not belong to this user",
@@ -785,8 +801,11 @@ router.post("/update-medication", async (req, res) => {
     }
 
     const medicationPayload = cleanObject({
-      userId: medicationUserId,
-      uid: medicationUserId,
+      // Normalize ownership under the selected profile (fixes legacy meds that were
+      // accidentally stored under the caregiver user id).
+      userId: normalizedTargetProfileId,
+      uid: normalizedTargetProfileId,
+      childProfileId: normalizedTargetProfileId,
       name: medicationNameValue,
       medicationName: medicationNameValue,
       medication_name: medicationNameValue,
@@ -1054,7 +1073,13 @@ async function getFoodLogDocsForProfileRange(childProfileId, startDate, endDate)
 }
 
 function extractWaterMlFromLog(data = {}) {
-  const explicitWaterMl = Number(data.waterMl ?? data.water_ml ?? data.fluid_ml);
+  const explicitWaterMl = Number(
+    data.totalFluidContributionMl ??
+      data.total_fluid_contribution_ml ??
+      data.waterMl ??
+      data.water_ml ??
+      data.fluid_ml,
+  );
   if (Number.isFinite(explicitWaterMl) && explicitWaterMl > 0) {
     return explicitWaterMl;
   }

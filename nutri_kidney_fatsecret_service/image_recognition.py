@@ -13,8 +13,7 @@ Algorithm:
 import os
 import io
 import logging
-from typing import Dict, Any, List, Optional, Tuple
-from PIL import Image
+from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
 import requests
 from error_handler import (
     ImageError,
@@ -28,10 +27,8 @@ from nutrition_normalizer import NutritionNormalizer
 
 logger = logging.getLogger(__name__)
 
-try:
-    from google.cloud import vision
-except ImportError:  # pragma: no cover - optional dependency in some environments.
-    vision = None
+if TYPE_CHECKING:  # pragma: no cover
+    from PIL import Image  # noqa: F401
 
 
 class ImageRecognitionHandler:
@@ -100,6 +97,7 @@ class ImageRecognitionHandler:
         
         # Open image
         try:
+            from PIL import Image
             image = Image.open(io.BytesIO(image_data))
         except Exception as e:
             raise ImageError(f"Could not open image: {str(e)}")
@@ -187,6 +185,7 @@ class ImageRecognitionHandler:
 
         self._validate_image_file(image_data, content_type)
         try:
+            from PIL import Image
             image = Image.open(io.BytesIO(image_data))
         except Exception as e:
             raise ImageError(f"Could not open image: {str(e)}")
@@ -256,7 +255,7 @@ class ImageRecognitionHandler:
                 f"Allowed types: {', '.join(allowed_types)}"
             )
 
-    def _preprocess_image(self, image: Image.Image) -> Tuple[Image.Image, Optional[str]]:
+    def _preprocess_image(self, image: Any) -> Tuple[Any, Optional[str]]:
         """
         Preprocess image: resize if oversized, convert to RGB if needed.
         
@@ -266,6 +265,8 @@ class ImageRecognitionHandler:
         Returns:
             Tuple of (processed_image, warning_message)
         """
+        from PIL import Image
+
         warning = None
         
         # Convert RGBA to RGB if needed
@@ -295,8 +296,9 @@ class ImageRecognitionHandler:
         
         return image, warning
 
-    def _image_to_bytes(self, image: Image.Image) -> bytes:
+    def _image_to_bytes(self, image: Any) -> bytes:
         """Convert PIL Image to bytes."""
+        from PIL import Image
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=self.QUALITY)
         return buffer.getvalue()
@@ -338,12 +340,12 @@ class ImageRecognitionHandler:
 
     def _detect_with_google_vision(self, image_bytes: bytes) -> List[Dict[str, Any]]:
         """Use Google Vision label detection as a fallback when FatSecret fails."""
-        client = self._google_vision_client()
+        vision_mod, client = self._google_vision_client()
         if client is None:
             return []
 
         try:
-            image = vision.Image(content=image_bytes)
+            image = vision_mod.Image(content=image_bytes)
             response = client.label_detection(image=image)
         except Exception as e:
             logger.error("Google Vision request failed: %s", str(e))
@@ -373,9 +375,11 @@ class ImageRecognitionHandler:
 
     def _google_vision_client(self):
         """Build a Google Vision client if credentials and dependency are available."""
-        if vision is None:
+        try:
+            from google.cloud import vision  # type: ignore
+        except Exception:
             logger.warning("google-cloud-vision is not installed; Google Vision fallback unavailable")
-            return None
+            return None, None
 
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
         if credentials_path:
@@ -393,10 +397,10 @@ class ImageRecognitionHandler:
                 )
 
         try:
-            return vision.ImageAnnotatorClient()
+            return vision, vision.ImageAnnotatorClient()
         except Exception as e:
             logger.error("Could not initialize Google Vision client: %s", str(e))
-            return None
+            return None, None
 
     def _send_to_fatsecret_recognition(
         self,

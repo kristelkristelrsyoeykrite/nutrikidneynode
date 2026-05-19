@@ -16,7 +16,6 @@ import logging
 from typing import Optional
 
 from service import get_service
-from meal_logging import get_meal_logging_service
 from models import MealPreviewRequest
 from response_formatter import ResponseFormatter
 from error_handler import NutriKidneyServiceError, ValidationError
@@ -47,19 +46,26 @@ app.add_middleware(
 @app.get("/api/health", tags=["Health"])
 async def health_check():
     """
-    Check service health and FatSecret API connectivity.
-    
-    Returns:
-        Health status
+    Basic service health check.
+
+    Important:
+    This endpoint should only confirm that the Render/FastAPI service is alive.
+    It should NOT fail just because FatSecret, Google Vision, or external APIs fail.
     """
-    try:
-        service = get_service()
-        result = service.health_check()
-        return result
-    except Exception as e:
-        logger.error(f"Health check error: {str(e)}")
-        error_response, status_code = ResponseFormatter.error_response(e)
-        raise HTTPException(status_code=status_code, detail=error_response)
+    return {
+        "success": True,
+        "service": "healthy",
+        "message": "NutriKidney FatSecret Python service is running",
+        "external_services": {
+            "fatsecret": "not_checked",
+            "google_vision": "not_checked"
+        },
+        "endpoints": {
+            "search_foods": "POST /api/v1/foods/search?query=<food>&page=<page>",
+            "food_details": "GET /api/v1/foods/<food_id>",
+            "image_recognition": "POST /api/v1/foods/recognize-image"
+        }
+    }
 
 
 @app.post("/api/v1/foods/search", tags=["Food Search"])
@@ -188,6 +194,7 @@ async def meal_logging_search(payload: dict = Body(...)):
     try:
         query = str(payload.get("query", "")).strip()
         page = int(payload.get("page", 0) or 0)
+        from meal_logging import get_meal_logging_service  # lazy import
         service = get_meal_logging_service()
         return service.search(query, page)
     except NutriKidneyServiceError as e:
@@ -203,6 +210,7 @@ async def meal_logging_search(payload: dict = Body(...)):
 async def meal_logging_food_details(food_id: str):
     """Return food details with servings for the staged meal-logging flow."""
     try:
+        from meal_logging import get_meal_logging_service  # lazy import
         service = get_meal_logging_service()
         return service.food_details(food_id)
     except NutriKidneyServiceError as e:
@@ -230,6 +238,7 @@ async def meal_logging_recognize_image(payload: dict = Body(...)):
                 f"image_base64 must be valid base64 data: {str(e)}"
             ) from e
 
+        from meal_logging import get_meal_logging_service  # lazy import
         service = get_meal_logging_service()
         return service.recognize_image(image_data, content_type)
     except NutriKidneyServiceError as e:
@@ -245,6 +254,7 @@ async def meal_logging_recognize_image(payload: dict = Body(...)):
 async def meal_logging_preview(payload: dict = Body(...)):
     """Preview meal nutrients before saving."""
     try:
+        from meal_logging import get_meal_logging_service  # lazy import
         service = get_meal_logging_service()
         request = MealPreviewRequest(**payload)
         return service.preview(request)

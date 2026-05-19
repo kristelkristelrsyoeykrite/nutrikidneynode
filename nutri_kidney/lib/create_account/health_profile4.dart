@@ -865,34 +865,6 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                       ),
 
                     const SizedBox(height: 24),
-                    _buildLabel("Current Medications"),
-                    _buildMedicationList(),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed:
-                          _isScanningPrescription ? null : _showAddMedicationOptions,
-                      icon: _isScanningPrescription
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.add),
-                      label: Text(
-                        _isScanningPrescription
-                            ? "Scanning..."
-                            : "Add Medication",
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(double.infinity, 45),
-                        side: const BorderSide(color: Color(0xFF4DB6AC)),
-                        foregroundColor: const Color(0xFF4DB6AC),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-
                     const SizedBox(height: 40),
 
                     // --- Side-by-Side Buttons ---
@@ -960,8 +932,7 @@ class _HealthProfile4PageState extends State<HealthProfile4Page> {
                 ),
               ),
             ),
-            if (_isScanningPrescription)
-              const MedicationScanProgressOverlay(),
+            // Medication setup is handled in the Health Metrics page.
           ],
         ),
       ),

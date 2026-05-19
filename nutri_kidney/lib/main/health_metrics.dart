@@ -112,6 +112,137 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
   // INTERACTIVE POPUPS & MENUS
   // ==========================================
 
+  Future<void> _showAddVitalOptions() async {
+    final types = const [
+      'Blood Pressure',
+      'Weight',
+      'Height',
+      'BMI',
+      'Heart Rate',
+    ];
+
+    if (!mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              const Text(
+                'Add Vital Measurement',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              ...types.map(
+                (type) => ListTile(
+                  title: Text(type),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _showMeasurementForm(mode: "vital", initialType: type);
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showVitalManageSheet(String vitalType) async {
+    final pageContext = context;
+    if (!mounted) return;
+
+    await showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Text(
+                vitalType,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: const Icon(Icons.edit),
+                title: const Text('Edit'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _showMeasurementForm(mode: "vital", initialType: vitalType);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                title: const Text('Remove'),
+                onTap: () async {
+                  Navigator.of(sheetContext).pop();
+
+                  final affectsNutritionTargets = ['Weight', 'Height'].contains(vitalType);
+                  if (affectsNutritionTargets) {
+                    final confirmed = await _confirmNutritionTargetUpdate();
+                    if (!mounted) return;
+                    if (!confirmed) return;
+                  }
+
+                  final ok = await showDialog<bool>(
+                    context: pageContext,
+                    builder: (dialogContext) => AlertDialog(
+                      title: const Text('Remove measurement?'),
+                      content: Text('Remove $vitalType from vital signs?'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(dialogContext).pop(false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(dialogContext).pop(true),
+                          child: const Text('Remove'),
+                        ),
+                      ],
+                    ),
+                  );
+
+                  if (ok != true) return;
+
+                  try {
+                    final response = await ApiService.deleteMeasurement(
+                      profileUserId: widget.profileUserId,
+                      metricType: vitalType,
+                      recalculateNutritionTargets: affectsNutritionTargets,
+                    );
+                    if (response["success"] != true) {
+                      throw Exception(response["error"] ?? "Failed to remove measurement");
+                    }
+                    await _loadHealthSummary();
+                  } catch (e) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(pageContext).showSnackBar(
+                      SnackBar(content: Text(e.toString())),
+                    );
+                  }
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -377,15 +508,18 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
             .toList()
         : <String>[];
 
-    final missedCountToday = int.tryParse(med['missedCountToday']?.toString() ?? '') ?? 0;
-
-    final status = missedCountToday > 0
-        ? 'Missed'
-        : takenTimesToday.isNotEmpty
-            ? 'Taken'
+    final doseWindow = med['doseWindow'] is Map ? Map<String, dynamic>.from(med['doseWindow']) : null;
+    final windowStatus = doseWindow?['status']?.toString().trim().toLowerCase();
+    final status = windowStatus == 'taken'
+        ? 'Taken'
+        : windowStatus == 'missed'
+            ? 'Missed'
             : 'Pending';
     final isPending = status.toLowerCase() == 'pending';
     final isMissed = status.toLowerCase() == 'missed';
+    final missedCountToday =
+        int.tryParse(med['missedCountToday']?.toString() ?? '') ??
+            (isMissed ? 1 : 0);
     final shouldShowUpcomingNote =
         status == 'Taken' &&
         scheduleTimes.length > 1 &&
@@ -529,6 +663,40 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       return takenTimes.map((t) => t.toString().trim()).contains(time.trim());
     }
 
+    DateTime? _parseBackendTimestamp(dynamic value) {
+      if (value == null) return null;
+      if (value is DateTime) return value;
+      if (value is String) return DateTime.tryParse(value);
+      if (value is Map) {
+        final seconds = value['_seconds'] ?? value['seconds'];
+        final nanos = value['_nanoseconds'] ?? value['nanoseconds'] ?? 0;
+        if (seconds is int) {
+          return DateTime.fromMillisecondsSinceEpoch(
+            seconds * 1000 + (nanos is int ? (nanos ~/ 1000000) : 0),
+            isUtc: true,
+          ).toLocal();
+        }
+      }
+      return null;
+    }
+
+    bool _canUndoDose(Map<String, dynamic> medication, String time) {
+      final records = medication['doseRecordsToday'];
+      if (records is! List) return false;
+      Map? match;
+      for (final r in records) {
+        if (r is Map && r['expectedTime']?.toString().trim() == time.trim()) {
+          match = r;
+          break;
+        }
+      }
+      if (match == null) return false;
+      if (match['status']?.toString() != 'taken') return false;
+      final takenAt = _parseBackendTimestamp(match['takenAt']);
+      if (takenAt == null) return false;
+      return DateTime.now().difference(takenAt).inMinutes < 2;
+    }
+
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -560,7 +728,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                   if (collectionType == 'Medication') {
                     _showMedicationForm(editIndex: index);
                   } else {
-                    _showMeasurementForm(editIndex: index);
+                    _showMeasurementForm(editIndex: index, mode: "lab");
                   }
                 },
               ),
@@ -582,7 +750,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                     (_medications[index]['takenTimesToday'] is List &&
                             (_medications[index]['takenTimesToday'] as List)
                                 .isNotEmpty)
-                        ? 'Mark as untaken'
+                        ? 'Undo dose (if accidental)'
                         : 'Mark as taken',
                   ),
                   onTap: () async {
@@ -629,20 +797,27 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                                     (time) {
                                       final isTaken =
                                           isMedicationDoseTaken(medication, time);
+                                      final canUndo = _canUndoDose(medication, time);
                                       return ListTile(
                                         leading: Icon(
                                           isTaken
                                               ? Icons.undo_outlined
                                               : Icons.check_circle_outline,
                                           color: isTaken
-                                              ? Colors.orange
+                                              ? (canUndo ? Colors.orange : const Color(0xFF90A4AE))
                                               : const Color(0xFF2E7D32),
                                         ),
                                         title: Text(formatTime12Hour(time)),
-                                        subtitle:
-                                            Text(isTaken ? 'Taken' : 'Not taken'),
-                                        onTap: () =>
-                                            Navigator.pop(context, time),
+                                        subtitle: Text(
+                                          isTaken
+                                              ? (canUndo ? 'Taken (tap to undo)' : 'Taken (locked)')
+                                              : 'Pending',
+                                        ),
+                                        onTap: isTaken
+                                            ? (canUndo
+                                                ? () => Navigator.pop(context, time)
+                                                : null)
+                                            : () => Navigator.pop(context, time),
                                       );
                                     },
                                   ),
@@ -682,7 +857,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                         SnackBar(
                           content: Text(
                             isTaken
-                                ? 'Marked as untaken for ${formatTime12Hour(selectedTime)}.'
+                                ? 'Undid taken status for ${formatTime12Hour(selectedTime)}.'
                                 : 'Marked as taken for ${formatTime12Hour(selectedTime)}.',
                           ),
                         ),
@@ -983,7 +1158,11 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
   }
 
   // Form 1: Add/Edit Measurements (Vitals & Labs)
-  void _showMeasurementForm({int? editIndex, String? initialType}) {
+  void _showMeasurementForm({
+    int? editIndex,
+    String? initialType,
+    String mode = "lab",
+  }) {
     final pageContext = context;
     final isEdit = editIndex != null;
     final existingLab = isEdit ? _labResults[editIndex] : null;
@@ -1005,7 +1184,12 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       'eGFR': 'mL/min',
     };
 
-    String selectedType = existingLab?['title'] ?? initialType ?? 'Weight';
+    final normalizedMode = mode.trim().toLowerCase();
+    final isVitalMode = normalizedMode == "vital";
+
+    String selectedType = existingLab?['title'] ??
+        initialType ??
+        (isVitalMode ? 'Weight' : 'Creatinine');
     final valueController = TextEditingController(
       text: existingLab?['value'] ?? '',
     );
@@ -1013,19 +1197,23 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       text: existingLab?['date'] ?? '',
     );
 
-    final List<String> metricTypes = [
-      'Height',
-      'Weight',
-      'Dry Weight',
-      'Blood Pressure',
-      'Heart Rate',
-      'Creatinine',
-      'Potassium',
-      'Phosphorus',
-      'Sodium',
-      'Calcium',
-      'eGFR',
-    ];
+    final List<String> metricTypes = isVitalMode
+        ? [
+            'Blood Pressure',
+            'Weight',
+            'Height',
+            'BMI',
+            'Heart Rate',
+          ]
+        : [
+            'Dry Weight',
+            'Creatinine',
+            'Potassium',
+            'Phosphorus',
+            'Sodium',
+            'Calcium',
+            'eGFR',
+          ];
 
     var dialogMounted = true;
     showDialog(
@@ -1162,12 +1350,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                                 valueController.text.trim();
                             final measurementDate =
                                 dateController.text.trim();
-                            final isVitalMeasurement = [
-                              'Blood Pressure',
-                              'Weight',
-                              'Height',
-                              'Heart Rate',
-                            ].contains(selectedType);
+                            final isVitalMeasurement = isVitalMode;
 
                             // Validate numeric value
                             if (measurementValue.isEmpty) {
@@ -2103,13 +2286,26 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                         const SizedBox(height: 24),
 
               // --- Vital Signs Section ---
-              const Text(
-                'Vital Signs',
-                style: TextStyle(
-                  color: Color(0xFF37474F),
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Vital Signs',
+                    style: TextStyle(
+                      color: Color(0xFF37474F),
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _showAddVitalOptions,
+                    tooltip: 'Add Vital Measurement',
+                    icon: const Icon(
+                      Icons.add_circle_outline,
+                      color: Color(0xFF00C874),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 16),
               GridView.count(
@@ -2126,6 +2322,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                     unit: 'mmHg',
                     icon: Icons.favorite,
                     color: Colors.redAccent,
+                    onTap: () => _showVitalManageSheet('Blood Pressure'),
                   ),
                   HealthMetricsVitalCard(
                     title: 'Weight',
@@ -2133,6 +2330,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                     unit: 'kg',
                     icon: Icons.scale,
                     color: Colors.greenAccent,
+                    onTap: () => _showVitalManageSheet('Weight'),
                   ),
                   HealthMetricsVitalCard(
                     title: 'Height',
@@ -2140,13 +2338,15 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                     unit: 'cm',
                     icon: Icons.straighten,
                     color: Colors.blueAccent,
+                    onTap: () => _showVitalManageSheet('Height'),
                   ),
                   HealthMetricsVitalCard(
                     title: 'BMI',
                     value: _vitalValue('BMI'),
-                    unit: 'kg/m2',
+                    unit: 'kg/m²',
                     icon: Icons.analytics_outlined,
                     color: Colors.orangeAccent,
+                    onTap: () => _showVitalManageSheet('BMI'),
                   ),
                   HealthMetricsVitalCard(
                     title: 'Heart Rate',
@@ -2154,6 +2354,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                     unit: 'bpm',
                     icon: Icons.monitor_heart,
                     color: Colors.purpleAccent,
+                    onTap: () => _showVitalManageSheet('Heart Rate'),
                   ),
                 ],
               ),
@@ -2236,7 +2437,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                   Row(
                     children: [
                       IconButton(
-                        onPressed: () => _showMeasurementForm(),
+                        onPressed: () => _showMeasurementForm(mode: "lab"),
                         tooltip: 'Add Measurement',
                         icon: const Icon(
                           Icons.add_circle_outline,

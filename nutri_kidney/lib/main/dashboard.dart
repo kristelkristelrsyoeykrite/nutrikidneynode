@@ -346,6 +346,14 @@ class _DashboardPageState extends State<DashboardPage> {
   int _missedMedicationCountFromSummary() {
     var count = 0;
     for (final medication in _medications) {
+      final doseWindow =
+          medication["doseWindow"] is Map ? Map<String, dynamic>.from(medication["doseWindow"]) : null;
+      final windowStatus = doseWindow?["status"]?.toString().trim().toLowerCase();
+      if (windowStatus == "missed") {
+        count += 1;
+        continue;
+      }
+
       final missedCount =
           int.tryParse(medication["missedCountToday"]?.toString() ?? "") ?? 0;
       if (missedCount > 0) {
@@ -1602,8 +1610,17 @@ class _DashboardPageState extends State<DashboardPage> {
     final medicationTotal = _medicationTotalCount;
     final medicationTaken = _medications
         .where(
-          (medication) =>
-              _optionalText(medication["status"]).toLowerCase() == "taken",
+          (medication) {
+            final doseWindow = medication["doseWindow"] is Map
+                ? Map<String, dynamic>.from(medication["doseWindow"])
+                : null;
+            final windowStatus =
+                doseWindow?["status"]?.toString().trim().toLowerCase();
+            if (windowStatus != null && windowStatus.isNotEmpty) {
+              return windowStatus == "taken";
+            }
+            return _optionalText(medication["status"]).toLowerCase() == "taken";
+          },
         )
         .length;
     final nextReminder = _nextMedicationReminder;
@@ -1617,6 +1634,10 @@ class _DashboardPageState extends State<DashboardPage> {
             ? '$missedCount missed medications'
             : null;
 
+    final fluidExceeded = _fluidTargetLiters != null &&
+        _fluidTargetLiters! > 0 &&
+        _todayWaterLiters > _fluidTargetLiters!;
+
     return Row(
       children: [
         Expanded(
@@ -1629,12 +1650,21 @@ class _DashboardPageState extends State<DashboardPage> {
                 : '${_todayWaterLiters.toStringAsFixed(1)} L',
             subValue: _fluidTargetLiters == null
                 ? 'Hydration logging not started'
-                : 'of ${_formatLiters(_fluidTargetLiters!)} goal',
+                : fluidExceeded
+                    ? 'Fluid intake exceeded'
+                    : 'of ${_formatLiters(_fluidTargetLiters!)} goal',
             hintText: _hasHydrationLogged ? null : 'No hydration logged yet',
-            progressColor: const Color(0xFF42A5F5),
+            progressColor:
+                fluidExceeded ? const Color(0xFFD32F2F) : const Color(0xFF42A5F5),
             progressValue: _fluidTargetLiters != null && _fluidTargetLiters! > 0
                 ? (_todayWaterLiters / _fluidTargetLiters!).clamp(0, 1)
                 : 0,
+            backgroundColor:
+                fluidExceeded ? const Color(0xFFFFF1F2) : null,
+            borderColor:
+                fluidExceeded ? const Color(0xFFD32F2F) : null,
+            shadowColor:
+                fluidExceeded ? const Color(0x4DD32F2F) : null,
           ),
         ),
         const SizedBox(width: 16),
@@ -1767,13 +1797,25 @@ class _DashboardPageState extends State<DashboardPage> {
         _potassiumTargetMg > 0 && _todayPotassiumMg > _potassiumTargetMg;
     final phosphorusAlert =
         _phosphorusTargetMg > 0 && _todayPhosphorusMg > _phosphorusTargetMg;
+    final anyAlert = sodiumAlert || potassiumAlert || phosphorusAlert;
 
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: anyAlert ? const Color(0xFFFFF1F2) : Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(
+          color: anyAlert ? const Color(0xFFD32F2F) : Colors.grey.shade200,
+        ),
+        boxShadow: anyAlert
+            ? [
+                BoxShadow(
+                  color: const Color(0x4DD32F2F),
+                  blurRadius: 16,
+                  offset: const Offset(0, 8),
+                ),
+              ]
+            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

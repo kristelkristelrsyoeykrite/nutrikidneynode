@@ -252,7 +252,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       text: _read(widget.medicalProfile, ["kidneyDiseaseType"]),
     );
     _diagnosisDateController = TextEditingController(
-      text: _read(widget.medicalProfile, ["dateOfDiagnosis"]),
+      text: _stripTime(_read(widget.medicalProfile, ["dateOfDiagnosis"])),
     );
     _treatmentFrequencyController = TextEditingController(
       text: _read(widget.medicalProfile, ["treatmentFrequency"]),
@@ -299,6 +299,15 @@ class _EditProfilePageState extends State<EditProfilePage> {
       }
     }
     return "";
+  }
+
+  static String _stripTime(String value) {
+    final text = value.trim();
+    if (text.isEmpty) return "";
+    if (text.contains("T")) return text.split("T").first;
+    final parts = text.split(" ");
+    if (parts.isNotEmpty && parts.first.contains("-")) return parts.first;
+    return text;
   }
 
   Map<String, dynamic> _asStringMap(dynamic value) {
@@ -743,7 +752,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
         );
         _setText(
           _diagnosisDateController,
-          _read(medical, ["dateOfDiagnosis"]),
+          _stripTime(_read(medical, ["dateOfDiagnosis"])),
         );
         _setText(
           _treatmentFrequencyController,

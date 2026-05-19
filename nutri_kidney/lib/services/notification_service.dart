@@ -40,7 +40,7 @@ class NotificationService {
   static const int _maxSingleMedicationNotifications = 8;
   static const int _notificationProfileBlockSize = 1000;
   static const int _maxCaregiverProfilesToSchedule = 4;
-  static const int _daysToScheduleAhead = 2;
+  static const int _daysToScheduleAhead = 7;
 
   static bool _initialized = false;
   static bool _timeZoneInitialized = false;
@@ -686,11 +686,15 @@ class NotificationService {
       final day = now.add(Duration(days: dayOffset));
       for (final medication in medications) {
         final name = _medicationName(medication);
-        final isPending = _isPendingMedication(medication);
-        if (!isPending) continue;
+        final takenTimesToday = medication['takenTimesToday'] is List
+            ? (medication['takenTimesToday'] as List)
+                .map((t) => t.toString())
+                .toSet()
+            : <String>{};
 
         for (final clockTime in _medicationTimes(medication)) {
           if (idOffset >= _maxMedicationNotifications) return;
+          if (dayOffset == 0 && takenTimesToday.contains(clockTime)) continue;
           final parts = _parseClockTime(clockTime);
           if (parts == null) continue;
           final scheduled = DateTime(
@@ -717,7 +721,9 @@ class NotificationService {
           await _scheduleExact(
             id: _medicationIdBase + idOffsetBase + idOffset++,
             title: title,
-            body: 'It is time to take $name.',
+            body: patientName == null
+                ? 'It is time to take $name.'
+                : 'It is time for $patientName to take $name.',
             scheduled: scheduled,
             payload: payload,
           );
@@ -736,7 +742,11 @@ class NotificationService {
     if (settings['medicationReminders'] != true) return;
 
     final name = _medicationName(medication);
-    if (!_isPendingMedication(medication)) return;
+    final takenTimesToday = medication['takenTimesToday'] is List
+        ? (medication['takenTimesToday'] as List)
+            .map((t) => t.toString())
+            .toSet()
+        : <String>{};
 
     final medicationId =
         (medication['medicationId'] ?? medication['id'])?.toString();
@@ -753,6 +763,7 @@ class NotificationService {
         if (idOffset >= baseOffset + _maxSingleMedicationNotifications) {
           return;
         }
+        if (dayOffset == 0 && takenTimesToday.contains(clockTime)) continue;
         final parts = _parseClockTime(clockTime);
         if (parts == null) continue;
         final scheduled = DateTime(
@@ -772,7 +783,9 @@ class NotificationService {
         await _scheduleExact(
           id: _singleMedicationIdBase + idOffsetBase + idOffset++,
           title: title,
-          body: 'It is time to take $name.',
+          body: patientName == null
+              ? 'It is time to take $name.'
+              : 'It is time for $patientName to take $name.',
           scheduled: scheduled,
           payload: payload,
         );
@@ -899,8 +912,8 @@ class NotificationService {
       );
     }
     if (kind == 'medication') {
-      final label = parts.length > kindIndex + 1
-          ? parts[kindIndex + 1].replaceAll('_', ' ')
+      final label = parts.length > kindIndex + 2
+          ? parts[kindIndex + 2].replaceAll('_', ' ')
           : 'Medication';
       return _ReminderCopy(
         '$label reminder',
@@ -1305,6 +1318,8 @@ class NotificationService {
 
   static String? _patientName(Map<String, dynamic> user) {
     final name = (user['childFullName'] ??
+            user['childName'] ??
+            user['displayName'] ??
             user['child_name'] ??
             user['fullName'] ??
             user['name'] ??

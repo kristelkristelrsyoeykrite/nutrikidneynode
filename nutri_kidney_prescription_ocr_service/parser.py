@@ -1,5 +1,4 @@
 import re
-from rapidfuzz import fuzz
 
 
 DOSAGE_RE = re.compile(
@@ -72,6 +71,12 @@ COMMON_MEDICATION_HINTS = [
     "ferrous sulfate",
 ]
 
+def _fuzz() -> object:
+    # Lazy import to keep service startup fast.
+    from rapidfuzz import fuzz  # type: ignore
+
+    return fuzz
+
 
 def normalize_whitespace(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text or "").strip()
@@ -91,6 +96,7 @@ def find_known_medication_name(text: str) -> str:
         return ""
     best_name = ""
     best_score = 0
+    fuzz = _fuzz()
     for candidate in COMMON_MEDICATION_HINTS:
         if candidate in lower:
             return candidate
@@ -124,6 +130,7 @@ def fuzzy_normalize_candidate(name: str) -> str:
 
     best_name = normalized
     best_score = 0
+    fuzz = _fuzz()
     for candidate in COMMON_MEDICATION_HINTS:
         score = fuzz.ratio(normalized, candidate)
         if score > best_score:

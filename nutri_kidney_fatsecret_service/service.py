@@ -14,7 +14,6 @@ Service workflow:
 import logging
 from typing import Dict, Any, List, Optional
 from fatsecret_client import FatSecretClient
-from image_recognition import ImageRecognitionHandler
 from nutrition_normalizer import NutritionNormalizer
 from response_formatter import ResponseFormatter
 from error_handler import NutriKidneyServiceError, ValidationError
@@ -46,7 +45,8 @@ class NutriKidneyFatSecretService:
         
         try:
             self.fatsecret_client = FatSecretClient()
-            self.image_handler = ImageRecognitionHandler(self.fatsecret_client)
+            # Lazy-init image handler only when image endpoints are called.
+            self._image_handler = None
             logger.info("Service initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize service: {str(e)}")
@@ -186,8 +186,14 @@ class NutriKidneyFatSecretService:
         )
         
         try:
+            if self._image_handler is None:
+                # Lazy import to keep startup fast (PIL/vision deps live here).
+                from image_recognition import ImageRecognitionHandler  # local import
+
+                self._image_handler = ImageRecognitionHandler(self.fatsecret_client)
+
             # Handle image recognition
-            recognition_result = self.image_handler.recognize_food_from_image(
+            recognition_result = self._image_handler.recognize_food_from_image(
                 image_data,
                 content_type,
             )

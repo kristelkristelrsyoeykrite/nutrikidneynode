@@ -9,8 +9,10 @@ import 'health_metrics.dart';
 import 'manage_children_page.dart';
 import 'profile/account_management_page.dart';
 import 'profile/edit_profile_page.dart';
+import 'profile/help_page.dart';
 import 'profile/notification_settings_page.dart';
 import 'profile/privacy_security_page.dart';
+import 'profile/terms_of_service_page.dart';
 import '../login/login.dart';
 import '../services/auth_service.dart';
 import '../services/api_service.dart';
@@ -568,6 +570,20 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  Future<void> _openHelpCenter() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (context) => const HelpPage()),
+    );
+  }
+
+  Future<void> _openTermsOfService() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (context) => const TermsOfServicePage()),
+    );
+  }
+
   Future<void> _openNotificationSettings() async {
     final updated = await Navigator.push<bool>(
       context,
@@ -1075,12 +1091,12 @@ class _ProfilePageState extends State<ProfilePage> {
               _buildSettingTile(
                 Icons.help_outline,
                 'Help Center',
-                onTap: () => _showFeatureDialog('Help Center'),
+                onTap: _openHelpCenter,
               ),
               _buildSettingTile(
                 Icons.description_outlined,
                 'Terms of Service',
-                onTap: () => _showFeatureDialog('Terms of Service'),
+                onTap: _openTermsOfService,
               ),
 
               const SizedBox(height: 40),

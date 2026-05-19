@@ -72,6 +72,14 @@ Future<void> _loadRememberedLoginState() async {
     return RegExp(r"^[\w\.\-]+@([\w\-]+\.)+[a-zA-Z]{2,}$").hasMatch(email);
   }
 
+  bool _isPasswordStrong(String password) {
+    if (password.length < 8) return false;
+    if (!RegExp(r'[A-Z]').hasMatch(password)) return false;
+    if (!RegExp(r'[0-9]').hasMatch(password)) return false;
+    if (!RegExp(r'[!@#\$%^&*(),.?":{}|<>]').hasMatch(password)) return false;
+    return true;
+  }
+
   Future<bool> _emailExists(String email) async {
     final resp = await ApiService.checkUserExists({"email": email});
     debugPrint('DEBUG check-user email $email -> $resp');
@@ -220,6 +228,14 @@ Future<void> _loadRememberedLoginState() async {
       // Email/password flow - authenticate via backend
       if (enteredEmail.isEmpty || enteredPassword.isEmpty) {
         _showErrorDialog('Missing Fields', 'Please enter both email and password');
+        return;
+      }
+
+      if (!_isPasswordStrong(enteredPassword)) {
+        _showErrorDialog(
+          'Password Requirements',
+          'Password must be at least 8 characters and include an uppercase letter, a number, and a special character.',
+        );
         return;
       }
 
@@ -570,6 +586,22 @@ Future<void> _loadRememberedLoginState() async {
                       hintText: '••••••••',
                       isPassword: true,
                       controller: _passwordController,
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6, left: 4),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Password must include an uppercase letter, a number, and a special character.',
+                          style: TextStyle(
+                            color: _passwordController.text.isNotEmpty &&
+                                    !_isPasswordStrong(_passwordController.text)
+                                ? Colors.red
+                                : const Color(0xFF90A4AE),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 12),
 

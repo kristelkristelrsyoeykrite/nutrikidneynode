@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'api_cache.dart';
 
 class ApiService {
- static const String baseUrl = "http://127.0.0.1:3000";
+ static const String baseUrl = "https://nutrikidneynode.onrender.com";
 
 
   static const Map<String, String> _jsonHeaders = {
@@ -316,6 +316,31 @@ class ApiService {
         "metricType": metricType,
         "value": value,
         "date": date,
+        "recalculateNutritionTargets": recalculateNutritionTargets,
+      },
+    );
+    return _invalidateOnSuccess(response, [
+      "dashboard-summary",
+      "health-summary",
+      "analytics-summary",
+    ]);
+  }
+
+  static Future<Map<String, dynamic>> deleteMeasurement({
+    String? profileUserId,
+    required String metricType,
+    bool recalculateNutritionTargets = false,
+  }) async {
+    if (_userId == null) {
+      throw Exception("UserId not set. Please log in again.");
+    }
+
+    final response = await _post(
+      "/api/health/delete-measurement",
+      body: {
+        "userId": _userId,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        "metricType": metricType,
         "recalculateNutritionTargets": recalculateNutritionTargets,
       },
     );
