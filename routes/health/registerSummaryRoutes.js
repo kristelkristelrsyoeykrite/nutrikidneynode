@@ -3,6 +3,9 @@ function registerSummaryRoutes(router, deps) {
     getGamificationSummary,
     recomputeGamificationForDate,
   } = require("../../services/gamificationService");
+  const {
+    resolveMedicationDoseStatus,
+  } = require("../../utils/medicationDoseRecords");
 
   const {
     admin,
@@ -23,8 +26,6 @@ function registerSummaryRoutes(router, deps) {
     analyticsPeriodLabel,
     decryptHealthProfile,
   } = deps;
-  const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
-
   function requestMeta(req, extra = {}) {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     return {
@@ -35,80 +36,67 @@ function registerSummaryRoutes(router, deps) {
     };
   }
 
-  function parseClockTime(value) {
-    const text = String(value || "").trim();
-    const match = text.match(/^(\d{1,2}):(\d{2})$/);
-    if (!match) return null;
-    const hour = Number(match[1]);
-    const minute = Number(match[2]);
-    if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
-    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  function medicationDoseLogOwnerId(medication = {}, fallbackUserId) {
+    return [
+      medication.userId,
+      medication.uid,
+      medication.profileUserId,
+      medication.childProfileId,
+      medication.child_profile_id,
+    ]
+      .map((value) => String(value || "").trim())
+      .find(Boolean) || String(fallbackUserId || "").trim();
+  }
+
+  async function medicationsWithWindowStatus({ medications, dataUserId, nowMs = Date.now() }) {
+    let dosesDueNow = 0;
+    let dosesTakenToday = 0;
+    let missedDosesToday = 0;
+
+    const resolved = await Promise.all(
+      medications.map(async (medication) => {
+        const logUserId = medicationDoseLogOwnerId(medication, dataUserId);
+        const doseStatus = await resolveMedicationDoseStatus({
+          userId: logUserId,
+          medicationId: medication.id,
+          medicationDoc: medication,
+          nowMs,
+        });
+
+        dosesDueNow += doseStatus.dueNow;
+        dosesTakenToday += doseStatus.takenTimesToday.length;
+        missedDosesToday += doseStatus.missedCountToday;
+
+        return {
+          ...medication,
+          takenTimesToday: doseStatus.takenTimesToday,
+          nextDoseTime: doseStatus.nextDoseTime,
+          missedCountToday: doseStatus.missedCountToday,
+          doseWindow: doseStatus.doseWindow,
+          doseWindowsToday: doseStatus.doseWindowsToday,
+        };
+      }),
+    );
+
     return {
-      hour,
-      minute,
-      text: `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`,
+      medications: resolved,
+      medicationData:
+        resolved.length > 0
+          ? {
+              count: resolved.length,
+              totalActiveMedications: resolved.length,
+              dosesDueNow,
+              dosesTakenToday,
+              missedDosesToday,
+            }
+          : {
+              count: 0,
+              totalActiveMedications: 0,
+              dosesDueNow: 0,
+              dosesTakenToday: 0,
+              missedDosesToday: 0,
+            },
     };
-  }
-
-  function medicationScheduleTimes(medication) {
-    const times = [];
-    const scheduledTimes =
-      medication?.scheduled_times ?? medication?.scheduledTimes;
-    if (Array.isArray(scheduledTimes)) {
-      for (const entry of scheduledTimes) {
-        const parsed = parseClockTime(entry);
-        if (parsed) times.push(parsed.text);
-      }
-    }
-
-    if (times.length > 0) return Array.from(new Set(times));
-
-    const startTime = medication?.start_time ?? medication?.startTime;
-    const parsed = parseClockTime(startTime);
-    return parsed ? [parsed.text] : [];
-  }
-
-  function manilaMinutesForDate(now) {
-    const manilaNow = new Date(now.getTime() + MANILA_OFFSET_MS);
-    return manilaNow.getUTCHours() * 60 + manilaNow.getUTCMinutes();
-  }
-
-  function nextUpcomingDoseTime({ times, takenTimes, now }) {
-    const taken = new Set(takenTimes || []);
-    const nowMinutes = manilaMinutesForDate(now);
-    const remaining = [];
-
-    for (const timeText of times) {
-      if (taken.has(timeText)) continue;
-      const parsed = parseClockTime(timeText);
-      if (!parsed) continue;
-      const minutes = parsed.hour * 60 + parsed.minute;
-      if (minutes > nowMinutes) {
-        remaining.push({ timeText, minutes });
-      }
-    }
-
-    remaining.sort((a, b) => a.minutes - b.minutes);
-    return remaining.length > 0 ? remaining[0].timeText : null;
-  }
-
-  function countMissedDoses({ times, takenTimes, now, graceMinutes = 5 }) {
-    const taken = new Set(takenTimes || []);
-    const nowMinutes = manilaMinutesForDate(now);
-    const threshold = nowMinutes - graceMinutes;
-    let missed = 0;
-
-    for (const timeText of times) {
-      if (taken.has(timeText)) continue;
-      const parsed = parseClockTime(timeText);
-      if (!parsed) continue;
-      const minutes = parsed.hour * 60 + parsed.minute;
-      if (minutes <= threshold) {
-        missed += 1;
-      }
-    }
-
-    return missed;
   }
 
   function isCaregiverRole(role) {
@@ -357,52 +345,13 @@ function registerSummaryRoutes(router, deps) {
           ...medicationsByIds,
         ]),
       );
-      const today = todayDateKey();
-      const now = new Date();
-      const medicationsWithDoseStatus = await Promise.all(
-        medications.map(async (medication) => {
-          const times = medicationScheduleTimes(medication);
-          if (times.length === 0) {
-            return { ...medication, takenTimesToday: [], nextDoseTime: null };
-          }
-
-          const logIds = times.map(
-            (timeText) => `${dataUserId}_${medication.id}_${today}_${timeText}`,
-          );
-          const logs = await Promise.all(
-            logIds.map((id) =>
-              db.collection("medicationIntakeLogs").doc(id).get(),
-            ),
-          );
-
-          const takenTimesToday = [];
-          for (let i = 0; i < logs.length; i += 1) {
-            if (logs[i].exists) {
-              takenTimesToday.push(times[i]);
-            }
-          }
-
-          const nextDoseTime = nextUpcomingDoseTime({
-            times,
-            takenTimes: takenTimesToday,
-            now,
-          });
-
-          const missedCountToday = countMissedDoses({
-            times,
-            takenTimes: takenTimesToday,
-            now,
-            graceMinutes: 5,
-          });
-
-          return {
-            ...medication,
-            takenTimesToday,
-            nextDoseTime,
-            missedCountToday,
-          };
-        }),
-      );
+      const {
+        medications: medicationsWithDoseStatus,
+        medicationData,
+      } = await medicationsWithWindowStatus({
+        medications,
+        dataUserId,
+      });
       const intakeData = await getDailyIntakeData(dataUserId, date, user);
       const gamificationDate = date || todayDateKey();
       await recomputeGamificationForDate({
@@ -430,10 +379,7 @@ function registerSummaryRoutes(router, deps) {
         anthropometrics,
         intakeData,
         gamification,
-        medicationData:
-          medicationsWithDoseStatus.length > 0
-            ? { count: medicationsWithDoseStatus.length }
-            : null,
+        medicationData,
         medications: medicationsWithDoseStatus,
       });
     } catch (error) {
@@ -651,52 +597,13 @@ function registerSummaryRoutes(router, deps) {
         ]),
       );
 
-      const today = todayDateKey();
-      const now = new Date();
-      const medicationsWithDoseStatus = await Promise.all(
-        medications.map(async (medication) => {
-          const times = medicationScheduleTimes(medication);
-          if (times.length === 0) {
-            return { ...medication, takenTimesToday: [], nextDoseTime: null };
-          }
-
-          const logIds = times.map(
-            (timeText) => `${dataUserId}_${medication.id}_${today}_${timeText}`,
-          );
-          const logs = await Promise.all(
-            logIds.map((id) =>
-              db.collection("medicationIntakeLogs").doc(id).get(),
-            ),
-          );
-
-          const takenTimesToday = [];
-          for (let i = 0; i < logs.length; i += 1) {
-            if (logs[i].exists) {
-              takenTimesToday.push(times[i]);
-            }
-          }
-
-          const nextDoseTime = nextUpcomingDoseTime({
-            times,
-            takenTimes: takenTimesToday,
-            now,
-          });
-
-          const missedCountToday = countMissedDoses({
-            times,
-            takenTimes: takenTimesToday,
-            now,
-            graceMinutes: 5,
-          });
-
-          return {
-            ...medication,
-            takenTimesToday,
-            nextDoseTime,
-            missedCountToday,
-          };
-        }),
-      );
+      const {
+        medications: medicationsWithDoseStatus,
+        medicationData,
+      } = await medicationsWithWindowStatus({
+        medications,
+        dataUserId,
+      });
 
       return res.status(200).json({
         success: true,
@@ -711,6 +618,7 @@ function registerSummaryRoutes(router, deps) {
         anthropometricHistory,
         latestLabResult,
         labResultsHistory,
+        medicationData,
         medications: medicationsWithDoseStatus,
       });
     } catch (error) {

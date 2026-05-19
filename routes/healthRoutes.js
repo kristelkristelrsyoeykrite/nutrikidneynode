@@ -17,6 +17,10 @@ const {
   consumeAiUsage,
   getAiUsageStatus,
 } = require("../utils/aiUsageLimiter");
+const {
+  markActiveWindowTaken,
+  undoActiveWindowTaken,
+} = require("../utils/medicationDoseRecords");
 
 function requestMeta(req, extra = {}) {
   const body = req.body && typeof req.body === "object" ? req.body : {};
@@ -91,11 +95,15 @@ async function resolveMissedMedicationArtifacts({
   profileUserId,
   date,
   scheduledTimes = [],
+  window,
 }) {
   if (!medicationId || !profileUserId || !date) return;
 
   const timeSet = new Set(
-    scheduledTimes.map((time) => normalizeClockTime(time)).filter(Boolean),
+    [
+      ...scheduledTimes,
+      window?.expectedTime,
+    ].map((time) => normalizeClockTime(time)).filter(Boolean),
   );
 
   const matchesDose = (data = {}) => {
@@ -669,7 +677,7 @@ router.post("/medications/mark-taken", async (req, res) => {
   }));
 
   try {
-    const { userId, uid, profileUserId, childProfileId, medicationId, time } =
+    const { userId, uid, profileUserId, childProfileId, medicationId } =
       req.body || {};
 
     const medicationUserId = medicationTargetId({
@@ -698,71 +706,39 @@ router.post("/medications/mark-taken", async (req, res) => {
         error: "Medication does not belong to this profile",
       });
     }
-    const scheduledTimes = Array.isArray(medication.scheduled_times)
-      ? medication.scheduled_times
-      : [];
-    const startTime = normalizeClockTime(medication.start_time);
-    const candidateTimes =
-      scheduledTimes.length > 0
-        ? scheduledTimes.map(normalizeClockTime).filter(Boolean)
-        : startTime
-          ? [startTime]
-          : [];
-
-    if (candidateTimes.length === 0) {
-      throw new Error("Medication has no scheduled time(s) to mark as taken.");
-    }
-
-    const today = todayDateKey();
     const logUserId = medicationDoseLogOwnerId(medication, medicationUserId);
-    const requestedTime = normalizeClockTime(time);
-
-    const doseTimesToMark =
-      candidateTimes.length <= 1
-        ? candidateTimes
-        : requestedTime
-          ? [requestedTime]
-          : [];
-
-    if (doseTimesToMark.length === 0) {
-      throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
-    }
-
-    const writes = doseTimesToMark.map((doseTime) => {
-      const timeText = normalizeClockTime(doseTime);
-      const docId = `${logUserId}_${medicationId}_${today}_${timeText}`;
-      return db
-        .collection("medicationIntakeLogs")
-        .doc(docId)
-        .set(
-          {
-            id: docId,
-            userId: logUserId,
-            medicationId,
-            date: today,
-            time: timeText,
-            takenAt: admin.firestore.FieldValue.serverTimestamp(),
-            source: "manual_mark_taken",
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        );
-    });
-
-    await Promise.all(writes);
-    await resolveMissedMedicationArtifacts({
+    const result = await markActiveWindowTaken({
+      userId: logUserId,
       medicationId,
-      profileUserId: logUserId,
-      date: today,
-      scheduledTimes: doseTimesToMark,
+      medicationDoc: medication,
     });
+
+    if (!result.late) {
+      await resolveMissedMedicationArtifacts({
+        medicationId,
+        profileUserId: logUserId,
+        date: result.window.expectedDate,
+        scheduledTimes: [result.window.expectedTime],
+        window: result.window,
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      message: "Medication marked as taken",
+      message: result.late
+        ? "Medication window already missed; late intake recorded"
+        : "Medication marked as taken",
       medicationId,
-      date: today,
-      times: doseTimesToMark,
+      date: result.window.expectedDate,
+      times: [result.window.expectedTime],
+      doseWindow: {
+        expectedDate: result.window.expectedDate,
+        expectedTime: result.window.expectedTime,
+        startAt: result.window.startAt.toISOString(),
+        endAt: result.window.endAt.toISOString(),
+        status: result.status,
+      },
+      late: result.late,
     });
   } catch (error) {
     console.error("MEDICATION_MARK_TAKEN ERROR:", error.message);
@@ -779,7 +755,7 @@ router.post("/medications/mark-untaken", async (req, res) => {
   }));
 
   try {
-    const { userId, uid, profileUserId, childProfileId, medicationId, time } =
+    const { userId, uid, profileUserId, childProfileId, medicationId } =
       req.body || {};
 
     const medicationUserId = medicationTargetId({
@@ -808,50 +784,26 @@ router.post("/medications/mark-untaken", async (req, res) => {
         error: "Medication does not belong to this profile",
       });
     }
-    const scheduledTimes = Array.isArray(medication.scheduled_times)
-      ? medication.scheduled_times
-      : [];
-    const startTime = normalizeClockTime(medication.start_time);
-    const candidateTimes =
-      scheduledTimes.length > 0
-        ? scheduledTimes.map(normalizeClockTime).filter(Boolean)
-        : startTime
-          ? [startTime]
-          : [];
-
-    if (candidateTimes.length === 0) {
-      throw new Error("Medication has no scheduled time(s) to mark as untaken.");
-    }
-
-    const today = todayDateKey();
     const logUserId = medicationDoseLogOwnerId(medication, medicationUserId);
-    const requestedTime = normalizeClockTime(time);
-
-    const doseTimesToUnmark =
-      candidateTimes.length <= 1
-        ? candidateTimes
-        : requestedTime
-          ? [requestedTime]
-          : [];
-
-    if (doseTimesToUnmark.length === 0) {
-      throw new Error("Missing dose time (HH:mm) for multi-dose medication.");
-    }
-
-    const writes = doseTimesToUnmark.map((doseTime) => {
-      const timeText = normalizeClockTime(doseTime);
-      const docId = `${logUserId}_${medicationId}_${today}_${timeText}`;
-      return db.collection("medicationIntakeLogs").doc(docId).delete();
+    const result = await undoActiveWindowTaken({
+      userId: logUserId,
+      medicationId,
+      medicationDoc: medication,
     });
-
-    await Promise.all(writes);
 
     return res.status(200).json({
       success: true,
       message: "Medication marked as untaken",
       medicationId,
-      date: today,
-      times: doseTimesToUnmark,
+      date: result.window.expectedDate,
+      times: [result.window.expectedTime],
+      doseWindow: {
+        expectedDate: result.window.expectedDate,
+        expectedTime: result.window.expectedTime,
+        startAt: result.window.startAt.toISOString(),
+        endAt: result.window.endAt.toISOString(),
+        status: result.status,
+      },
     });
   } catch (error) {
     console.error("MEDICATION_MARK_UNTAKEN ERROR:", error.message);
