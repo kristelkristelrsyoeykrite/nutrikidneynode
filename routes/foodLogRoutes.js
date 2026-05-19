@@ -364,14 +364,31 @@ async function buildChildContext(userId, requestedChildProfileId) {
   const rawUser = await getDocData("users", userId);
   const user = rawUser ? decryptHealthProfile(rawUser) : null;
   const childProfileId = requestedChildProfileId || userId;
+  const rawChildUser =
+    childProfileId && childProfileId !== userId
+      ? await getDocData("users", childProfileId)
+      : null;
+  const childUser = rawChildUser ? decryptHealthProfile(rawChildUser) : null;
+  const rawChildProfile = await getDocData("childProfiles", childProfileId);
+  const childProfile = rawChildProfile
+    ? decryptHealthDocument(rawChildProfile)
+    : null;
+  const profileOwner = childUser || childProfile || user || {};
   const medicalProfileId =
-    user?.medicalProfileId || user?.medical_profile_id || requestedChildProfileId;
+    profileOwner?.medicalProfileId ||
+    profileOwner?.medical_profile_id ||
+    user?.medicalProfileId ||
+    user?.medical_profile_id ||
+    requestedChildProfileId;
   const nutritionTargetId =
-    user?.baselineNutritionTargetId || user?.nutritionTargetId;
+    profileOwner?.baselineNutritionTargetId ||
+    profileOwner?.nutritionTargetId ||
+    user?.baselineNutritionTargetId ||
+    user?.nutritionTargetId;
 
   const rawMedicalProfile =
     (await getDocData("medicalProfile", medicalProfileId)) ||
-    (await getDocData("childProfiles", childProfileId)) ||
+    rawChildProfile ||
     {};
   const medicalProfile = decryptHealthDocument(rawMedicalProfile);
   const targets =
@@ -379,7 +396,7 @@ async function buildChildContext(userId, requestedChildProfileId) {
 
   return {
     child_profile_id: childProfileId,
-    age: numberOrNull(user?.age ?? medicalProfile?.age),
+    age: numberOrNull(profileOwner?.age ?? medicalProfile?.age),
     ckd_stage:
       medicalProfile?.ckdStage ||
       medicalProfile?.ckd_stage ||
