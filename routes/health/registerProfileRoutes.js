@@ -230,6 +230,8 @@ function registerProfileRoutes(router, deps) {
         fluid_limit_ml,
         hasHypertension,
         has_hypertension,
+        hasEdema,
+        has_edema,
         allowDataExport,
         recalculateNutritionTargets,
         caregiverSettings,
@@ -300,6 +302,7 @@ function registerProfileRoutes(router, deps) {
         fluidRestrictionStatus ?? fluid_restriction_status;
       const fluidLimitValue = fluidLimitMl ?? fluid_limit_ml;
       const hypertensionValue = hasHypertension ?? has_hypertension;
+      const edemaValue = hasEdema ?? has_edema;
       const allergiesValue = normalizeAllergiesInput(req.body.allergies);
       const isLinkedAdolescent =
         isAdolescentAccountRole(roleValue) &&
@@ -389,6 +392,8 @@ function registerProfileRoutes(router, deps) {
           fluidLimitValue === undefined ? undefined : Number(fluidLimitValue),
         hasHypertension: hypertensionValue,
         has_hypertension: hypertensionValue,
+        hasEdema: edemaValue,
+        has_edema: edemaValue,
         allergies: allergiesValue,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -544,6 +549,7 @@ function registerProfileRoutes(router, deps) {
         step3?.physical_activity_level ?? step3?.physicalActivityLevel;
       const hasHypertension =
         step3?.has_hypertension ?? step3?.hasHypertension;
+      const hasEdema = step1?.has_edema ?? step1?.hasEdema;
       const dietPattern = step3?.diet_pattern ?? step3?.dietPattern;
       const processedFoodIntake =
         step3?.processed_food_intake ?? step3?.processedFoodIntake;
@@ -694,6 +700,10 @@ function registerProfileRoutes(router, deps) {
       if (hasHypertension) {
         medicalProfilePayload.hasHypertension = hasHypertension;
         medicalProfilePayload.has_hypertension = hasHypertension;
+      }
+      if (hasEdema) {
+        medicalProfilePayload.hasEdema = hasEdema;
+        medicalProfilePayload.has_edema = hasEdema;
       }
       medicalProfilePayload.allergies = allergies;
       if (setupMedications.length > 0) {

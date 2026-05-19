@@ -1144,7 +1144,13 @@ async function getFoodLogDocsForProfileRange(childProfileId, startDate, endDate)
 }
 
 function extractWaterMlFromLog(data = {}) {
-  const explicitWaterMl = Number(data.waterMl ?? data.water_ml ?? data.fluid_ml);
+  const explicitWaterMl = Number(
+    data.totalFluidContributionMl ??
+      data.total_fluid_contribution_ml ??
+      data.waterMl ??
+      data.water_ml ??
+      data.fluid_ml,
+  );
   if (Number.isFinite(explicitWaterMl) && explicitWaterMl > 0) {
     return explicitWaterMl;
   }

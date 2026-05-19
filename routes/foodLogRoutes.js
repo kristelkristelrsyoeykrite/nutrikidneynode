@@ -7,6 +7,7 @@ const {
 } = require("../services/gamificationService");
 
 const FOOD_LOG_COLLECTION = "foodLogs";
+const HYDRATION_LOG_COLLECTION = "hydrationLog";
 const DAILY_SUMMARY_COLLECTION = "dailyIntakeSummaries";
 const LINKED_ADOLESCENT_NUTRITION_ALERT_TYPE =
   "linked_adolescent_nutrition_limit_alert";
@@ -277,7 +278,13 @@ function nutrientTotalsFromPreview(preview = {}) {
 }
 
 function extractWaterMlFromLog(data = {}) {
-  const explicitWaterMl = numberOrNull(data.waterMl ?? data.water_ml ?? data.fluid_ml);
+  const explicitWaterMl = numberOrNull(
+    data.totalFluidContributionMl ??
+      data.total_fluid_contribution_ml ??
+      data.waterMl ??
+      data.water_ml ??
+      data.fluid_ml,
+  );
   if (explicitWaterMl !== null && explicitWaterMl > 0) {
     return explicitWaterMl;
   }
@@ -415,6 +422,13 @@ async function buildChildContext(userId, requestedChildProfileId) {
           targets.protein_max ??
           targets.maxProteinG,
       ),
+      dailyFluidLimitMl: numberOrNull(
+        medicalProfile?.fluidLimitMl ??
+          medicalProfile?.fluid_limit_ml ??
+          targets.fluidLimitMl ??
+          targets.fluid_limit_ml ??
+          targets.dailyFluidLimitMl,
+      ),
     }),
   };
 }
@@ -443,6 +457,15 @@ async function buildPreviewRequest(body) {
   }
 
   const childContext = await buildChildContext(userId, childProfileId);
+  const summaryId = `${childProfileId}_${logDateKey(loggedAtDate)}`;
+  const summaryDoc = await db
+    .collection(DAILY_SUMMARY_COLLECTION)
+    .doc(summaryId)
+    .get();
+  const summaryData = summaryDoc.exists ? summaryDoc.data() || {} : {};
+  childContext.targets.currentDailyFluidConsumedMl = numberOrNull(
+    summaryData.waterMl ?? summaryData.water_ml ?? summaryData.fluid_ml,
+  ) ?? 0;
 
   return {
     user_id: userId,
@@ -510,6 +533,89 @@ async function recomputeDailySummary(childProfileId, date) {
   });
 
   return summary;
+}
+
+function fluidContributionFromBody(body = {}) {
+  const raw =
+    body.fluidContribution ||
+    body.fluid_contribution ||
+    body.fluidContributionPreview ||
+    {};
+  const source = raw && typeof raw === "object" ? raw : {};
+  const totalFluidContributionMl = numberOrNull(
+    source.totalFluidContributionMl ??
+      source.total_fluid_contribution_ml ??
+      body.totalFluidContributionMl ??
+      body.total_fluid_contribution_ml,
+  );
+  const waterContentMl = numberOrNull(
+    source.waterContentMl ??
+      source.water_content_ml ??
+      body.waterContentMl ??
+      body.water_content_ml,
+  );
+  const drinkFluidMl = numberOrNull(
+    source.drinkFluidMl ??
+      source.drink_fluid_ml ??
+      body.drinkFluidMl ??
+      body.drink_fluid_ml,
+  );
+
+  return cleanObject({
+    usdaWaterContentGrams: numberOrNull(
+      source.usdaWaterContentGrams ??
+        source.usda_water_content_grams ??
+        body.usdaWaterContentGrams ??
+        body.usda_water_content_grams,
+    ),
+    waterContentMl,
+    isLiquidOrDrink:
+      source.isLiquidOrDrink === true ||
+      source.is_liquid_or_drink === true ||
+      body.isLiquidOrDrink === true,
+    drinkFluidMl,
+    totalFluidContributionMl,
+    fluidContributionPercent: numberOrNull(
+      source.fluidContributionPercent ??
+        source.fluid_contribution_percent ??
+        body.fluidContributionPercent ??
+        body.fluid_contribution_percent,
+    ),
+    showFluidWarning:
+      source.showFluidWarning === true ||
+      source.show_fluid_warning === true ||
+      body.showFluidWarning === true,
+    waterDataAvailable:
+      source.waterDataAvailable === true ||
+      source.water_data_available === true ||
+      body.waterDataAvailable === true,
+    fluidContributionPreview: source,
+  });
+}
+
+async function createHydrationLogFromFood({
+  userId,
+  childProfileId,
+  foodLogId,
+  fluidFields,
+  loggedAtDate,
+}) {
+  const amountMl = numberOrNull(fluidFields.totalFluidContributionMl);
+  if (amountMl === null || amountMl <= 0) return null;
+
+  const payload = {
+    userId,
+    childProfileId,
+    source: "foodLog",
+    foodLogId,
+    amountMl,
+    type: fluidFields.isLiquidOrDrink ? "drink" : "food_water",
+    loggedAt: admin.firestore.Timestamp.fromDate(loggedAtDate),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  const docRef = await db.collection(HYDRATION_LOG_COLLECTION).add(payload);
+  return { id: docRef.id, ...payload };
 }
 
 function deviceTokensFromProfile(profile = {}) {
@@ -927,6 +1033,7 @@ router.post("/logs/add", async (req, res) => {
       const loggedAtDate = parseLogDateTime(loggedAt || new Date().toISOString());
       const logDate = date || logDateKey(loggedAtDate);
       const now = admin.firestore.FieldValue.serverTimestamp();
+      const fluidFields = fluidContributionFromBody(req.body);
       const finalNutrients = {
         calories: Number(calories) || 0,
         protein: Number(protein) || 0,
@@ -975,12 +1082,14 @@ router.post("/logs/add", async (req, res) => {
         selectedQuantity: 1,
         quantity: 1,
         waterMl:
-          String(name).trim().toLowerCase() === "water"
+          numberOrNull(fluidFields.totalFluidContributionMl) ??
+          (String(name).trim().toLowerCase() === "water"
             ? extractWaterMlFromLog({
                 name,
                 portion: portion || "1 serving",
               })
-            : 0,
+            : 0),
+        ...fluidFields,
         calories: finalNutrients.calories,
         protein: finalNutrients.protein,
         carbohydrate: finalNutrients.carbohydrate,
@@ -1000,6 +1109,13 @@ router.post("/logs/add", async (req, res) => {
       }), allergyCheck, userConfirmedAllergyWarning);
 
       const docRef = await db.collection(FOOD_LOG_COLLECTION).add(payload);
+      const hydrationLog = await createHydrationLogFromFood({
+        userId,
+        childProfileId: payload.childProfileId,
+        foodLogId: docRef.id,
+        fluidFields,
+        loggedAtDate,
+      });
 
       let dailySummaryStatus = "updated";
       try {
@@ -1024,6 +1140,7 @@ router.post("/logs/add", async (req, res) => {
         profileAllergies: allergyCheck.profileAllergies,
         allergyAlert: allergyCheck.allergyAlert,
         matchedAllergens: allergyCheck.matchedAllergens,
+        hydrationLog,
         log: {
           id: docRef.id,
           ...payload,
@@ -1073,6 +1190,7 @@ router.post("/logs/add", async (req, res) => {
     const loggedAtDate = parseLogDateTime(loggedAt || new Date().toISOString());
     const logDate = date || logDateKey(loggedAtDate);
     const selectedQuantity = Number(quantity) || 1;
+    const fluidFields = fluidContributionFromBody(req.body);
 
     if (!Number.isFinite(selectedQuantity) || selectedQuantity <= 0 || selectedQuantity > 20) {
       return res.status(400).json({
@@ -1134,13 +1252,15 @@ router.post("/logs/add", async (req, res) => {
       quantity: selectedQuantity,
       portion: portion || "1 serving",
       waterMl:
-        String(name).trim().toLowerCase() === "water"
+        numberOrNull(fluidFields.totalFluidContributionMl) ??
+        (String(name).trim().toLowerCase() === "water"
           ? extractWaterMlFromLog({
               name,
               portion: portion || "1 serving",
               waterMl: req.body.waterMl ?? req.body.water_ml,
             })
-          : 0,
+          : 0),
+      ...fluidFields,
       calories: finalNutrients.calories,
       protein: finalNutrients.protein,
       carbohydrate: finalNutrients.carbohydrate,
@@ -1165,6 +1285,13 @@ router.post("/logs/add", async (req, res) => {
     }), allergyCheck, userConfirmedAllergyWarning);
 
     const docRef = await db.collection(FOOD_LOG_COLLECTION).add(payload);
+    const hydrationLog = await createHydrationLogFromFood({
+      userId,
+      childProfileId: payload.childProfileId,
+      foodLogId: docRef.id,
+      fluidFields,
+      loggedAtDate,
+    });
 
     let dailySummaryStatus = "updated";
     try {
@@ -1189,6 +1316,7 @@ router.post("/logs/add", async (req, res) => {
       profileAllergies: allergyCheck.profileAllergies,
       allergyAlert: allergyCheck.allergyAlert,
       matchedAllergens: allergyCheck.matchedAllergens,
+      hydrationLog,
       log: {
         id: docRef.id,
         ...payload,
