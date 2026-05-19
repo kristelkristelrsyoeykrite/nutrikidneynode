@@ -24,6 +24,16 @@ function registerSummaryRoutes(router, deps) {
     decryptHealthProfile,
   } = deps;
 
+  function requestMeta(req, extra = {}) {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    return {
+      userId: body.userId,
+      profileUserId: body.profileUserId,
+      keys: Object.keys(body).length,
+      ...extra,
+    };
+  }
+
   function parseClockTime(value) {
     const text = String(value || "").trim();
     const match = text.match(/^(\d{1,2}):(\d{2})$/);
@@ -203,7 +213,9 @@ function registerSummaryRoutes(router, deps) {
             : null,
         linkedChildren: enrichedLinkedChildren,
         linkStatus: viewer.linkStatus || "none",
-        activeLinkingCode: viewer.activeLinkingCode || null,
+        hasActiveLinkingCode: Boolean(
+          viewer.activeLinkingCodeHash || viewer.activeLinkingCode,
+        ),
         linkCodeExpiresAt: toIsoString(viewer.linkCodeExpiresAt),
       };
 
@@ -262,7 +274,9 @@ function registerSummaryRoutes(router, deps) {
   }
 
   router.post("/dashboard-summary", async (req, res) => {
-    console.log("Dashboard summary requested:", req.body);
+    console.log("Dashboard summary requested:", requestMeta(req, {
+      date: req.body.date,
+    }));
 
     try {
       const { userId, profileUserId, date } = req.body;
@@ -426,7 +440,10 @@ function registerSummaryRoutes(router, deps) {
   });
 
   router.post("/analytics-summary", async (req, res) => {
-    console.log("Analytics summary requested:", req.body);
+    console.log("Analytics summary requested:", requestMeta(req, {
+      range: req.body.range,
+      hasEndDate: Boolean(req.body.endDate),
+    }));
 
     try {
       const { userId, profileUserId, range, endDate } = req.body;
@@ -523,7 +540,7 @@ function registerSummaryRoutes(router, deps) {
   });
 
   router.post("/health-summary", async (req, res) => {
-    console.log("Health summary requested:", req.body);
+    console.log("Health summary requested:", requestMeta(req));
 
     try {
       const { userId, profileUserId } = req.body;

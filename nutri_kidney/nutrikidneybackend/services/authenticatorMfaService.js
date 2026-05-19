@@ -1,5 +1,11 @@
 const OTPAuth = require("otpauth");
 const QRCode = require("qrcode");
+const { decryptValue } = require("../utils/encryption");
+
+function readSecret(value) {
+  const decrypted = decryptValue(value);
+  return String(decrypted || "").trim();
+}
 
 function normalizeSecuritySettings(profile = {}) {
   const rawSettings =
@@ -11,8 +17,8 @@ function normalizeSecuritySettings(profile = {}) {
     typeof profile.phoneNumber === "string" ? profile.phoneNumber : "";
   const fallbackEmail = typeof profile.email === "string" ? profile.email : "";
   
-  const authenticatorSecret = (String(rawSettings.mfaSecret || profile.mfaSecret || "")).trim();
-  const tempSecret = (String(rawSettings.mfaTempSecret || profile.mfaTempSecret || "")).trim();
+  const authenticatorSecret = readSecret(rawSettings.mfaSecret || profile.mfaSecret || "");
+  const tempSecret = readSecret(rawSettings.mfaTempSecret || profile.mfaTempSecret || "");
   
   const storedMethod = String(rawSettings.mfaMethod || "").trim();
   const mfaEnabledFlag = rawSettings.mfaEnabled === true || profile.mfaEnabled === true;
@@ -51,6 +57,23 @@ function normalizeSecuritySettings(profile = {}) {
     emailChallengeExpiresAt: rawSettings.emailChallengeExpiresAt || null,
     emailChallengePurpose: String(rawSettings.emailChallengePurpose || "").trim(),
     emailChallengeLinkVerified: rawSettings.emailChallengeLinkVerified === true,
+  };
+}
+
+function toPublicSecuritySettings(securitySettings = {}) {
+  return {
+    mfaEnabled: securitySettings.mfaEnabled === true,
+    mfaMethod: securitySettings.mfaMethod || "none",
+    authenticatorEnabled: securitySettings.authenticatorEnabled === true,
+    emailMfaEnabled: securitySettings.emailMfaEnabled === true,
+    hasAuthenticatorSecret: securitySettings.hasAuthenticatorSecret === true,
+    hasPendingEnrollment: securitySettings.hasPendingEnrollment === true,
+    mfaPhoneNumber: securitySettings.mfaPhoneNumber || "",
+    mfaEmail: securitySettings.mfaEmail || "",
+    emailChallengeExpiresAt: securitySettings.emailChallengeExpiresAt || null,
+    emailChallengePurpose: securitySettings.emailChallengePurpose || "",
+    emailChallengeLinkVerified:
+      securitySettings.emailChallengeLinkVerified === true,
   };
 }
 
@@ -117,5 +140,6 @@ module.exports = {
   generateTotpSecret,
   isValidAuthenticatorCode,
   normalizeSecuritySettings,
+  toPublicSecuritySettings,
   verifyTotpCode,
 };

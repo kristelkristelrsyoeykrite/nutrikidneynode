@@ -5,6 +5,10 @@ const fatSecretBridge = require("../services/fatSecretBridgeService");
 const {
   recomputeGamificationForDate,
 } = require("../services/gamificationService");
+const {
+  decryptHealthDocument,
+  decryptHealthProfile,
+} = require("../utils/encryption");
 
 const FOOD_LOG_COLLECTION = "foodLogs";
 const HYDRATION_LOG_COLLECTION = "hydrationLog";
@@ -243,6 +247,13 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function isFluidRestrictionEnabled(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["yes", "true", "enabled", "restricted", "fluid_restricted"].includes(
+    normalized,
+  );
+}
+
 function phosphorusGuideFromRaw(raw) {
   if (!raw || typeof raw !== "object") return null;
   const guide = raw.phosphorusGuide || raw.phosphorus_guide || raw.phosphorus;
@@ -357,23 +368,55 @@ async function getDocData(collection, id) {
 }
 
 async function buildChildContext(userId, requestedChildProfileId) {
-  const user = await getDocData("users", userId);
+  const rawUser = await getDocData("users", userId);
+  const user = rawUser ? decryptHealthProfile(rawUser) : null;
   const childProfileId = requestedChildProfileId || userId;
+  const rawChildUser =
+    childProfileId && childProfileId !== userId
+      ? await getDocData("users", childProfileId)
+      : null;
+  const childUser = rawChildUser ? decryptHealthProfile(rawChildUser) : null;
+  const rawChildProfile = await getDocData("childProfiles", childProfileId);
+  const childProfile = rawChildProfile
+    ? decryptHealthDocument(rawChildProfile)
+    : null;
+  const profileOwner = childUser || childProfile || user || {};
   const medicalProfileId =
-    user?.medicalProfileId || user?.medical_profile_id || requestedChildProfileId;
+    profileOwner?.medicalProfileId ||
+    profileOwner?.medical_profile_id ||
+    user?.medicalProfileId ||
+    user?.medical_profile_id ||
+    requestedChildProfileId;
   const nutritionTargetId =
-    user?.baselineNutritionTargetId || user?.nutritionTargetId;
+    profileOwner?.baselineNutritionTargetId ||
+    profileOwner?.nutritionTargetId ||
+    user?.baselineNutritionTargetId ||
+    user?.nutritionTargetId;
 
-  const medicalProfile =
+  const rawMedicalProfile =
     (await getDocData("medicalProfile", medicalProfileId)) ||
-    (await getDocData("childProfiles", childProfileId)) ||
+    rawChildProfile ||
     {};
+  const medicalProfile = decryptHealthDocument(rawMedicalProfile);
   const targets =
     (await getDocData("nutritionTargets", nutritionTargetId)) || {};
+  const fluidRestrictionStatus =
+    medicalProfile?.fluidRestrictionStatus ||
+    medicalProfile?.fluid_restriction_status ||
+    "unknown";
+  const dailyFluidLimitMl = isFluidRestrictionEnabled(fluidRestrictionStatus)
+    ? numberOrNull(
+        medicalProfile?.fluidLimitMl ??
+          medicalProfile?.fluid_limit_ml ??
+          targets.fluidLimitMl ??
+          targets.fluid_limit_ml ??
+          targets.dailyFluidLimitMl,
+      )
+    : null;
 
   return {
     child_profile_id: childProfileId,
-    age: numberOrNull(user?.age ?? medicalProfile?.age),
+    age: numberOrNull(profileOwner?.age ?? medicalProfile?.age),
     ckd_stage:
       medicalProfile?.ckdStage ||
       medicalProfile?.ckd_stage ||
@@ -387,10 +430,7 @@ async function buildChildContext(userId, requestedChildProfileId) {
       medicalProfile?.dietPattern ||
       medicalProfile?.diet_pattern ||
       "unknown",
-    fluid_restriction_status:
-      medicalProfile?.fluidRestrictionStatus ||
-      medicalProfile?.fluid_restriction_status ||
-      "unknown",
+    fluid_restriction_status: fluidRestrictionStatus,
     allergies: Array.isArray(medicalProfile?.allergies)
       ? medicalProfile.allergies
       : [],
@@ -422,13 +462,7 @@ async function buildChildContext(userId, requestedChildProfileId) {
           targets.protein_max ??
           targets.maxProteinG,
       ),
-      dailyFluidLimitMl: numberOrNull(
-        medicalProfile?.fluidLimitMl ??
-          medicalProfile?.fluid_limit_ml ??
-          targets.fluidLimitMl ??
-          targets.fluid_limit_ml ??
-          targets.dailyFluidLimitMl,
-      ),
+      dailyFluidLimitMl,
     }),
   };
 }

@@ -15,6 +15,16 @@ function registerRecordRoutes(router, deps) {
     encryptHealthDocument,
   } = deps;
 
+  function requestMeta(req, extra = {}) {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    return {
+      userId: body.userId || body.uid,
+      profileUserId: body.profileUserId,
+      keys: Object.keys(body).length,
+      ...extra,
+    };
+  }
+
   function isCaregiverRole(role) {
     const normalized = String(role || "").trim().toLowerCase();
     return normalized === "parent_caregiver" || normalized === "caregiver";
@@ -144,7 +154,10 @@ function registerRecordRoutes(router, deps) {
   }
 
   router.post("/save-measurement", async (req, res) => {
-    console.log("Save measurement requested:", req.body);
+    console.log("Save measurement requested:", requestMeta(req, {
+      metricType: req.body.metricType,
+      hasDate: Boolean(req.body.date),
+    }));
 
     try {
       const {
@@ -288,7 +301,11 @@ function registerRecordRoutes(router, deps) {
   });
 
   router.post("/save-lab-result", async (req, res) => {
-    console.log("Save lab result requested:", req.body);
+    console.log("Save lab result requested:", requestMeta(req, {
+      labResultId: req.body.labResultId,
+      metricType: req.body.metricType,
+      hasResultDate: Boolean(req.body.resultDate),
+    }));
 
     try {
       const { userId, uid, profileUserId, labResultId, metricType, value, resultDate } = req.body;
@@ -431,7 +448,10 @@ function registerRecordRoutes(router, deps) {
   });
 
   router.post("/delete-lab-result", async (req, res) => {
-    console.log("Delete lab result requested:", req.body);
+    console.log("Delete lab result requested:", requestMeta(req, {
+      labResultId: req.body.labResultId,
+      metricType: req.body.metricType,
+    }));
 
     try {
       const { userId, uid, profileUserId, labResultId, metricType } = req.body;

@@ -14,9 +14,18 @@ const {
   decryptHealthDocument,
 } = require("../utils/encryption");
 
+function requestMeta(req, extra = {}) {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  return {
+    uid: body.uid || body.userId || body.profileUserId || body.childProfileId,
+    keys: Object.keys(body).length,
+    ...extra,
+  };
+}
+
 //////////////////// STEP 1 - Just collect data ////////////////////
 router.post("/step1", async (req, res) => {
-  console.log("Step 1 received:", req.body);
+  console.log("Step 1 received:", requestMeta(req));
   
   try {
     res.json({
@@ -34,7 +43,7 @@ router.post("/step1", async (req, res) => {
 
 //////////////////// STEP 2 - Just collect data ////////////////////
 router.post("/step2", async (req, res) => {
-  console.log("Step 2 received:", req.body);
+  console.log("Step 2 received:", requestMeta(req));
   
   try {
     res.json({
@@ -54,7 +63,7 @@ router.post("/step2", async (req, res) => {
 
 //////////////// STEP 3 - Just collect data ///////////////////////////
 router.post("/step3", async (req, res) => {
-  console.log("Step 3 received:", req.body);
+  console.log("Step 3 received:", requestMeta(req));
 
   try {
     res.json({
@@ -74,7 +83,7 @@ router.post("/step3", async (req, res) => {
 //////////////////// STEP 4 - Just collect data //////////////////////
 
 router.post("/step4", async (req, res) => {
-  console.log("Step 4 received:", req.body);
+  console.log("Step 4 received:", requestMeta(req));
 
   try {
     res.json({
@@ -92,7 +101,10 @@ router.post("/step4", async (req, res) => {
 });
 
 router.post("/phase2-decision-support", async (req, res) => {
-  console.log("Phase 2 decision support received:", req.body);
+  console.log("Phase 2 decision support received:", requestMeta(req, {
+    hasLabs: Boolean(req.body.labs || req.body.potassium || req.body.creatinine),
+    hasIntake: Boolean(req.body.intake),
+  }));
 
   try {
     const profile = req.body.profile || {
@@ -191,7 +203,9 @@ router.post("/medications/scan", async (req, res) => {
 });
 
 router.post("/medications/confirm", async (req, res) => {
-  console.log("Medication confirm requested:", req.body);
+  console.log("Medication confirm requested:", requestMeta(req, {
+    hasRawOcrText: Boolean(req.body.rawOcrText || req.body.raw_ocr_text),
+  }));
 
   try {
     const {
@@ -325,7 +339,12 @@ router.get("/medications", async (req, res) => {
 });
 
 router.put("/medications/:medicationId", async (req, res) => {
-  console.log("Medication REST update requested:", req.params, req.body);
+  console.log("Medication REST update requested:", {
+    medicationId: req.params.medicationId,
+    ...requestMeta(req, {
+      hasRawOcrText: Boolean(req.body.rawOcrText || req.body.raw_ocr_text),
+    }),
+  });
 
   try {
     const medicationId = req.params.medicationId;
@@ -442,7 +461,9 @@ router.put("/medications/:medicationId", async (req, res) => {
  * This writes a per-day/per-time intake log so missed doses can still be identified.
  */
 router.post("/medications/mark-taken", async (req, res) => {
-  console.log("Mark medication taken requested:", req.body);
+  console.log("Mark medication taken requested:", requestMeta(req, {
+    medicationId: req.body.medicationId,
+  }));
 
   try {
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
@@ -527,7 +548,9 @@ router.post("/medications/mark-taken", async (req, res) => {
 });
 
 router.post("/medications/mark-untaken", async (req, res) => {
-  console.log("Mark medication untaken requested:", req.body);
+  console.log("Mark medication untaken requested:", requestMeta(req, {
+    medicationId: req.body.medicationId,
+  }));
 
   try {
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
@@ -649,7 +672,7 @@ router.delete("/medications/:medicationId", async (req, res) => {
  * Stores alarm-like medication schedules.
  */
 router.post("/save-medication", async (req, res) => {
-  console.log("Save medication requested:", req.body);
+  console.log("Save medication requested:", requestMeta(req));
 
   try {
     const {
@@ -733,7 +756,9 @@ router.post("/save-medication", async (req, res) => {
 });
 
 router.post("/update-medication", async (req, res) => {
-  console.log("Update medication requested:", req.body);
+  console.log("Update medication requested:", requestMeta(req, {
+    medicationId: req.body.medicationId,
+  }));
 
   try {
     const {
@@ -848,7 +873,9 @@ router.post("/update-medication", async (req, res) => {
 });
 
 router.post("/delete-medication", async (req, res) => {
-  console.log("Delete medication requested:", req.body);
+  console.log("Delete medication requested:", requestMeta(req, {
+    medicationId: req.body.medicationId,
+  }));
 
   try {
     const { userId, uid, profileUserId, childProfileId, medicationId } = req.body;
