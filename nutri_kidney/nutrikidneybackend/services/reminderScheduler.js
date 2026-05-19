@@ -1,6 +1,8 @@
 const { admin, db } = require("../firebase/admin");
 const { decryptHealthDocument, decryptHealthProfile } = require("../utils/encryption");
 
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+
 /**
  * Backend Reminder Scheduler
  * 
@@ -50,8 +52,60 @@ function displayNameFromProfile(profile = {}) {
 
 function todayDateKey() {
   // Use Manila time to match how schedules are stored/displayed in the app.
-  const manilaOffsetMs = 8 * 60 * 60 * 1000;
-  return new Date(Date.now() + manilaOffsetMs).toISOString().slice(0, 10);
+  return new Date(Date.now() + MANILA_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+async function deleteSnapshotInBatches(snapshot) {
+  if (snapshot.empty) return 0;
+  let deleted = 0;
+  for (let index = 0; index < snapshot.docs.length; index += 400) {
+    const batch = db.batch();
+    for (const doc of snapshot.docs.slice(index, index + 400)) {
+      batch.delete(doc.ref);
+      deleted += 1;
+    }
+    await batch.commit();
+  }
+  return deleted;
+}
+
+async function cleanupOldReminderCollections() {
+  try {
+    const cutoff = admin.firestore.Timestamp.fromDate(
+      new Date(Date.now() - 24 * 60 * 60 * 1000),
+    );
+    const collections = [
+      { name: "upcomingReminders", field: "timestamp" },
+      { name: "upcomingReminders", field: "dueTime" },
+      { name: "reminderLogs", field: "sentAt" },
+    ];
+
+    let totalDeleted = 0;
+    for (const { name, field } of collections) {
+      const snapshot = await db
+        .collection(name)
+        .where(field, "<", cutoff)
+        .limit(400)
+        .get();
+      totalDeleted += await deleteSnapshotInBatches(snapshot);
+    }
+
+    const oldDay = new Date(Date.now() - 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    const oldUpcomingByDay = await db
+      .collection("upcomingReminders")
+      .where("day", "<", oldDay)
+      .limit(400)
+      .get();
+    totalDeleted += await deleteSnapshotInBatches(oldUpcomingByDay);
+
+    if (totalDeleted > 0) {
+      console.log(`[Reminders] Cleaned ${totalDeleted} old reminder documents`);
+    }
+  } catch (error) {
+    console.error("[Reminders] Reminder cleanup failed:", error.message);
+  }
 }
 
 /**
@@ -124,19 +178,17 @@ function parseClockTime(value) {
   const minute = Number(match[2]);
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-  return { hour, minute, text };
+  return {
+    hour,
+    minute,
+    text: `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`,
+  };
 }
 
 function dateForTodayClockTime(clock) {
-  const now = new Date();
+  const [year, month, day] = todayDateKey().split("-").map(Number);
   return new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    clock.hour,
-    clock.minute,
-    0,
-    0,
+    Date.UTC(year, month - 1, day, clock.hour, clock.minute) - MANILA_OFFSET_MS,
   );
 }
 
@@ -624,6 +676,7 @@ async function runReminderScheduler() {
     // Only backend-generate alerts that are tied to an actual scheduled dose.
     // Meal, hydration, and generic medication reminders are scheduled locally
     // by the Flutter app; sending them here caused extra "unscheduled" pushes.
+    await cleanupOldReminderCollections();
     await checkMissedMedicationReminders();
 
     console.log("[Reminders] Scheduler check complete");
