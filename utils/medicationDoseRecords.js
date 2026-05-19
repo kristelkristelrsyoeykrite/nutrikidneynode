@@ -395,6 +395,12 @@ async function markActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
     throw new Error("No active dose window found for this medication.");
   }
   const status = await resolveDoseWindowStatus({ userId, medicationId, window, nowMs });
+  const docId = doseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
   if (status.status === "missed") {
     const lateRef = await db.collection("medicationLateIntakeLogs").add({
       userId: String(userId),
@@ -407,20 +413,31 @@ async function markActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
       source: "manual_mark_taken_after_window",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    await db.collection("medicationIntakeLogs").doc(docId).set(
+      {
+        id: docId,
+        userId: String(userId),
+        medicationId: String(medicationId),
+        date: window.expectedDate,
+        time: window.expectedTime,
+        windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
+        windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
+        takenAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: "manual_mark_taken_after_missed",
+        lateIntakeLogId: lateRef.id,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
     return {
       late: true,
       lateLogId: lateRef.id,
+      docId,
       window,
-      status: "missed",
+      status: "taken",
     };
   }
 
-  const docId = doseRecordId({
-    userId,
-    medicationId,
-    expectedDate: window.expectedDate,
-    expectedTime: window.expectedTime,
-  });
   await db.collection("medicationIntakeLogs").doc(docId).set(
     {
       id: docId,

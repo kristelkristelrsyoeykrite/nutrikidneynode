@@ -851,20 +851,18 @@ router.post("/medications/mark-taken", async (req, res) => {
           medicationDoc: medication,
         });
 
-    if (!result.late) {
-      await resolveMissedMedicationArtifacts({
-        medicationId,
-        profileUserId: logUserId,
-        date: result.window.expectedDate,
-        scheduledTimes: [result.window.expectedTime],
-        window: result.window,
-      });
-    }
+    await resolveMissedMedicationArtifacts({
+      medicationId,
+      profileUserId: logUserId,
+      date: result.window.expectedDate,
+      scheduledTimes: [result.window.expectedTime],
+      window: result.window,
+    });
 
     return res.status(200).json({
       success: true,
       message: result.late
-        ? "Medication window already missed; late intake recorded"
+        ? "Medication marked as taken after missed reminder"
         : "Medication marked as taken",
       medicationId,
       date: result.window.expectedDate,
