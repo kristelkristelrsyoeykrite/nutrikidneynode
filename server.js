@@ -2436,6 +2436,12 @@ app.post("/api/user/archive-direct-child-profile", async (req, res) => {
       "dailyIntakeSummaries",
       "analyticsSummaries",
       "reminderSettings",
+      "medicationIntakeLogs",
+      "notifications",
+      "notificationState",
+      "upcomingReminders",
+      "reminderLogs",
+      "reminderState",
     ];
     for (const collectionName of childCollections) {
       await deleteWhere(collectionName, "userId", targetChildId);
@@ -2453,6 +2459,9 @@ app.post("/api/user/archive-direct-child-profile", async (req, res) => {
     if (Array.isArray(childProfile.medicationIds)) {
       for (const medicationId of childProfile.medicationIds) {
         await deleteDocById("medications", medicationId);
+        await deleteWhere("notifications", "medicationId", medicationId);
+        await deleteWhere("upcomingReminders", "medicationId", medicationId);
+        await deleteWhere("medicationIntakeLogs", "medicationId", medicationId);
       }
     }
     await db.collection("users").doc(targetChildId).delete();
