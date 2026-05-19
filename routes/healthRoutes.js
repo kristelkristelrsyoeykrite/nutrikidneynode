@@ -49,6 +49,21 @@ function medicationOwnerIds(medication = {}) {
     .filter(Boolean);
 }
 
+function medicationDoseLogOwnerId(medication = {}, fallbackUserId) {
+  return medicationOwnerIds(medication)[0] || String(fallbackUserId || "").trim();
+}
+
+function normalizeClockTime(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return "";
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return "";
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return "";
+  return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
+}
+
 function canAccessMedication(medication = {}, targetProfileId, requesterUserId) {
   const owners = medicationOwnerIds(medication);
   if (owners.length === 0) return true;
@@ -629,21 +644,27 @@ router.post("/medications/mark-taken", async (req, res) => {
     const scheduledTimes = Array.isArray(medication.scheduled_times)
       ? medication.scheduled_times
       : [];
-    const startTime = String(medication.start_time || "").trim();
+    const startTime = normalizeClockTime(medication.start_time);
     const candidateTimes =
-      scheduledTimes.length > 0 ? scheduledTimes : startTime ? [startTime] : [];
+      scheduledTimes.length > 0
+        ? scheduledTimes.map(normalizeClockTime).filter(Boolean)
+        : startTime
+          ? [startTime]
+          : [];
 
     if (candidateTimes.length === 0) {
       throw new Error("Medication has no scheduled time(s) to mark as taken.");
     }
 
     const today = todayDateKey();
+    const logUserId = medicationDoseLogOwnerId(medication, medicationUserId);
+    const requestedTime = normalizeClockTime(time);
 
     const doseTimesToMark =
       candidateTimes.length <= 1
         ? candidateTimes
-        : time
-          ? [time]
+        : requestedTime
+          ? [requestedTime]
           : [];
 
     if (doseTimesToMark.length === 0) {
@@ -651,15 +672,15 @@ router.post("/medications/mark-taken", async (req, res) => {
     }
 
     const writes = doseTimesToMark.map((doseTime) => {
-      const timeText = String(doseTime || "").trim();
-      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+      const timeText = normalizeClockTime(doseTime);
+      const docId = `${logUserId}_${medicationId}_${today}_${timeText}`;
       return db
         .collection("medicationIntakeLogs")
         .doc(docId)
         .set(
           {
             id: docId,
-            userId: medicationUserId,
+            userId: logUserId,
             medicationId,
             date: today,
             time: timeText,
@@ -727,21 +748,27 @@ router.post("/medications/mark-untaken", async (req, res) => {
     const scheduledTimes = Array.isArray(medication.scheduled_times)
       ? medication.scheduled_times
       : [];
-    const startTime = String(medication.start_time || "").trim();
+    const startTime = normalizeClockTime(medication.start_time);
     const candidateTimes =
-      scheduledTimes.length > 0 ? scheduledTimes : startTime ? [startTime] : [];
+      scheduledTimes.length > 0
+        ? scheduledTimes.map(normalizeClockTime).filter(Boolean)
+        : startTime
+          ? [startTime]
+          : [];
 
     if (candidateTimes.length === 0) {
       throw new Error("Medication has no scheduled time(s) to mark as untaken.");
     }
 
     const today = todayDateKey();
+    const logUserId = medicationDoseLogOwnerId(medication, medicationUserId);
+    const requestedTime = normalizeClockTime(time);
 
     const doseTimesToUnmark =
       candidateTimes.length <= 1
         ? candidateTimes
-        : time
-          ? [time]
+        : requestedTime
+          ? [requestedTime]
           : [];
 
     if (doseTimesToUnmark.length === 0) {
@@ -749,8 +776,8 @@ router.post("/medications/mark-untaken", async (req, res) => {
     }
 
     const writes = doseTimesToUnmark.map((doseTime) => {
-      const timeText = String(doseTime || "").trim();
-      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+      const timeText = normalizeClockTime(doseTime);
+      const docId = `${logUserId}_${medicationId}_${today}_${timeText}`;
       return db.collection("medicationIntakeLogs").doc(docId).delete();
     });
 
