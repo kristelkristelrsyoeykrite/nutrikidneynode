@@ -23,6 +23,7 @@ const {
   undoActiveWindowTaken,
   undoWindowTaken,
   doseRecordId,
+  MISSED_NOTIFICATION_DELAY_MS,
 } = require("../utils/medicationDoseRecords");
 
 function requestMeta(req, extra = {}) {
@@ -1046,8 +1047,8 @@ router.post("/missed-medication-reminders", async (req, res) => {
         }
       }
 
-      const windowEndMs = timestampMillis(data.windowEndAt);
-      if (windowEndMs && nowMs < windowEndMs) {
+      const scheduledMs = timestampMillis(data.windowStartAt || data.dueTime);
+      if (scheduledMs && nowMs < scheduledMs + MISSED_NOTIFICATION_DELAY_MS) {
         continue;
       }
 
