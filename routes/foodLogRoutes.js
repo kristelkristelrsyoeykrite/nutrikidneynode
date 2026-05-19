@@ -9,6 +9,10 @@ const {
   decryptHealthDocument,
   decryptHealthProfile,
 } = require("../utils/encryption");
+const {
+  consumeAiUsage,
+  getAiUsageStatus,
+} = require("../utils/aiUsageLimiter");
 
 const FOOD_LOG_COLLECTION = "foodLogs";
 const HYDRATION_LOG_COLLECTION = "hydrationLog";
@@ -892,9 +896,11 @@ router.post("/details", async (req, res) => {
 });
 
 router.post("/recognize-image", async (req, res) => {
+  let aiUsage = null;
   try {
-    const { imageBase64, image_base64, contentType, content_type } = req.body;
+    const { imageBase64, image_base64, contentType, content_type, userId, uid } = req.body;
     const image = imageBase64 || image_base64;
+    const scanUserId = userId || uid;
 
     if (!image) {
       return res.status(400).json({
@@ -902,6 +908,13 @@ router.post("/recognize-image", async (req, res) => {
         error: "imageBase64 is required",
       });
     }
+
+    aiUsage = await consumeAiUsage({
+      db,
+      admin,
+      uid: scanUserId,
+      feature: "food_image",
+    });
 
     const result = await fatSecretBridge.mealLoggingRecognizeImage({
       image_base64: image,
@@ -914,6 +927,7 @@ router.post("/recognize-image", async (req, res) => {
       ...result,
       food: recognizedFood,
       recognizedFood,
+      aiUsage,
       nextStep: "review_recognized_food",
       message:
         result.message ||
@@ -926,7 +940,29 @@ router.post("/recognize-image", async (req, res) => {
       error:
         error.message ||
         "The image could not be identified as food. Please try another image.",
+      aiUsage: error.aiUsage || aiUsage,
       details: error.data,
+    });
+  }
+});
+
+router.post("/ai-usage/status", async (req, res) => {
+  try {
+    const { userId, uid, feature } = req.body;
+    const aiUsage = await getAiUsageStatus({
+      db,
+      uid: userId || uid,
+      feature: feature || "food_image",
+    });
+
+    return res.status(200).json({
+      success: true,
+      aiUsage,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      error: error.message,
     });
   }
 });

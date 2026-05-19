@@ -13,6 +13,10 @@ const {
   encryptHealthDocument,
   decryptHealthDocument,
 } = require("../utils/encryption");
+const {
+  consumeAiUsage,
+  getAiUsageStatus,
+} = require("../utils/aiUsageLimiter");
 
 function requestMeta(req, extra = {}) {
   const body = req.body && typeof req.body === "object" ? req.body : {};
@@ -222,13 +226,21 @@ router.post("/phase2-decision-support", async (req, res) => {
 router.post("/extract-prescription", async (req, res) => {
   console.log("Prescription OCR requested");
 
+  let aiUsage = null;
   try {
-    const { imageBase64, image_base64, contentType, content_type } = req.body;
+    const { imageBase64, image_base64, contentType, content_type, userId, uid } = req.body;
     const imagePayload = imageBase64 || image_base64;
 
     if (!imagePayload) {
       throw new Error("imageBase64 is required");
     }
+
+    aiUsage = await consumeAiUsage({
+      db,
+      admin,
+      uid: userId || uid,
+      feature: "medication_ocr",
+    });
 
     const result = await prescriptionOcrBridge.scanMedicationPrescription({
       image_base64: imagePayload,
@@ -238,12 +250,14 @@ router.post("/extract-prescription", async (req, res) => {
     return res.status(200).json({
       success: true,
       ...result,
+      aiUsage,
     });
   } catch (error) {
     console.error("EXTRACT_PRESCRIPTION ERROR:", error.message);
     return res.status(error.statusCode || 400).json({
       success: false,
       error: error.message,
+      aiUsage: error.aiUsage || aiUsage,
       details: error.data || null,
     });
   }
@@ -252,13 +266,21 @@ router.post("/extract-prescription", async (req, res) => {
 router.post("/medications/scan", async (req, res) => {
   console.log("Medication scan requested");
 
+  let aiUsage = null;
   try {
-    const { imageBase64, image_base64, contentType, content_type } = req.body;
+    const { imageBase64, image_base64, contentType, content_type, userId, uid } = req.body;
     const imagePayload = imageBase64 || image_base64;
 
     if (!imagePayload) {
       throw new Error("imageBase64 is required");
     }
+
+    aiUsage = await consumeAiUsage({
+      db,
+      admin,
+      uid: userId || uid,
+      feature: "medication_ocr",
+    });
 
     const result = await prescriptionOcrBridge.scanMedicationPrescription({
       image_base64: imagePayload,
@@ -268,13 +290,36 @@ router.post("/medications/scan", async (req, res) => {
     return res.status(200).json({
       success: true,
       ...result,
+      aiUsage,
     });
   } catch (error) {
     console.error("MEDICATION_SCAN ERROR:", error.message);
     return res.status(error.statusCode || 400).json({
       success: false,
       error: error.message,
+      aiUsage: error.aiUsage || aiUsage,
       details: error.data || null,
+    });
+  }
+});
+
+router.post("/ai-usage/status", async (req, res) => {
+  try {
+    const { userId, uid, feature } = req.body;
+    const aiUsage = await getAiUsageStatus({
+      db,
+      uid: userId || uid,
+      feature: feature || "medication_ocr",
+    });
+
+    return res.status(200).json({
+      success: true,
+      aiUsage,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      error: error.message,
     });
   }
 });
