@@ -19,6 +19,7 @@ const {
 } = require("../utils/aiUsageLimiter");
 const {
   markActiveWindowTaken,
+  markWindowTaken,
   undoActiveWindowTaken,
 } = require("../utils/medicationDoseRecords");
 
@@ -677,7 +678,7 @@ router.post("/medications/mark-taken", async (req, res) => {
   }));
 
   try {
-    const { userId, uid, profileUserId, childProfileId, medicationId } =
+    const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
 
     const medicationUserId = medicationTargetId({
@@ -707,11 +708,18 @@ router.post("/medications/mark-taken", async (req, res) => {
       });
     }
     const logUserId = medicationDoseLogOwnerId(medication, medicationUserId);
-    const result = await markActiveWindowTaken({
-      userId: logUserId,
-      medicationId,
-      medicationDoc: medication,
-    });
+    const result = time
+      ? await markWindowTaken({
+          userId: logUserId,
+          medicationId,
+          medicationDoc: medication,
+          expectedTime: time,
+        })
+      : await markActiveWindowTaken({
+          userId: logUserId,
+          medicationId,
+          medicationDoc: medication,
+        });
 
     if (!result.late) {
       await resolveMissedMedicationArtifacts({

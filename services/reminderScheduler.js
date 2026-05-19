@@ -3,6 +3,7 @@ const { decryptHealthDocument, decryptHealthProfile } = require("../utils/encryp
 const {
   doseWindowsAround,
   dateKeyFromUtcMs,
+  MISSED_NOTIFICATION_DELAY_MS,
   notificationWindowId,
   resolveMedicationDoseStatus,
   resolveDoseWindowStatus,
@@ -294,6 +295,10 @@ function deviceTokenEntries(profile = {}) {
     .map((entry) => ({ ...entry, token: entry.token.trim() }));
 }
 
+function tokenKey(token) {
+  return String(token || "").trim();
+}
+
 function caregiverIdsForProfile(profile = {}) {
   return [
     profile.caregiverUserId,
@@ -336,6 +341,24 @@ async function reminderRecipientsForUser(userId, profile = {}, extraRecipientUse
   return Array.from(recipients.values());
 }
 
+function uniqueRecipientTokens(recipients = []) {
+  const seen = new Set();
+  const out = [];
+  for (const recipient of recipients) {
+    for (const entry of recipient.tokens || []) {
+      const token = tokenKey(entry.token);
+      if (!token || seen.has(token)) continue;
+      seen.add(token);
+      out.push({
+        recipientUserId: recipient.userId,
+        targetUserId: recipient.targetUserId,
+        token,
+      });
+    }
+  }
+  return out;
+}
+
 async function sendReminderToDevices(userId, reminderData, options = {}) {
   try {
     const userDoc = await db.collection("users").doc(userId).get();
@@ -350,7 +373,7 @@ async function sendReminderToDevices(userId, reminderData, options = {}) {
       user,
       options.extraRecipientUserIds,
     );
-    const validTokens = recipients.flatMap((recipient) => recipient.tokens);
+    const validTokens = uniqueRecipientTokens(recipients);
 
     if (validTokens.length === 0) {
       console.log(`No device tokens for reminder target ${userId}`);
@@ -373,19 +396,17 @@ async function sendReminderToDevices(userId, reminderData, options = {}) {
 
     // Send to all devices
     const results = await Promise.allSettled(
-      recipients.flatMap((recipient) =>
-        recipient.tokens.map(({ token }) =>
-          admin.messaging().send({
-            ...baseMessage,
-            data: {
-              type: String(reminderData.type || ""),
-              userId: recipient.userId,
-              targetUserId: recipient.targetUserId,
-              timestamp: Date.now().toString(),
-            },
-            token,
-          }),
-        ),
+      validTokens.map((entry) =>
+        admin.messaging().send({
+          ...baseMessage,
+          data: {
+            type: String(reminderData.type || ""),
+            userId: entry.recipientUserId,
+            targetUserId: entry.targetUserId,
+            timestamp: Date.now().toString(),
+          },
+          token: entry.token,
+        }),
       ),
     );
 
@@ -405,7 +426,7 @@ async function sendReminderToDevices(userId, reminderData, options = {}) {
       devicesTargeted: validTokens.length,
       devicesSucceeded: successful,
       devicesFailed: failed,
-      recipientUserIds: recipients.map((recipient) => recipient.userId),
+      recipientUserIds: [...new Set(validTokens.map((entry) => entry.recipientUserId))],
       sentAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -658,7 +679,8 @@ async function checkMissedMedicationReminders() {
             afterDays: 1,
           }).filter(
             (window) =>
-              window.endMs <= nowMs && dateKeyFromUtcMs(window.endMs) === todayDateKey(nowMs),
+              window.endMs + MISSED_NOTIFICATION_DELAY_MS <= nowMs &&
+              dateKeyFromUtcMs(window.endMs) === todayDateKey(nowMs),
           );
 
           for (const window of completedWindows) {

@@ -3,6 +3,7 @@ const { decryptHealthDocument } = require("./encryption");
 
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MISSED_NOTIFICATION_DELAY_MS = 5 * 60 * 1000;
 const UNDO_WINDOW_MS = 2 * 60 * 1000;
 
 function todayDateKey(nowMs = Date.now()) {
@@ -274,6 +275,19 @@ function getActiveDoseWindow({ medicationDoc, nowMs = Date.now() }) {
   ) || null;
 }
 
+function findWindowByTime({ medicationDoc, expectedTime, nowMs = Date.now() }) {
+  const normalizedTime = parseClockTime(expectedTime)?.text;
+  if (!normalizedTime) return null;
+  const matching = doseWindowsAround({ medicationDoc, nowMs }).filter(
+    (window) => window.expectedTime === normalizedTime,
+  );
+  return matching.find(
+    (window) => window.startMs <= nowMs && nowMs < window.endMs,
+  ) || matching.find(
+    (window) => dateKeyFromUtcMs(window.startMs) === todayDateKey(nowMs),
+  ) || matching[0] || null;
+}
+
 function getTodayDoseWindows({ medicationDoc, nowMs = Date.now() }) {
   const today = todayDateKey(nowMs);
   return doseWindowsAround({ medicationDoc, nowMs }).filter(
@@ -429,6 +443,53 @@ async function markActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
   };
 }
 
+async function markWindowTaken({ userId, medicationId, medicationDoc, expectedTime, nowMs = Date.now() }) {
+  const window =
+    findWindowByTime({ medicationDoc, expectedTime, nowMs }) ||
+    getActiveDoseWindow({ medicationDoc, nowMs });
+  if (!window) {
+    throw new Error("No matching dose window found for this medication.");
+  }
+  if (nowMs >= window.endMs) {
+    const lateRef = await db.collection("medicationLateIntakeLogs").add({
+      userId: String(userId),
+      medicationId: String(medicationId),
+      expectedDate: window.expectedDate,
+      expectedTime: window.expectedTime,
+      windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
+      windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
+      takenAt: admin.firestore.FieldValue.serverTimestamp(),
+      source: "manual_mark_taken_after_window",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return { late: true, lateLogId: lateRef.id, window, status: "missed" };
+  }
+
+  const docId = doseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
+  await db.collection("medicationIntakeLogs").doc(docId).set(
+    {
+      id: docId,
+      userId: String(userId),
+      medicationId: String(medicationId),
+      date: window.expectedDate,
+      time: window.expectedTime,
+      windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
+      windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
+      takenAt: admin.firestore.FieldValue.serverTimestamp(),
+      source: "manual_mark_taken",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return { late: false, docId, window, status: "taken" };
+}
+
 async function undoActiveWindowTaken({ userId, medicationId, medicationDoc, nowMs = Date.now() }) {
   const window = getActiveDoseWindow({ medicationDoc, nowMs });
   if (!window) {
@@ -512,10 +573,12 @@ module.exports = {
   scheduleClocksForDate,
   doseWindowsAround,
   getActiveDoseWindow,
+  findWindowByTime,
   getTodayDoseWindows,
   resolveDoseWindowStatus,
   resolveMedicationDoseStatus,
   markActiveWindowTaken,
+  markWindowTaken,
   undoActiveWindowTaken,
   ensureDoseRecordsForDate,
   markDoseTaken,
@@ -525,4 +588,5 @@ module.exports = {
   getDoseRecord,
   doseRecordId,
   notificationWindowId,
+  MISSED_NOTIFICATION_DELAY_MS,
 };
