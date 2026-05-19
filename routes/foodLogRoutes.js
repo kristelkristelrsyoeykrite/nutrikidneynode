@@ -247,6 +247,13 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function isFluidRestrictionEnabled(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["yes", "true", "enabled", "restricted", "fluid_restricted"].includes(
+    normalized,
+  );
+}
+
 function phosphorusGuideFromRaw(raw) {
   if (!raw || typeof raw !== "object") return null;
   const guide = raw.phosphorusGuide || raw.phosphorus_guide || raw.phosphorus;
@@ -393,6 +400,19 @@ async function buildChildContext(userId, requestedChildProfileId) {
   const medicalProfile = decryptHealthDocument(rawMedicalProfile);
   const targets =
     (await getDocData("nutritionTargets", nutritionTargetId)) || {};
+  const fluidRestrictionStatus =
+    medicalProfile?.fluidRestrictionStatus ||
+    medicalProfile?.fluid_restriction_status ||
+    "unknown";
+  const dailyFluidLimitMl = isFluidRestrictionEnabled(fluidRestrictionStatus)
+    ? numberOrNull(
+        medicalProfile?.fluidLimitMl ??
+          medicalProfile?.fluid_limit_ml ??
+          targets.fluidLimitMl ??
+          targets.fluid_limit_ml ??
+          targets.dailyFluidLimitMl,
+      )
+    : null;
 
   return {
     child_profile_id: childProfileId,
@@ -410,10 +430,7 @@ async function buildChildContext(userId, requestedChildProfileId) {
       medicalProfile?.dietPattern ||
       medicalProfile?.diet_pattern ||
       "unknown",
-    fluid_restriction_status:
-      medicalProfile?.fluidRestrictionStatus ||
-      medicalProfile?.fluid_restriction_status ||
-      "unknown",
+    fluid_restriction_status: fluidRestrictionStatus,
     allergies: Array.isArray(medicalProfile?.allergies)
       ? medicalProfile.allergies
       : [],
@@ -445,13 +462,7 @@ async function buildChildContext(userId, requestedChildProfileId) {
           targets.protein_max ??
           targets.maxProteinG,
       ),
-      dailyFluidLimitMl: numberOrNull(
-        medicalProfile?.fluidLimitMl ??
-          medicalProfile?.fluid_limit_ml ??
-          targets.fluidLimitMl ??
-          targets.fluid_limit_ml ??
-          targets.dailyFluidLimitMl,
-      ),
+      dailyFluidLimitMl,
     }),
   };
 }
