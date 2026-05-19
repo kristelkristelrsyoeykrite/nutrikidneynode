@@ -450,20 +450,6 @@ async function markWindowTaken({ userId, medicationId, medicationDoc, expectedTi
   if (!window) {
     throw new Error("No matching dose window found for this medication.");
   }
-  if (nowMs >= window.endMs) {
-    const lateRef = await db.collection("medicationLateIntakeLogs").add({
-      userId: String(userId),
-      medicationId: String(medicationId),
-      expectedDate: window.expectedDate,
-      expectedTime: window.expectedTime,
-      windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
-      windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
-      takenAt: admin.firestore.FieldValue.serverTimestamp(),
-      source: "manual_mark_taken_after_window",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    return { late: true, lateLogId: lateRef.id, window, status: "missed" };
-  }
 
   const docId = doseRecordId({
     userId,
@@ -503,6 +489,24 @@ async function undoActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
   });
   await db.collection("medicationIntakeLogs").doc(docId).delete();
   return { docId, window, status: "due" };
+}
+
+async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTime, nowMs = Date.now() }) {
+  const window =
+    findWindowByTime({ medicationDoc, expectedTime, nowMs }) ||
+    getActiveDoseWindow({ medicationDoc, nowMs });
+  if (!window) {
+    throw new Error("No matching dose window found for this medication.");
+  }
+  const docId = doseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
+  await db.collection("medicationIntakeLogs").doc(docId).delete();
+  const status = nowMs >= window.endMs ? "missed" : "due";
+  return { docId, window, status };
 }
 
 async function ensureDoseRecordsForDate({ userId, medicationId, medicationDoc, dateKey }) {
@@ -580,6 +584,7 @@ module.exports = {
   markActiveWindowTaken,
   markWindowTaken,
   undoActiveWindowTaken,
+  undoWindowTaken,
   ensureDoseRecordsForDate,
   markDoseTaken,
   undoDoseTaken,

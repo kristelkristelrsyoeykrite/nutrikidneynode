@@ -21,6 +21,8 @@ const {
   markActiveWindowTaken,
   markWindowTaken,
   undoActiveWindowTaken,
+  undoWindowTaken,
+  doseRecordId,
 } = require("../utils/medicationDoseRecords");
 
 function requestMeta(req, extra = {}) {
@@ -67,6 +69,14 @@ function normalizeClockTime(value) {
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return "";
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return "";
   return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
+}
+
+function timestampMillis(value) {
+  if (!value) return 0;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (typeof value._seconds === "number") return value._seconds * 1000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function canAccessMedication(medication = {}, targetProfileId, requesterUserId) {
@@ -202,6 +212,61 @@ async function resolveMissedMedicationArtifacts({
     if (pendingWrites > 0) {
       await batch.commit();
     }
+  }
+}
+
+async function reopenMissedMedicationArtifacts({
+  medicationId,
+  profileUserId,
+  date,
+  scheduledTimes = [],
+  window,
+}) {
+  if (!medicationId || !profileUserId || !date) return;
+
+  const timeSet = new Set(
+    [
+      ...scheduledTimes,
+      window?.expectedTime,
+    ].map((time) => normalizeClockTime(time)).filter(Boolean),
+  );
+
+  const matchesDose = (data = {}) => {
+    const sameUser = String(data.userId || "") === String(profileUserId);
+    const sameMedication = String(data.medicationId || "") === String(medicationId);
+    const sameDay = !data.day || String(data.day) === String(date);
+    const scheduledTime = normalizeClockTime(data.scheduledTime || data.time);
+    const sameTime = timeSet.size === 0 || timeSet.has(scheduledTime);
+    return sameUser && sameMedication && sameDay && sameTime;
+  };
+
+  const snapshot = await db
+    .collection("notifications")
+    .where("medicationId", "==", String(medicationId))
+    .limit(100)
+    .get();
+
+  const batch = db.batch();
+  let pendingWrites = 0;
+  for (const doc of snapshot.docs) {
+    const data = doc.data() || {};
+    if (!matchesDose(data)) continue;
+    batch.set(
+      doc.ref,
+      {
+        read: false,
+        isMissed: true,
+        reopenedAt: admin.firestore.FieldValue.serverTimestamp(),
+        resolvedAt: admin.firestore.FieldValue.delete(),
+        resolvedBy: admin.firestore.FieldValue.delete(),
+      },
+      { merge: true },
+    );
+    pendingWrites += 1;
+  }
+
+  if (pendingWrites > 0) {
+    await batch.commit();
   }
 }
 
@@ -816,7 +881,7 @@ router.post("/medications/mark-untaken", async (req, res) => {
   }));
 
   try {
-    const { userId, uid, profileUserId, childProfileId, medicationId } =
+    const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
 
     const medicationUserId = medicationTargetId({
@@ -846,11 +911,28 @@ router.post("/medications/mark-untaken", async (req, res) => {
       });
     }
     const logUserId = medicationDoseLogOwnerId(medication, medicationUserId);
-    const result = await undoActiveWindowTaken({
-      userId: logUserId,
-      medicationId,
-      medicationDoc: medication,
-    });
+    const result = time
+      ? await undoWindowTaken({
+          userId: logUserId,
+          medicationId,
+          medicationDoc: medication,
+          expectedTime: time,
+        })
+      : await undoActiveWindowTaken({
+          userId: logUserId,
+          medicationId,
+          medicationDoc: medication,
+        });
+
+    if (result.status === "missed") {
+      await reopenMissedMedicationArtifacts({
+        medicationId,
+        profileUserId: logUserId,
+        date: result.window.expectedDate,
+        scheduledTimes: [result.window.expectedTime],
+        window: result.window,
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -911,14 +993,48 @@ router.post("/missed-medication-reminders", async (req, res) => {
       .get();
 
     const remindersByDose = new Map();
+    const staleBatch = db.batch();
+    let staleWrites = 0;
+    const nowMs = Date.now();
     for (const doc of snapshot.docs) {
       const data = doc.data() || {};
+      const scheduledTime = normalizeClockTime(data.scheduledTime || data.time);
+      const day = String(data.day || data.date || "").trim();
+      if (data.medicationId && scheduledTime && day) {
+        const logId = doseRecordId({
+          userId: targetProfileUserId,
+          medicationId: data.medicationId,
+          expectedDate: day,
+          expectedTime: scheduledTime,
+        });
+        const logSnap = await db.collection("medicationIntakeLogs").doc(logId).get();
+        if (logSnap.exists) {
+          staleBatch.set(
+            doc.ref,
+            {
+              read: true,
+              isMissed: false,
+              resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+              resolvedBy: "taken_log",
+            },
+            { merge: true },
+          );
+          staleWrites += 1;
+          continue;
+        }
+      }
+
+      const windowEndMs = timestampMillis(data.windowEndAt);
+      if (windowEndMs && nowMs < windowEndMs) {
+        continue;
+      }
+
       const reminder = { id: doc.id, ...data };
       const doseKey = [
         data.medicationId || "",
         data.scheduledWindowStart || data.windowStart || "",
         data.day || data.date || "",
-        normalizeClockTime(data.scheduledTime || data.time) || "",
+        scheduledTime || "",
       ].join("|");
       const key = doseKey.replace(/\|/g, "") ? doseKey : doc.id;
       const existing = remindersByDose.get(key);
@@ -929,6 +1045,9 @@ router.post("/missed-medication-reminders", async (req, res) => {
       if (!existing || currentTime >= existingTime) {
         remindersByDose.set(key, reminder);
       }
+    }
+    if (staleWrites > 0) {
+      await staleBatch.commit();
     }
 
     const reminders = Array.from(remindersByDose.values()).sort((a, b) => {
