@@ -328,7 +328,7 @@ async function getWindowLog({ userId, medicationId, window }) {
 async function resolveDoseWindowStatus({ userId, medicationId, window, nowMs = Date.now() }) {
   const log = await getWindowLog({ userId, medicationId, window });
   if (log) return { status: "taken", log };
-  if (nowMs >= window.endMs) return { status: "missed", log: null };
+  if (nowMs >= window.startMs + MISSED_NOTIFICATION_DELAY_MS) return { status: "missed", log: null };
   if (nowMs >= window.startMs) return { status: "due", log: null };
   return { status: "upcoming", log: null };
 }
@@ -507,7 +507,7 @@ async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTi
     expectedTime: window.expectedTime,
   });
   await db.collection("medicationIntakeLogs").doc(docId).delete();
-  const status = nowMs >= window.endMs ? "missed" : "due";
+  const status = nowMs >= window.startMs + MISSED_NOTIFICATION_DELAY_MS ? "missed" : "due";
   return { docId, window, status };
 }
 

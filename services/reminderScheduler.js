@@ -625,7 +625,7 @@ async function checkHydrationReminders() {
 
 /**
  * Check and create missed medication reminders
- * Sends notifications for medications not taken 1 hour after initial reminder
+ * Sends notifications for medications not taken 5 minutes after their scheduled time
  */
 async function checkMissedMedicationReminders() {
   console.log("[Reminders] Checking missed medication reminders...");
@@ -679,8 +679,8 @@ async function checkMissedMedicationReminders() {
             afterDays: 1,
           }).filter(
             (window) =>
-              window.endMs + MISSED_NOTIFICATION_DELAY_MS <= nowMs &&
-              dateKeyFromUtcMs(window.endMs) === todayDateKey(nowMs),
+              window.startMs + MISSED_NOTIFICATION_DELAY_MS <= nowMs &&
+              dateKeyFromUtcMs(window.startMs) === todayDateKey(nowMs),
           );
 
           for (const window of completedWindows) {
