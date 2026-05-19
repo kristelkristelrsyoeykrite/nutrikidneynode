@@ -275,11 +275,13 @@ function getActiveDoseWindow({ medicationDoc, nowMs = Date.now() }) {
   ) || null;
 }
 
-function findWindowByTime({ medicationDoc, expectedTime, nowMs = Date.now() }) {
+function findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs = Date.now() }) {
   const normalizedTime = parseClockTime(expectedTime)?.text;
   if (!normalizedTime) return null;
   const matching = doseWindowsAround({ medicationDoc, nowMs }).filter(
-    (window) => window.expectedTime === normalizedTime,
+    (window) =>
+      window.expectedTime === normalizedTime &&
+      (!expectedDate || window.expectedDate === String(expectedDate)),
   );
   return matching.find(
     (window) => window.startMs <= nowMs && nowMs < window.endMs,
@@ -443,9 +445,9 @@ async function markActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
   };
 }
 
-async function markWindowTaken({ userId, medicationId, medicationDoc, expectedTime, nowMs = Date.now() }) {
+async function markWindowTaken({ userId, medicationId, medicationDoc, expectedTime, expectedDate, nowMs = Date.now() }) {
   const window =
-    findWindowByTime({ medicationDoc, expectedTime, nowMs }) ||
+    findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs }) ||
     getActiveDoseWindow({ medicationDoc, nowMs });
   if (!window) {
     throw new Error("No matching dose window found for this medication.");
@@ -491,9 +493,9 @@ async function undoActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
   return { docId, window, status: "due" };
 }
 
-async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTime, nowMs = Date.now() }) {
+async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTime, expectedDate, nowMs = Date.now() }) {
   const window =
-    findWindowByTime({ medicationDoc, expectedTime, nowMs }) ||
+    findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs }) ||
     getActiveDoseWindow({ medicationDoc, nowMs });
   if (!window) {
     throw new Error("No matching dose window found for this medication.");

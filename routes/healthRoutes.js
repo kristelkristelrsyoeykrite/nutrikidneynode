@@ -796,7 +796,17 @@ router.post("/medications/mark-taken", async (req, res) => {
   }));
 
   try {
-    const { userId, uid, profileUserId, childProfileId, medicationId, time } =
+    const {
+      userId,
+      uid,
+      profileUserId,
+      childProfileId,
+      medicationId,
+      time,
+      expectedDate,
+      date,
+      day,
+    } =
       req.body || {};
 
     const medicationUserId = medicationTargetId({
@@ -832,6 +842,7 @@ router.post("/medications/mark-taken", async (req, res) => {
           medicationId,
           medicationDoc: medication,
           expectedTime: time,
+          expectedDate: expectedDate || date || day,
         })
       : await markActiveWindowTaken({
           userId: logUserId,
@@ -881,7 +892,17 @@ router.post("/medications/mark-untaken", async (req, res) => {
   }));
 
   try {
-    const { userId, uid, profileUserId, childProfileId, medicationId, time } =
+    const {
+      userId,
+      uid,
+      profileUserId,
+      childProfileId,
+      medicationId,
+      time,
+      expectedDate,
+      date,
+      day,
+    } =
       req.body || {};
 
     const medicationUserId = medicationTargetId({
@@ -917,6 +938,7 @@ router.post("/medications/mark-untaken", async (req, res) => {
           medicationId,
           medicationDoc: medication,
           expectedTime: time,
+          expectedDate: expectedDate || date || day,
         })
       : await undoActiveWindowTaken({
           userId: logUserId,
