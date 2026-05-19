@@ -133,6 +133,8 @@ function scheduleKind(normalized) {
     return "interval";
   }
 
+  if (normalized.scheduledTimes.length > 0) return "fixed_times";
+
   if (
     scheduleType === "once_daily" ||
     scheduleType === "once daily" ||
@@ -151,7 +153,6 @@ function scheduleKind(normalized) {
     return "frequency";
   }
 
-  if (normalized.scheduledTimes.length > 0) return "fixed_times";
   if (normalized.timesPerDay && normalized.timesPerDay > 1) return "frequency";
   return "once";
 }
@@ -355,7 +356,7 @@ async function getWindowLog({ userId, medicationId, window }) {
 async function resolveDoseWindowStatus({ userId, medicationId, window, nowMs = Date.now() }) {
   const log = await getWindowLog({ userId, medicationId, window });
   if (log) return { status: "taken", log };
-  if (nowMs >= window.startMs + MISSED_NOTIFICATION_DELAY_MS) return { status: "missed", log: null };
+  if (nowMs >= window.endMs) return { status: "missed", log: null };
   if (nowMs >= window.startMs) return { status: "due", log: null };
   return { status: "upcoming", log: null };
 }
@@ -363,6 +364,7 @@ async function resolveDoseWindowStatus({ userId, medicationId, window, nowMs = D
 async function resolveMedicationDoseStatus({ userId, medicationId, medicationDoc, nowMs = Date.now() }) {
   const activeWindow = getActiveDoseWindow({ medicationDoc, nowMs });
   const todayWindows = getTodayDoseWindows({ medicationDoc, nowMs });
+  const today = todayDateKey(nowMs);
   const takenTimesToday = [];
   let missedCountToday = 0;
   let dueNow = 0;
@@ -370,8 +372,9 @@ async function resolveMedicationDoseStatus({ userId, medicationId, medicationDoc
   const resolvedWindows = [];
   for (const window of todayWindows) {
     const resolved = await resolveDoseWindowStatus({ userId, medicationId, window, nowMs });
-    if (resolved.status === "taken") takenTimesToday.push(window.expectedTime);
-    if (resolved.status === "missed") missedCountToday += 1;
+    const isExpectedToday = window.expectedDate === today;
+    if (isExpectedToday && resolved.status === "taken") takenTimesToday.push(window.expectedTime);
+    if (isExpectedToday && resolved.status === "missed") missedCountToday += 1;
     if (activeWindow?.id === window.id && resolved.status === "due") dueNow = 1;
     resolvedWindows.push(serializeWindow(window, resolved.status));
   }
@@ -395,7 +398,7 @@ async function resolveMedicationDoseStatus({ userId, medicationId, medicationDoc
   );
 
   return {
-    times: scheduleClocksForDate({ medicationDoc, dateKey: todayDateKey(nowMs) }).map((clock) => clock.text),
+    times: scheduleClocksForDate({ medicationDoc, dateKey: today }).map((clock) => clock.text),
     takenTimesToday,
     nextDoseTime: nextUpcoming?.expectedTime || null,
     missedCountToday,
@@ -551,7 +554,7 @@ async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTi
     expectedTime: window.expectedTime,
   });
   await db.collection("medicationIntakeLogs").doc(docId).delete();
-  const status = nowMs >= window.startMs + MISSED_NOTIFICATION_DELAY_MS ? "missed" : "due";
+  const status = nowMs >= window.endMs ? "missed" : "due";
   return { docId, window, status };
 }
 

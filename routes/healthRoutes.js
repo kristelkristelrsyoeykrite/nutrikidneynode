@@ -172,12 +172,11 @@ async function resolveMissedMedicationArtifacts({
   );
 
   const matchesDose = (data = {}) => {
-    const sameUser = String(data.userId || "") === String(profileUserId);
     const sameMedication = String(data.medicationId || "") === String(medicationId);
     const sameDay = !data.day || String(data.day) === String(date);
     const scheduledTime = normalizeClockTime(data.scheduledTime || data.time);
     const sameTime = timeSet.size === 0 || timeSet.has(scheduledTime);
-    return sameUser && sameMedication && sameDay && sameTime;
+    return sameMedication && sameDay && sameTime;
   };
 
   for (const collectionName of ["notifications", "upcomingReminders"]) {
@@ -233,12 +232,11 @@ async function reopenMissedMedicationArtifacts({
   );
 
   const matchesDose = (data = {}) => {
-    const sameUser = String(data.userId || "") === String(profileUserId);
     const sameMedication = String(data.medicationId || "") === String(medicationId);
     const sameDay = !data.day || String(data.day) === String(date);
     const scheduledTime = normalizeClockTime(data.scheduledTime || data.time);
     const sameTime = timeSet.size === 0 || timeSet.has(scheduledTime);
-    return sameUser && sameMedication && sameDay && sameTime;
+    return sameMedication && sameDay && sameTime;
   };
 
   const snapshot = await db
@@ -1015,6 +1013,7 @@ router.post("/missed-medication-reminders", async (req, res) => {
 
     const remindersByDose = new Map();
     const staleBatch = db.batch();
+    const medicationLogUserIdsById = new Map();
     let staleWrites = 0;
     const nowMs = Date.now();
     for (const doc of snapshot.docs) {
@@ -1022,14 +1021,35 @@ router.post("/missed-medication-reminders", async (req, res) => {
       const scheduledTime = normalizeClockTime(data.scheduledTime || data.time);
       const day = String(data.day || data.date || "").trim();
       if (data.medicationId && scheduledTime && day) {
-        const logId = doseRecordId({
-          userId: targetProfileUserId,
-          medicationId: data.medicationId,
-          expectedDate: day,
-          expectedTime: scheduledTime,
-        });
-        const logSnap = await db.collection("medicationIntakeLogs").doc(logId).get();
-        if (logSnap.exists) {
+        const medicationId = String(data.medicationId);
+        if (!medicationLogUserIdsById.has(medicationId)) {
+          const logUserIds = new Set(
+            [
+              targetProfileUserId,
+              data.userId,
+            ].map((value) => String(value || "").trim()).filter(Boolean),
+          );
+          const medicationSnap = await db.collection("medications").doc(medicationId).get();
+          if (medicationSnap.exists) {
+            const medication = decryptHealthDocument(medicationSnap.data() || {});
+            medicationOwnerIds(medication).forEach((ownerId) => logUserIds.add(ownerId));
+            logUserIds.add(medicationDoseLogOwnerId(medication, targetProfileUserId));
+          }
+          medicationLogUserIdsById.set(medicationId, Array.from(logUserIds));
+        }
+
+        const logIds = medicationLogUserIdsById.get(medicationId).map((logUserId) =>
+          doseRecordId({
+            userId: logUserId,
+            medicationId,
+            expectedDate: day,
+            expectedTime: scheduledTime,
+          }),
+        );
+        const logSnaps = await Promise.all(
+          logIds.map((logId) => db.collection("medicationIntakeLogs").doc(logId).get()),
+        );
+        if (logSnaps.some((logSnap) => logSnap.exists)) {
           staleBatch.set(
             doc.ref,
             {
@@ -1045,8 +1065,11 @@ router.post("/missed-medication-reminders", async (req, res) => {
         }
       }
 
+      const windowEndMs = timestampMillis(data.windowEndAt);
       const scheduledMs = timestampMillis(data.windowStartAt || data.dueTime);
-      if (scheduledMs && nowMs < scheduledMs + MISSED_NOTIFICATION_DELAY_MS) {
+      const missedEligibleMs =
+        windowEndMs || (scheduledMs ? scheduledMs + MISSED_NOTIFICATION_DELAY_MS : 0);
+      if (missedEligibleMs && nowMs < missedEligibleMs) {
         continue;
       }
 
