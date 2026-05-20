@@ -525,6 +525,72 @@ async function savePasswordSecret(uid, password) {
   );
 }
 
+async function verifyFirebasePasswordWithRest(email, password) {
+  const apiKey = process.env.FIREBASE_WEB_API_KEY;
+  if (!apiKey) {
+    const error = new Error(
+      "Firebase password verification is not configured",
+    );
+    error.code = "app/firebase-password-verification-not-configured";
+    throw error;
+  }
+
+  const response = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        returnSecureToken: false,
+      }),
+    },
+  );
+
+  if (response.ok) return true;
+
+  const payload = await response.json().catch(() => ({}));
+  const message = payload?.error?.message || "INVALID_PASSWORD";
+  if (
+    message === "INVALID_LOGIN_CREDENTIALS" ||
+    message === "INVALID_PASSWORD" ||
+    message === "EMAIL_NOT_FOUND"
+  ) {
+    return false;
+  }
+
+  const error = new Error(message);
+  error.code = "app/firebase-password-verification-failed";
+  throw error;
+}
+
+async function verifyPasswordForSensitiveAction(uid, password, {
+  authUser = null,
+  profile = {},
+} = {}) {
+  const userSecret = await db.collection("userSecrets").doc(uid).get();
+  if (userSecret.exists) {
+    const { passwordSalt, passwordHash } = userSecret.data() || {};
+    return Boolean(
+      passwordSalt &&
+        passwordHash &&
+        verifyPassword(password, passwordSalt, passwordHash),
+    );
+  }
+
+  const email = String(authUser?.email || profile.email || "").trim();
+  if (!email) return false;
+
+  const verified = await verifyFirebasePasswordWithRest(email, password);
+  if (verified) {
+    await savePasswordSecret(uid, password);
+  }
+  return verified;
+}
+
 async function commitBatchWhenNeeded(batchState, force = false) {
   if (!force && batchState.count < 400) return batchState;
   if (batchState.count > 0) {
@@ -3510,9 +3576,9 @@ app.post("/api/account/delete", accountDeletionLimiter, async (req, res) => {
     }
 
     const userRef = db.collection("users").doc(userId);
-    const [userDoc, userSecret] = await Promise.all([
+    const [userDoc, authUser] = await Promise.all([
       userRef.get(),
-      db.collection("userSecrets").doc(userId).get(),
+      auth.getUser(userId).catch(() => null),
     ]);
 
     if (!userDoc.exists) {
@@ -3531,19 +3597,12 @@ app.post("/api/account/delete", accountDeletionLimiter, async (req, res) => {
       });
     }
 
-    if (!userSecret.exists) {
-      return res.status(401).json({
-        success: false,
-        error: "Current password could not be verified",
-      });
-    }
-
-    const { passwordSalt, passwordHash } = userSecret.data() || {};
-    if (
-      !passwordSalt ||
-      !passwordHash ||
-      !verifyPassword(password, passwordSalt, passwordHash)
-    ) {
+    const passwordVerified = await verifyPasswordForSensitiveAction(
+      userId,
+      password,
+      { authUser, profile },
+    );
+    if (!passwordVerified) {
       return res.status(401).json({
         success: false,
         error: "Current password is incorrect",
