@@ -15,9 +15,11 @@ const router = express.Router();
 
 const mfaSetupLimiter = createRateLimiter({
   windowMs: 10 * 60 * 1000,
-  max: 8,
+  max: 30,
   keyPrefix: "mfa-setup",
   keyGenerator: (req) => identityKey(req, ["uid", "email"]),
+  message:
+    "Too many authenticator setup requests. Please wait a few minutes before generating another code.",
 });
 
 const mfaVerifyLimiter = createRateLimiter({
