@@ -140,7 +140,14 @@ function calculateCalorieTarget(patientData = {}) {
 }
 
 function calculateSodiumTarget(patientData = {}) {
-  const ckdType = normalizeText(patientData.CKDType ?? patientData.ckd_type ?? patientData.ckdType);
+  const ckdType = normalizeText(
+    patientData.CKDType ??
+      patientData.ckd_type ??
+      patientData.ckdType ??
+      patientData.kidneyDiseaseType ??
+      patientData.kidney_disease_type ??
+      patientData.kidneyType,
+  );
   const stage = normalizeCkdStage(patientData.CKDStage ?? patientData.ckd_stage ?? patientData.ckdStage);
 
   if (ckdType === "ckd dkd" || ckdType === "dkd") return { label: "<3000 mg/day", limit_mg: 3000 };

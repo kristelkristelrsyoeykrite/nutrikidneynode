@@ -210,6 +210,8 @@ function registerProfileRoutes(router, deps) {
         dry_weight_kg,
         ckdStage,
         ckd_stage,
+        ckdType,
+        ckd_type,
         kidneyDiseaseType,
         dateOfDiagnosis,
         onDialysis,
@@ -300,6 +302,7 @@ function registerProfileRoutes(router, deps) {
       const weightValue = weight_kg ?? weight;
       const dryWeightValue = dryWeight ?? dry_weight_kg;
       const ckdStageValue = ckdStage ?? ckd_stage;
+      const ckdTypeValue = ckdType ?? ckd_type ?? kidneyDiseaseType;
       const dietPatternValue = dietPattern ?? diet_pattern;
       const processedFoodValue = processedFoodIntake ?? processed_food_intake;
       const mealPatternValue = mealPattern ?? meal_pattern;
@@ -388,6 +391,8 @@ function registerProfileRoutes(router, deps) {
       const medicalProfilePayload = cleanObject({
         userId: profileUserId,
         kidneyDiseaseType,
+        ckdType: ckdTypeValue,
+        ckd_type: ckdTypeValue,
         ckdStage: ckdStageValue,
         ckd_stage: ckdStageValue,
         dateOfDiagnosis,
@@ -601,7 +606,11 @@ function registerProfileRoutes(router, deps) {
       const appetite = step3?.appetite ?? step3?.appetiteStatus ?? step2?.appetite;
       const bmiStatus = step1?.bmi_status ?? step1?.bmiStatus;
       const muacStatus = step1?.muac_status ?? step1?.muacStatus;
-      const ckdType = step1?.ckd_type ?? step1?.ckdType;
+      const ckdType =
+        step1?.ckd_type ??
+        step1?.ckdType ??
+        step1?.kidneyDiseaseType ??
+        step1?.kidneyType;
       const proteinCategory = step3?.protein_category ?? step3?.proteinCategory;
       const hasDiabetes = step1?.has_diabetes ?? step1?.hasDiabetes ?? step2?.has_diabetes ?? step2?.hasDiabetes;
       const hasHighProteinRequirement =
@@ -950,6 +959,7 @@ function registerProfileRoutes(router, deps) {
         bmi,
         ckd_stage: step1?.ckdStage,
         ckd_type: ckdType,
+        kidneyDiseaseType: step1?.kidneyDiseaseType ?? step1?.kidneyType,
         protein_category: proteinCategory,
         has_diabetes: hasDiabetes,
         has_high_protein_requirement: hasHighProteinRequirement,

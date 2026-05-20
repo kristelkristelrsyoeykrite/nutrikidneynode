@@ -2159,6 +2159,8 @@ async function recalculateNutritionArtifacts(userId) {
     bmi: anthropometrics.bmi ?? user.bmi,
     ckd_stage: medicalProfile?.ckdStage ?? medicalProfile?.ckd_stage,
     ckd_type: medicalProfile?.ckdType ?? medicalProfile?.ckd_type,
+    kidneyDiseaseType:
+      medicalProfile?.kidneyDiseaseType ?? medicalProfile?.kidney_disease_type,
     protein_category:
       medicalProfile?.proteinCategory ?? medicalProfile?.protein_category,
     has_diabetes: medicalProfile?.hasDiabetes ?? medicalProfile?.has_diabetes,
