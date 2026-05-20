@@ -292,7 +292,7 @@ async function onceDailyMedicationResetsByDateTest() {
   );
   assert(lastNight, "expected last night's once-daily window");
   assert(tonight, "expected tonight's once-daily window");
-  assert.equal(lastNight.endAt.toISOString(), "2026-05-19T15:55:00.000Z");
+  assert.equal(lastNight.endAt.toISOString(), "2026-05-19T16:00:00.000Z");
   assert.equal(tonight.startAt.toISOString(), "2026-05-20T15:50:00.000Z");
 
   mockServerNow = new Date(atManila("2026-05-19", "23:52"));
@@ -329,6 +329,27 @@ async function onceDailyMedicationResetsByDateTest() {
     nowMs: atManila("2026-05-20", "09:40"),
   });
   assert.deepEqual(summary.takenTimesToday, []);
+
+  const earlyMorningMedicationDoc = {
+    isActive: true,
+    startDate: "2026-05-20",
+    endDate: "2026-05-21",
+    frequency_type: "times_per_day",
+    frequency_value: 1,
+    frequency: "Once daily",
+    start_time: "00:33",
+    scheduled_times: ["00:33"],
+  };
+  const earlyMorningTaken = await dose.markWindowTaken({
+    userId: "user_once_same_day",
+    medicationId: "med_once_same_day",
+    medicationDoc: earlyMorningMedicationDoc,
+    expectedDate: "2026-05-20",
+    expectedTime: "00:33",
+    nowMs: atManila("2026-05-20", "09:40"),
+  });
+  assert.equal(earlyMorningTaken.status, "taken");
+  assert.equal(earlyMorningTaken.late, false);
 }
 
 (async () => {

@@ -73,6 +73,12 @@ function dateForManilaClock({ dateKey, clock }) {
   return new Date(dayStartMs + clockToMinutes(clock) * 60 * 1000);
 }
 
+function manilaDateKeyToUtcEndMs(dateKey) {
+  const startMs = manilaDateKeyToUtcStartMs(dateKey);
+  if (!Number.isFinite(startMs)) return null;
+  return startMs + DAY_MS;
+}
+
 function normalizeMedicationSchedule(medication) {
   const raw = decryptHealthDocument(medication || {});
   const scheduleType = String(raw.scheduleType || raw.schedule_type || "").trim();
@@ -258,7 +264,7 @@ function windowsForDateRange({ medicationDoc, startDateKey, days }) {
       }))
     : uniqueStarts.map((start) => ({
         start,
-        endMs: start.startMs + MISSED_NOTIFICATION_DELAY_MS,
+        endMs: manilaDateKeyToUtcEndMs(start.startDateKey) || start.startMs + DAY_MS,
       }));
 
   return startsWithEnds.map(({ start, endMs }) => {
