@@ -58,6 +58,19 @@ function displayNameFromProfile(profile = {}) {
   return "there";
 }
 
+function formatStandardClockTime(time) {
+  const match = String(time || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return String(time || "").trim();
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return String(time || "").trim();
+  }
+  const hour12 = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+  const period = hour >= 12 ? "PM" : "AM";
+  return `${hour12}:${String(minute).padStart(2, "0")} ${period}`;
+}
+
 async function deleteSnapshotInBatches(snapshot) {
   if (snapshot.empty) return 0;
   let deleted = 0;
@@ -700,12 +713,13 @@ async function checkMissedMedicationReminders() {
             const notificationRef = db.collection("notifications").doc(notificationId);
             const notificationSnap = await notificationRef.get();
             if (notificationSnap.exists) continue;
+            const expectedTimeLabel = formatStandardClockTime(window.expectedTime);
 
             const missedNotification = {
               userId: targetUserId,
               type: "missed_medication_reminder",
               title: `Missed medication for ${childName}`,
-              body: `You missed your ${name} reminder at ${window.expectedTime}. Please take your medication if possible.`,
+              body: `You missed your ${name} reminder at ${expectedTimeLabel}. Please take your medication if possible.`,
               timestamp: admin.firestore.FieldValue.serverTimestamp(),
               isMissed: true,
               priority: "high",
@@ -741,7 +755,7 @@ async function checkMissedMedicationReminders() {
               {
                 type: "missed_medication_reminder",
                 title: `Missed medication for ${childName}`,
-                body: `You missed your ${name} reminder at ${window.expectedTime}. Please take your medication if possible.`,
+                body: `You missed your ${name} reminder at ${expectedTimeLabel}. Please take your medication if possible.`,
               },
               { extraRecipientUserIds: targetUserId === userId ? [] : [userId] },
             );
