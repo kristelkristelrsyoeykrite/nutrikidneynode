@@ -329,6 +329,11 @@ async function onceDailyMedicationResetsByDateTest() {
     nowMs: atManila("2026-05-20", "09:40"),
   });
   assert.deepEqual(summary.takenTimesToday, []);
+  assert.deepEqual(
+    summary.doseWindowsToday.map((window) => window.id),
+    ["2026-05-20_23:50"],
+  );
+  assert.equal(summary.doseWindowsToday[0].status, "upcoming");
 
   const earlyMorningMedicationDoc = {
     isActive: true,

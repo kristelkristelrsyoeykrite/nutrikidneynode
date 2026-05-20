@@ -328,9 +328,12 @@ function findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs = D
 
 function getTodayDoseWindows({ medicationDoc, nowMs = Date.now() }) {
   const today = todayDateKey(nowMs);
+  const normalized = normalizeMedicationSchedule(medicationDoc);
+  const includeHandoffWindows = usesDoseWindowHandoff(normalized);
   return doseWindowsAround({ medicationDoc, nowMs }).filter(
     (window) =>
-      window.expectedDate === today || dateKeyFromUtcMs(window.endMs) === today,
+      window.expectedDate === today ||
+      (includeHandoffWindows && dateKeyFromUtcMs(window.endMs) === today),
   );
 }
 
