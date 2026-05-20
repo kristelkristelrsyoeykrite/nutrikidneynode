@@ -2,6 +2,9 @@ const {
   PROFESSIONAL_REMINDER,
   generateProfileTargets,
 } = require("./profileTargetGenerator");
+const {
+  generateSterileDietDecisionSupport,
+} = require("./sterileDietDecisionSupport");
 
 function normalizeText(value) {
   return String(value || "").trim().toLowerCase();
@@ -114,6 +117,31 @@ function normalizePatientData(profile = {}) {
     hasHypertension:
       profile.hasHypertension ?? profile.has_hypertension ?? profile.hypertension,
     hasEdema: profile.hasEdema ?? profile.has_edema ?? profile.edema,
+    isPostTransplant:
+      profile.isPostTransplant ??
+      profile.is_post_transplant ??
+      profile.postTransplant ??
+      profile.post_transplant,
+    requiresSterileDiet:
+      profile.requiresSterileDiet ??
+      profile.requires_sterile_diet ??
+      profile.sterileDietMode ??
+      profile.sterile_diet_mode,
+    sterileDietWeeks:
+      profile.sterileDietWeeks ??
+      profile.sterile_diet_weeks ??
+      profile.weeksPostTransplant ??
+      profile.weeks_post_transplant ??
+      profile.postTransplantWeeks ??
+      profile.post_transplant_weeks,
+    isPostSurgery:
+      profile.isPostSurgery ??
+      profile.is_post_surgery ??
+      profile.postSurgery ??
+      profile.post_surgery,
+    hasCalciumPhosphorusImbalance:
+      profile.hasCalciumPhosphorusImbalance ??
+      profile.has_calcium_phosphorus_imbalance,
     isDialysis:
       profile.isDialysis ??
       profile.is_dialysis ??
@@ -300,8 +328,21 @@ function generatePhase2DecisionSupport(profile = {}, labs = {}, intake = null) {
   const labData = normalizeLabData(labs);
   const foodLogData = intake?.foodLogs ?? intake?.food_logs ?? intake?.logs ?? intake ?? [];
   const recommendation = estimatedTargetsFor(patientData);
-  const alerts = checkNutritionAlerts(patientData, labData);
-  const educationMessages = analyzeFoodLog(foodLogData, labData, patientData);
+  const sterilePatientData = {
+    ...patientData,
+    hasCalciumPhosphorusImbalance:
+      patientData.hasCalciumPhosphorusImbalance ??
+      (labData.phosphorusStatus === "High" && labData.calciumStatus !== "Normal"),
+  };
+  const sterileDiet = generateSterileDietDecisionSupport(sterilePatientData);
+  const alerts = uniqueMessages([
+    ...checkNutritionAlerts(patientData, labData),
+    ...sterileDiet.sterileAlerts,
+  ]);
+  const educationMessages = uniqueMessages([
+    ...analyzeFoodLog(foodLogData, labData, patientData),
+    ...sterileDiet.sterileEducation,
+  ]);
   const finalMessages = uniqueMessages([...alerts, ...educationMessages]);
   const monitoring = getMonitoringMode(patientData.CKDStage);
 
@@ -314,6 +355,11 @@ function generatePhase2DecisionSupport(profile = {}, labs = {}, intake = null) {
     estimated_nutritional_targets: recommendation,
     nutrition_alerts: alerts,
     foodlogging_educational_guidance: educationMessages,
+    sterile_diet_mode: sterileDiet.sterileDietMode,
+    sterile_diet_nutrition_targets: sterileDiet.sterileTargets,
+    sterile_diet_alerts: sterileDiet.sterileAlerts,
+    sterile_diet_education: sterileDiet.sterileEducation,
+    sterile_diet_summary_text: sterileDiet.summaryText,
     professional_reminder: PROFESSIONAL_REMINDER,
     insights: finalMessages,
     recommendations: finalMessages,

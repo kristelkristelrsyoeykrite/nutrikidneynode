@@ -408,6 +408,14 @@ router.post("/phase2-decision-support", async (req, res) => {
       fluid_limit_ml: req.body.fluid_limit_ml,
       has_hypertension: req.body.has_hypertension,
       has_edema: req.body.has_edema,
+      is_post_transplant: req.body.is_post_transplant ?? req.body.isPostTransplant,
+      requires_sterile_diet:
+        req.body.requires_sterile_diet ?? req.body.requiresSterileDiet,
+      sterile_diet_weeks: req.body.sterile_diet_weeks ?? req.body.sterileDietWeeks,
+      is_post_surgery: req.body.is_post_surgery ?? req.body.isPostSurgery,
+      has_calcium_phosphorus_imbalance:
+        req.body.has_calcium_phosphorus_imbalance ??
+        req.body.hasCalciumPhosphorusImbalance,
     };
     const labs = req.body.labs || {
       albumin: req.body.albumin,
@@ -2172,6 +2180,24 @@ async function recalculateNutritionArtifacts(userId) {
       medicalProfile?.fluidRestrictionStatus,
     fluid_limit_ml:
       medicalProfile?.fluid_limit_ml ?? medicalProfile?.fluidLimitMl,
+    is_post_transplant:
+      medicalProfile?.is_post_transplant ??
+      medicalProfile?.isPostTransplant ??
+      medicalProfile?.post_transplant ??
+      medicalProfile?.postTransplant,
+    requires_sterile_diet:
+      medicalProfile?.requires_sterile_diet ??
+      medicalProfile?.requiresSterileDiet,
+    sterile_diet_weeks:
+      medicalProfile?.sterile_diet_weeks ??
+      medicalProfile?.sterileDietWeeks ??
+      medicalProfile?.weeks_post_transplant ??
+      medicalProfile?.weeksPostTransplant,
+    is_post_surgery:
+      medicalProfile?.is_post_surgery ?? medicalProfile?.isPostSurgery,
+    has_calcium_phosphorus_imbalance:
+      medicalProfile?.has_calcium_phosphorus_imbalance ??
+      medicalProfile?.hasCalciumPhosphorusImbalance,
   };
 
   const baselineTargets = generateProfileTargets(profile);
@@ -2222,6 +2248,12 @@ async function recalculateNutritionArtifacts(userId) {
       has_hypertension:
         medicalProfile?.has_hypertension ?? medicalProfile?.hasHypertension,
       has_edema: medicalProfile?.has_edema ?? medicalProfile?.hasEdema,
+      is_post_transplant: profile.is_post_transplant,
+      requires_sterile_diet: profile.requires_sterile_diet,
+      sterile_diet_weeks: profile.sterile_diet_weeks,
+      is_post_surgery: profile.is_post_surgery,
+      has_calcium_phosphorus_imbalance:
+        profile.has_calcium_phosphorus_imbalance,
       fluid_restriction_status: profile.fluid_restriction_status,
       fluid_limit_ml: profile.fluid_limit_ml,
     },

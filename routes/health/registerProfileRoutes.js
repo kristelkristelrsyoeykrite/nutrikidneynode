@@ -230,6 +230,16 @@ function registerProfileRoutes(router, deps) {
         fluid_limit_ml,
         hasHypertension,
         has_hypertension,
+        isPostTransplant,
+        is_post_transplant,
+        requiresSterileDiet,
+        requires_sterile_diet,
+        sterileDietWeeks,
+        sterile_diet_weeks,
+        isPostSurgery,
+        is_post_surgery,
+        hasCalciumPhosphorusImbalance,
+        has_calcium_phosphorus_imbalance,
         allowDataExport,
         recalculateNutritionTargets,
         caregiverSettings,
@@ -300,6 +310,17 @@ function registerProfileRoutes(router, deps) {
         fluidRestrictionStatus ?? fluid_restriction_status;
       const fluidLimitValue = fluidLimitMl ?? fluid_limit_ml;
       const hypertensionValue = hasHypertension ?? has_hypertension;
+      const postTransplantValue = isPostTransplant ?? is_post_transplant;
+      const sterileDietInput = requiresSterileDiet ?? requires_sterile_diet;
+      const sterileDietWeeksValue = sterileDietWeeks ?? sterile_diet_weeks;
+      const postSurgeryValue = isPostSurgery ?? is_post_surgery;
+      const calciumPhosphorusImbalanceValue =
+        hasCalciumPhosphorusImbalance ?? has_calcium_phosphorus_imbalance;
+      const sterileDietValue =
+        sterileDietInput !== undefined && sterileDietInput !== null
+          ? sterileDietInput
+          : postTransplantValue === true ||
+            String(postTransplantValue || "").trim().toLowerCase() === "yes";
       const allergiesValue = normalizeAllergiesInput(req.body.allergies);
       const isLinkedAdolescent =
         isAdolescentAccountRole(roleValue) &&
@@ -389,6 +410,16 @@ function registerProfileRoutes(router, deps) {
           fluidLimitValue === undefined ? undefined : Number(fluidLimitValue),
         hasHypertension: hypertensionValue,
         has_hypertension: hypertensionValue,
+        isPostTransplant: postTransplantValue,
+        is_post_transplant: postTransplantValue,
+        requiresSterileDiet: sterileDietValue,
+        requires_sterile_diet: sterileDietValue,
+        sterileDietWeeks: sterileDietWeeksValue,
+        sterile_diet_weeks: sterileDietWeeksValue,
+        isPostSurgery: postSurgeryValue,
+        is_post_surgery: postSurgeryValue,
+        hasCalciumPhosphorusImbalance: calciumPhosphorusImbalanceValue,
+        has_calcium_phosphorus_imbalance: calciumPhosphorusImbalanceValue,
         allergies: allergiesValue,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -545,6 +576,28 @@ function registerProfileRoutes(router, deps) {
       const hasHypertension =
         step3?.has_hypertension ?? step3?.hasHypertension;
       const hasEdema = step3?.has_edema ?? step3?.hasEdema ?? step2?.has_edema ?? step2?.hasEdema;
+      const isPostTransplant =
+        step1?.is_post_transplant ??
+        step1?.isPostTransplant ??
+        step1?.post_transplant ??
+        step1?.postTransplant;
+      const requiresSterileDietInput =
+        step1?.requires_sterile_diet ?? step1?.requiresSterileDiet;
+      const requiresSterileDiet =
+        requiresSterileDietInput !== undefined && requiresSterileDietInput !== null
+          ? requiresSterileDietInput
+          : isPostTransplant === true ||
+            String(isPostTransplant || "").trim().toLowerCase() === "yes";
+      const sterileDietWeeks =
+        step1?.sterile_diet_weeks ??
+        step1?.sterileDietWeeks ??
+        step1?.weeks_post_transplant ??
+        step1?.weeksPostTransplant;
+      const isPostSurgery =
+        step1?.is_post_surgery ?? step1?.isPostSurgery ?? requiresSterileDiet;
+      const hasCalciumPhosphorusImbalance =
+        step1?.has_calcium_phosphorus_imbalance ??
+        step1?.hasCalciumPhosphorusImbalance;
       const appetite = step3?.appetite ?? step3?.appetiteStatus ?? step2?.appetite;
       const bmiStatus = step1?.bmi_status ?? step1?.bmiStatus;
       const muacStatus = step1?.muac_status ?? step1?.muacStatus;
@@ -707,6 +760,24 @@ function registerProfileRoutes(router, deps) {
       if (hasEdema) {
         medicalProfilePayload.hasEdema = hasEdema;
         medicalProfilePayload.has_edema = hasEdema;
+      }
+      if (isPostTransplant) {
+        medicalProfilePayload.isPostTransplant = isPostTransplant;
+        medicalProfilePayload.is_post_transplant = isPostTransplant;
+      }
+      medicalProfilePayload.requiresSterileDiet = requiresSterileDiet;
+      medicalProfilePayload.requires_sterile_diet = requiresSterileDiet;
+      if (sterileDietWeeks !== undefined && sterileDietWeeks !== null) {
+        medicalProfilePayload.sterileDietWeeks = Number(sterileDietWeeks);
+        medicalProfilePayload.sterile_diet_weeks = Number(sterileDietWeeks);
+      }
+      medicalProfilePayload.isPostSurgery = isPostSurgery;
+      medicalProfilePayload.is_post_surgery = isPostSurgery;
+      if (hasCalciumPhosphorusImbalance !== undefined) {
+        medicalProfilePayload.hasCalciumPhosphorusImbalance =
+          hasCalciumPhosphorusImbalance;
+        medicalProfilePayload.has_calcium_phosphorus_imbalance =
+          hasCalciumPhosphorusImbalance;
       }
       if (appetite) {
         medicalProfilePayload.appetite = appetite;
@@ -891,6 +962,11 @@ function registerProfileRoutes(router, deps) {
         physical_activity_level: physicalActivityLevel,
         fluid_restriction_status: fluidRestrictionStatus,
         fluid_limit_ml: fluidLimitMl,
+        is_post_transplant: isPostTransplant,
+        requires_sterile_diet: requiresSterileDiet,
+        sterile_diet_weeks: sterileDietWeeks,
+        is_post_surgery: isPostSurgery,
+        has_calcium_phosphorus_imbalance: hasCalciumPhosphorusImbalance,
       });
 
       const nutritionTargetDoc = await db.collection("nutritionTargets").add({
@@ -926,6 +1002,11 @@ function registerProfileRoutes(router, deps) {
           processed_food_intake: processedFoodIntake,
           has_hypertension: hasHypertension,
           has_edema: hasEdema,
+          is_post_transplant: isPostTransplant,
+          requires_sterile_diet: requiresSterileDiet,
+          sterile_diet_weeks: sterileDietWeeks,
+          is_post_surgery: isPostSurgery,
+          has_calcium_phosphorus_imbalance: hasCalciumPhosphorusImbalance,
           fluid_restriction_status: fluidRestrictionStatus,
           fluid_limit_ml: fluidLimitMl,
         },

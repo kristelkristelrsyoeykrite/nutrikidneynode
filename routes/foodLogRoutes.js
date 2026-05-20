@@ -347,6 +347,12 @@ function phase2ProfileFromChildContext(childContext = {}) {
     fluid_restriction_status: childContext.fluid_restriction_status,
     has_hypertension: childContext.has_hypertension,
     has_edema: childContext.has_edema,
+    is_post_transplant: childContext.is_post_transplant,
+    requires_sterile_diet: childContext.requires_sterile_diet,
+    sterile_diet_weeks: childContext.sterile_diet_weeks,
+    is_post_surgery: childContext.is_post_surgery,
+    has_calcium_phosphorus_imbalance:
+      childContext.has_calcium_phosphorus_imbalance,
   });
 }
 
@@ -509,6 +515,18 @@ async function buildChildContext(userId, requestedChildProfileId) {
           targets.dailyFluidLimitMl,
       )
     : null;
+  const postTransplantStatus =
+    medicalProfile?.isPostTransplant ??
+    medicalProfile?.is_post_transplant ??
+    medicalProfile?.postTransplant ??
+    medicalProfile?.post_transplant;
+  const sterileDietInput =
+    medicalProfile?.requiresSterileDiet ?? medicalProfile?.requires_sterile_diet;
+  const requiresSterileDiet =
+    sterileDietInput !== undefined && sterileDietInput !== null
+      ? sterileDietInput
+      : postTransplantStatus === true ||
+        String(postTransplantStatus || "").trim().toLowerCase() === "yes";
 
   return {
     child_profile_id: childProfileId,
@@ -527,6 +545,18 @@ async function buildChildContext(userId, requestedChildProfileId) {
       medicalProfile?.diet_pattern ||
       "unknown",
     fluid_restriction_status: fluidRestrictionStatus,
+    is_post_transplant: postTransplantStatus,
+    requires_sterile_diet: requiresSterileDiet,
+    sterile_diet_weeks:
+      medicalProfile?.sterileDietWeeks ??
+      medicalProfile?.sterile_diet_weeks ??
+      medicalProfile?.weeksPostTransplant ??
+      medicalProfile?.weeks_post_transplant,
+    is_post_surgery:
+      medicalProfile?.isPostSurgery ?? medicalProfile?.is_post_surgery,
+    has_calcium_phosphorus_imbalance:
+      medicalProfile?.hasCalciumPhosphorusImbalance ??
+      medicalProfile?.has_calcium_phosphorus_imbalance,
     allergies: Array.isArray(medicalProfile?.allergies)
       ? medicalProfile.allergies
       : [],
