@@ -25,10 +25,12 @@ function createRateLimiter({
 
     existing.count += 1;
     if (existing.count > max) {
-      res.set("Retry-After", String(Math.ceil((existing.resetAt - now) / 1000)));
+      const retryAfterSeconds = Math.ceil((existing.resetAt - now) / 1000);
+      res.set("Retry-After", String(retryAfterSeconds));
       return res.status(429).json({
         success: false,
         error: message,
+        retryAfterSeconds,
       });
     }
 

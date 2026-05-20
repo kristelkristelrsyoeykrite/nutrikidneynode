@@ -525,6 +525,180 @@ async function savePasswordSecret(uid, password) {
   );
 }
 
+async function commitBatchWhenNeeded(batchState, force = false) {
+  if (!force && batchState.count < 400) return batchState;
+  if (batchState.count > 0) {
+    await batchState.batch.commit();
+  }
+  return {
+    batch: db.batch(),
+    count: 0,
+  };
+}
+
+async function deleteQueryResults(collectionName, fieldName, uid, batchState) {
+  const snapshot = await db.collection(collectionName).where(fieldName, "==", uid).get();
+  for (const doc of snapshot.docs) {
+    batchState.batch.delete(doc.ref);
+    batchState.count += 1;
+    batchState = await commitBatchWhenNeeded(batchState);
+  }
+  return batchState;
+}
+
+async function cleanupDeletionReminderState(uid) {
+  let batchState = {
+    batch: db.batch(),
+    count: 0,
+  };
+  const cleanupCollections = [
+    "notifications",
+    "upcomingReminders",
+    "reminderState",
+  ];
+  const ownerFields = ["userId", "uid", "profileUserId", "childProfileId"];
+
+  for (const collectionName of cleanupCollections) {
+    for (const fieldName of ownerFields) {
+      batchState = await deleteQueryResults(collectionName, fieldName, uid, batchState);
+    }
+  }
+
+  await commitBatchWhenNeeded(batchState, true);
+}
+
+async function deleteAccountCollectionData(uid) {
+  let batchState = {
+    batch: db.batch(),
+    count: 0,
+  };
+  const collections = [
+    "healthProfiles",
+    "foodLogs",
+    "hydrationLogs",
+    "medications",
+    "medicationIntakeLogs",
+    "notifications",
+    "upcomingReminders",
+    "analytics",
+    "analyticsSummaries",
+    "leaderboards",
+    "gamification",
+    "linkedCaregivers",
+    "uploadedImages",
+    "ocrResults",
+    "aiUsage",
+    "dailyIntakeSummaries",
+    "reminderState",
+    "notificationState",
+  ];
+  const ownerFields = [
+    "userId",
+    "uid",
+    "profileUserId",
+    "childProfileId",
+    "ownerUserId",
+    "caregiverUserId",
+    "linkedUserId",
+  ];
+
+  for (const collectionName of collections) {
+    const docRef = db.collection(collectionName).doc(uid);
+    batchState.batch.delete(docRef);
+    batchState.count += 1;
+    batchState = await commitBatchWhenNeeded(batchState);
+
+    for (const fieldName of ownerFields) {
+      batchState = await deleteQueryResults(collectionName, fieldName, uid, batchState);
+    }
+  }
+
+  batchState.batch.delete(db.collection("userSecrets").doc(uid));
+  batchState.batch.delete(db.collection("users").doc(uid));
+  batchState.batch.set(
+    db.collection("accountDeletionRequests").doc(uid),
+    {
+      status: "deleted",
+      permanentlyDeletedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+  batchState.count += 3;
+  await commitBatchWhenNeeded(batchState, true);
+
+  await auth.deleteUser(uid).catch((error) => {
+    if (error.code !== "auth/user-not-found") {
+      throw error;
+    }
+  });
+}
+
+async function unlinkCaregiverRelationshipsForDeletion(uid, profile = {}) {
+  const affectedUsers = await db.collection("users").get();
+  let batchState = {
+    batch: db.batch(),
+    count: 0,
+  };
+  const deletingUserIsCaregiver = isCaregiverRole(profile.role);
+
+  for (const doc of affectedUsers.docs) {
+    if (doc.id === uid) continue;
+    const otherProfile = decryptHealthProfile(doc.data() || {});
+    const update = {};
+    let changed = false;
+
+    if (otherProfile.linkedChildUserId === uid) {
+      update.linkedChildUserId = admin.firestore.FieldValue.delete();
+      update.linkedChildAccount = false;
+      changed = true;
+    }
+    if (otherProfile.caregiverUserId === uid) {
+      update.caregiverUserId = admin.firestore.FieldValue.delete();
+      update.caregiverLinked = false;
+      changed = true;
+    }
+    if (otherProfile.linkedCaregiverUserId === uid) {
+      update.linkedCaregiverUserId = admin.firestore.FieldValue.delete();
+      update.caregiverLinked = false;
+      changed = true;
+    }
+    if (Array.isArray(otherProfile.linkedChildren)) {
+      const linkedChildren = otherProfile.linkedChildren.filter((child) => {
+        const childId = child?.userId || child?.uid || child?.id;
+        return childId !== uid;
+      });
+      if (linkedChildren.length !== otherProfile.linkedChildren.length) {
+        update.linkedChildren = linkedChildren;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      update.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+      if (deletingUserIsCaregiver) {
+        update.latestAccountNotice = {
+          type: "caregiver_deleted",
+          caregiverUserId: uid,
+          message: "A linked caregiver deleted their NutriKidney account.",
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+      } else {
+        update.latestAccountNotice = {
+          type: "adolescent_deleted",
+          adolescentUserId: uid,
+          message: "A linked adolescent account was scheduled for deletion.",
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+      }
+      batchState.batch.set(doc.ref, update, { merge: true });
+      batchState.count += 1;
+      batchState = await commitBatchWhenNeeded(batchState);
+    }
+  }
+
+  await commitBatchWhenNeeded(batchState, true);
+}
+
 ////////////////////// SIGNUP ROUTE //////////////////////
 // This endpoint only validates signup data. Does NOT create user yet.
 // User creation happens only AFTER verification (phone OTP or email link).
@@ -876,6 +1050,15 @@ app.post("/api/user/profile-status", async (req, res) => {
     const profile = userDoc.exists
       ? decryptHealthProfile(userDoc.data() || {})
       : {};
+    if (profile.status === "pending_deletion") {
+      return res.status(200).json({
+        success: true,
+        exists: false,
+        verified: false,
+        pendingDeletion: true,
+        scheduledDeletionAt: profile.scheduledDeletionAt || null,
+      });
+    }
     let verified = isProfileVerified(profile);
 
     // Avoid the slower Auth lookup unless Firestore cannot already answer
@@ -2557,6 +2740,14 @@ app.post("/api/user/login", authAttemptLimiter, async (req, res) => {
     }
 
     const profile = decryptHealthProfile(profileSnap.data() || {});
+    if (profile.status === "pending_deletion") {
+      return res.status(403).json({
+        success: false,
+        error: "This account is scheduled for deletion and can no longer sign in.",
+        pendingDeletion: true,
+        scheduledDeletionAt: profile.scheduledDeletionAt || null,
+      });
+    }
     const securitySettings = normalizeSecuritySettings(profile);
     const isDbVerified =
       profile.status === "verified" || profile.emailVerified === true;
@@ -3263,6 +3454,239 @@ app.post("/api/user/change-password", authAttemptLimiter, async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || "Failed to change password",
+    });
+  }
+});
+
+const accountDeletionLimiter = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 5,
+  keyPrefix: "account-delete",
+  keyGenerator: (req) => identityKey(req, ["userId", "uid"]),
+});
+
+app.post("/api/account/delete", accountDeletionLimiter, async (req, res) => {
+  console.log("ACCOUNT_DELETE received:", {
+    userId: req.body.userId,
+    hasTotpCode: Boolean(req.body.totpCode),
+    hasPassword: Boolean(req.body.password),
+    hasIdToken: Boolean(req.body.idToken),
+  });
+
+  const {
+    userId,
+    password,
+    totpCode,
+    idToken,
+    confirmationText,
+  } = req.body;
+
+  try {
+    if (!userId || !password || !totpCode || !idToken) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID, password, Firebase session, and authenticator code are required",
+      });
+    }
+    if (confirmationText !== "DELETE MY ACCOUNT") {
+      return res.status(400).json({
+        success: false,
+        error: "Final confirmation text is required",
+      });
+    }
+    if (!isValidAuthenticatorCode(totpCode)) {
+      return res.status(400).json({
+        success: false,
+        error: "Enter a valid 6-digit authenticator code",
+      });
+    }
+
+    const decodedToken = await auth.verifyIdToken(idToken, true);
+    if (decodedToken.uid !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: "Verified Firebase session does not match this account",
+      });
+    }
+
+    const userRef = db.collection("users").doc(userId);
+    const [userDoc, userSecret] = await Promise.all([
+      userRef.get(),
+      db.collection("userSecrets").doc(userId).get(),
+    ]);
+
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+      });
+    }
+
+    const profile = decryptHealthProfile(userDoc.data() || {});
+    if (profile.status === "pending_deletion" || profile.deletionRequestedAt) {
+      return res.status(409).json({
+        success: false,
+        error: "Account deletion is already scheduled",
+        scheduledDeletionAt: profile.scheduledDeletionAt || null,
+      });
+    }
+
+    if (!userSecret.exists) {
+      return res.status(401).json({
+        success: false,
+        error: "Current password could not be verified",
+      });
+    }
+
+    const { passwordSalt, passwordHash } = userSecret.data() || {};
+    if (
+      !passwordSalt ||
+      !passwordHash ||
+      !verifyPassword(password, passwordSalt, passwordHash)
+    ) {
+      return res.status(401).json({
+        success: false,
+        error: "Current password is incorrect",
+      });
+    }
+
+    const securitySettings = normalizeSecuritySettings(profile);
+    if (!securitySettings.authenticatorEnabled || !securitySettings.mfaSecret) {
+      return res.status(409).json({
+        success: false,
+        error: "Microsoft Authenticator MFA must be enabled before account deletion",
+      });
+    }
+
+    if (!verifyTotpCode(securitySettings.mfaSecret, totpCode)) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid authenticator code",
+      });
+    }
+
+    const scheduledDeletionDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const scheduledDeletionAt =
+      admin.firestore.Timestamp.fromDate(scheduledDeletionDate);
+
+    await Promise.all([
+      cleanupDeletionReminderState(userId),
+      unlinkCaregiverRelationshipsForDeletion(userId, profile),
+    ]);
+
+    await userRef.set(
+      {
+        status: "pending_deletion",
+        deletionRequestedAt: admin.firestore.FieldValue.serverTimestamp(),
+        scheduledDeletionAt,
+        reminderSettings: {
+          medicationReminders: false,
+          hydrationAlerts: false,
+          mealReminders: {
+            breakfast: false,
+            lunch: false,
+            snack: false,
+            dinner: false,
+          },
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        deviceTokens: {},
+        linkedChildUserId: admin.firestore.FieldValue.delete(),
+        linkedChildAccount: false,
+        caregiverUserId: admin.firestore.FieldValue.delete(),
+        linkedCaregiverUserId: admin.firestore.FieldValue.delete(),
+        linkedChildren: [],
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    await db.collection("accountDeletionRequests").doc(userId).set(
+      {
+        userId,
+        status: "pending_deletion",
+        requestedAt: admin.firestore.FieldValue.serverTimestamp(),
+        scheduledDeletionAt,
+        collectionsToDelete: [
+          "users",
+          "healthProfiles",
+          "foodLogs",
+          "hydrationLogs",
+          "medications",
+          "medicationIntakeLogs",
+          "notifications",
+          "upcomingReminders",
+          "analytics",
+          "leaderboards",
+          "gamification",
+          "linkedCaregivers",
+          "uploadedImages",
+          "ocrResults",
+          "aiUsage",
+          "userSecrets",
+        ],
+      },
+      { merge: true },
+    );
+
+    await auth.revokeRefreshTokens(userId);
+    await auth.updateUser(userId, { disabled: true });
+
+    return res.status(200).json({
+      success: true,
+      message: "Account deletion scheduled",
+      status: "pending_deletion",
+      scheduledDeletionAt: scheduledDeletionDate.toISOString(),
+    });
+  } catch (error) {
+    console.error("ACCOUNT_DELETE ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to schedule account deletion",
+    });
+  }
+});
+
+app.post("/api/account/deletion-jobs/run", async (req, res) => {
+  const providedSecret =
+    req.get("x-account-deletion-job-secret") || req.body.jobSecret;
+  const expectedSecret = process.env.ACCOUNT_DELETION_JOB_SECRET;
+
+  if (!expectedSecret || providedSecret !== expectedSecret) {
+    return res.status(403).json({
+      success: false,
+      error: "Account deletion job is not authorized",
+    });
+  }
+
+  const limit = Math.min(Number(req.body.limit) || 25, 100);
+
+  try {
+    const now = admin.firestore.Timestamp.now();
+    const pendingSnapshot = await db
+      .collection("accountDeletionRequests")
+      .where("status", "==", "pending_deletion")
+      .where("scheduledDeletionAt", "<=", now)
+      .limit(limit)
+      .get();
+
+    const deletedUserIds = [];
+    for (const doc of pendingSnapshot.docs) {
+      const userId = doc.id;
+      await deleteAccountCollectionData(userId);
+      deletedUserIds.push(userId);
+    }
+
+    return res.status(200).json({
+      success: true,
+      deletedCount: deletedUserIds.length,
+      deletedUserIds,
+    });
+  } catch (error) {
+    console.error("ACCOUNT_DELETION_JOB ERROR:", error.code || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to run account deletion job",
     });
   }
 });
