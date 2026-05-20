@@ -157,6 +157,17 @@ function scheduleKind(normalized) {
   return "once";
 }
 
+function usesDoseWindowHandoff(normalized) {
+  const kind = scheduleKind(normalized);
+  if (kind === "interval") return true;
+  if (kind === "frequency") {
+    const count =
+      normalized.timesPerDay || frequencyCountFromText(normalized.frequencyText);
+    return Number(count) > 1;
+  }
+  return kind === "fixed_times" && normalized.scheduledTimes.length > 1;
+}
+
 function scheduleClocksForDate({ medicationDoc, dateKey }) {
   const normalized = normalizeMedicationSchedule(medicationDoc);
   if (!normalized.isActive) return [];
@@ -219,6 +230,8 @@ function uniqueClocks(clocks) {
 }
 
 function windowsForDateRange({ medicationDoc, startDateKey, days }) {
+  const normalized = normalizeMedicationSchedule(medicationDoc);
+  const useDoseWindowHandoff = usesDoseWindowHandoff(normalized);
   const starts = [];
   for (let offset = 0; offset < days; offset += 1) {
     const dateKey = addDaysToDateKey(startDateKey, offset);
@@ -238,10 +251,15 @@ function windowsForDateRange({ medicationDoc, startDateKey, days }) {
     new Map(starts.map((start) => [`${start.startDateKey}_${start.startTime}`, start])).values(),
   ).sort((a, b) => a.startMs - b.startMs);
 
-  const startsWithEnds = uniqueStarts.slice(0, -1).map((start, index) => ({
-    start,
-    endMs: uniqueStarts[index + 1].startMs,
-  }));
+  const startsWithEnds = useDoseWindowHandoff
+    ? uniqueStarts.slice(0, -1).map((start, index) => ({
+        start,
+        endMs: uniqueStarts[index + 1].startMs,
+      }))
+    : uniqueStarts.map((start) => ({
+        start,
+        endMs: start.startMs + MISSED_NOTIFICATION_DELAY_MS,
+      }));
 
   return startsWithEnds.map(({ start, endMs }) => {
     const missedReminderAtMs = start.startMs + MISSED_NOTIFICATION_DELAY_MS;
@@ -321,11 +339,11 @@ function timestampMs(value) {
 function logBelongsToWindow(log = {}, window) {
   const logDate = String(log.date || log.expectedDate || "").trim();
   const logTime = parseClockTime(String(log.time || log.expectedTime || ""))?.text;
-  if (logDate === window.expectedDate && logTime === window.expectedTime) {
+  const takenMs = timestampMs(log.takenAt || log.createdAt);
+  if (logDate === window.expectedDate && logTime === window.expectedTime && !takenMs) {
     return true;
   }
-  const takenMs = timestampMs(log.takenAt || log.createdAt);
-  if (!takenMs) return true;
+  if (!takenMs) return false;
   return takenMs >= window.startMs && takenMs < window.endMs;
 }
 

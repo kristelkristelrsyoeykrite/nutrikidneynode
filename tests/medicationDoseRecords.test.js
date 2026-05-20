@@ -46,6 +46,7 @@ class CollectionRef {
 }
 
 const stores = new Map();
+let mockServerNow = new Date("2026-05-20T15:00:00.000Z");
 const db = {
   collection(name) {
     if (!stores.has(name)) stores.set(name, new Map());
@@ -62,7 +63,7 @@ const admin = {
       }),
     },
     FieldValue: {
-      serverTimestamp: () => new Date("2026-05-20T15:00:00.000Z"),
+      serverTimestamp: () => mockServerNow,
       delete: () => undefined,
     },
   },
@@ -263,8 +264,76 @@ async function intervalMedicationWindowTest() {
   assert.equal(late.status, "late");
 }
 
+async function onceDailyMedicationResetsByDateTest() {
+  const userId = "user_once";
+  const medicationId = "med_once";
+  const medicationDoc = {
+    isActive: true,
+    startDate: "2026-05-19",
+    endDate: "2026-05-21",
+    frequency_type: "times_per_day",
+    frequency_value: 1,
+    frequency: "Once daily",
+    start_time: "23:50",
+    scheduled_times: ["23:50"],
+  };
+
+  const windows = dose.doseWindowsAround({
+    medicationDoc,
+    nowMs: atManila("2026-05-20", "09:40"),
+    beforeDays: 2,
+    afterDays: 2,
+  });
+  const lastNight = windows.find(
+    (item) => item.expectedDate === "2026-05-19" && item.expectedTime === "23:50",
+  );
+  const tonight = windows.find(
+    (item) => item.expectedDate === "2026-05-20" && item.expectedTime === "23:50",
+  );
+  assert(lastNight, "expected last night's once-daily window");
+  assert(tonight, "expected tonight's once-daily window");
+  assert.equal(lastNight.endAt.toISOString(), "2026-05-19T15:55:00.000Z");
+  assert.equal(tonight.startAt.toISOString(), "2026-05-20T15:50:00.000Z");
+
+  mockServerNow = new Date(atManila("2026-05-19", "23:52"));
+  const taken = await dose.markWindowTaken({
+    userId,
+    medicationId,
+    medicationDoc,
+    expectedDate: "2026-05-19",
+    expectedTime: "23:50",
+    nowMs: atManila("2026-05-19", "23:52"),
+  });
+  assert.equal(taken.status, "taken");
+
+  const lastNightStatus = await dose.resolveDoseWindowStatus({
+    userId,
+    medicationId,
+    window: lastNight,
+    nowMs: atManila("2026-05-20", "09:40"),
+  });
+  assert.equal(lastNightStatus.status, "taken");
+
+  const tonightStatus = await dose.resolveDoseWindowStatus({
+    userId,
+    medicationId,
+    window: tonight,
+    nowMs: atManila("2026-05-20", "09:40"),
+  });
+  assert.equal(tonightStatus.status, "upcoming");
+
+  const summary = await dose.resolveMedicationDoseStatus({
+    userId,
+    medicationId,
+    medicationDoc,
+    nowMs: atManila("2026-05-20", "09:40"),
+  });
+  assert.deepEqual(summary.takenTimesToday, []);
+}
+
 (async () => {
   await fixedTimesMedicationWindowTest();
   await intervalMedicationWindowTest();
+  await onceDailyMedicationResetsByDateTest();
   console.log("PASS medication dose window status simulation");
 })();
