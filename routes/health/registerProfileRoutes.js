@@ -390,7 +390,7 @@ function registerProfileRoutes(router, deps) {
       let medicalProfileId = existingUser.medicalProfileId;
       const medicalProfilePayload = cleanObject({
         userId: profileUserId,
-        kidneyDiseaseType,
+        kidneyDiseaseType: kidneyDiseaseType ?? ckdTypeValue,
         ckdType: ckdTypeValue,
         ckd_type: ckdTypeValue,
         ckdStage: ckdStageValue,
