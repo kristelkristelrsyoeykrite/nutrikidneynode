@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node tests/securityRoundtrip.test.js"
+    "test": "node tests/securityRoundtrip.test.js",
+    "test:medication-dose": "node tests/medicationDoseRecords.test.js"
   },
   "keywords": [],
   "author": "",

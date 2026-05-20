@@ -157,17 +157,6 @@ function scheduleKind(normalized) {
   return "once";
 }
 
-function usesDoseWindowHandoff(normalized) {
-  const kind = scheduleKind(normalized);
-  if (kind === "interval") return true;
-  if (kind === "frequency") {
-    const count =
-      normalized.timesPerDay || frequencyCountFromText(normalized.frequencyText);
-    return Number(count) > 1;
-  }
-  return kind === "fixed_times" && normalized.scheduledTimes.length > 1;
-}
-
 function scheduleClocksForDate({ medicationDoc, dateKey }) {
   const normalized = normalizeMedicationSchedule(medicationDoc);
   if (!normalized.isActive) return [];
@@ -230,8 +219,6 @@ function uniqueClocks(clocks) {
 }
 
 function windowsForDateRange({ medicationDoc, startDateKey, days }) {
-  const normalized = normalizeMedicationSchedule(medicationDoc);
-  const useDoseWindowHandoff = usesDoseWindowHandoff(normalized);
   const starts = [];
   for (let offset = 0; offset < days; offset += 1) {
     const dateKey = addDaysToDateKey(startDateKey, offset);
@@ -251,25 +238,23 @@ function windowsForDateRange({ medicationDoc, startDateKey, days }) {
     new Map(starts.map((start) => [`${start.startDateKey}_${start.startTime}`, start])).values(),
   ).sort((a, b) => a.startMs - b.startMs);
 
-  const startsWithEnds = useDoseWindowHandoff
-    ? uniqueStarts.slice(0, -1).map((start, index) => ({
-        start,
-        endMs: uniqueStarts[index + 1].startMs,
-      }))
-    : uniqueStarts.map((start) => ({
-        start,
-        endMs: start.startMs + MISSED_NOTIFICATION_DELAY_MS,
-      }));
+  const startsWithEnds = uniqueStarts.slice(0, -1).map((start, index) => ({
+    start,
+    endMs: uniqueStarts[index + 1].startMs,
+  }));
 
   return startsWithEnds.map(({ start, endMs }) => {
+    const missedReminderAtMs = start.startMs + MISSED_NOTIFICATION_DELAY_MS;
     return {
       id: `${start.startDateKey}_${start.startTime}`,
       expectedDate: start.startDateKey,
       expectedTime: start.startTime,
       startMs: start.startMs,
       endMs,
+      missedReminderAtMs,
       startAt: new Date(start.startMs),
       endAt: new Date(endMs),
+      missedReminderAt: new Date(missedReminderAtMs),
     };
   });
 }
@@ -286,6 +271,10 @@ function doseWindowsAround({ medicationDoc, nowMs = Date.now(), beforeDays = 2, 
 
 function doseRecordId({ userId, medicationId, expectedDate, expectedTime }) {
   return `${userId}_${medicationId}_${expectedDate}_${expectedTime}`;
+}
+
+function lateDoseRecordId({ userId, medicationId, expectedDate, expectedTime }) {
+  return `${doseRecordId({ userId, medicationId, expectedDate, expectedTime })}_late`;
 }
 
 function notificationWindowId({ userId, medicationId, expectedDate, expectedTime }) {
@@ -348,17 +337,30 @@ async function getWindowLog({ userId, medicationId, window }) {
     expectedTime: window.expectedTime,
   });
   const snap = await db.collection("medicationIntakeLogs").doc(id).get();
-  if (!snap.exists) return null;
-  const log = { id: snap.id, ...(snap.data() || {}) };
-  return logBelongsToWindow(log, window) ? log : null;
+  if (snap.exists) {
+    const log = { id: snap.id, ...(snap.data() || {}) };
+    if (logBelongsToWindow(log, window)) return log;
+  }
+
+  const lateId = lateDoseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
+  const lateSnap = await db.collection("medicationLateIntakeLogs").doc(lateId).get();
+  if (!lateSnap.exists) return null;
+  const lateLog = { id: lateSnap.id, late: true, ...(lateSnap.data() || {}) };
+  return logBelongsToWindow(lateLog, window) ? lateLog : null;
 }
 
 async function resolveDoseWindowStatus({ userId, medicationId, window, nowMs = Date.now() }) {
   const log = await getWindowLog({ userId, medicationId, window });
-  if (log) return { status: "taken", log };
-  if (nowMs >= window.endMs) return { status: "missed", log: null };
-  if (nowMs >= window.startMs) return { status: "due", log: null };
-  return { status: "upcoming", log: null };
+  if (log) return { status: log.late ? "late" : "taken", log };
+  if (nowMs < window.startMs) return { status: "upcoming", log: null };
+  if (nowMs < window.missedReminderAtMs) return { status: "due", log: null };
+  if (nowMs < window.endMs) return { status: "missed", log: null };
+  return { status: "expired_missed", log: null };
 }
 
 async function resolveMedicationDoseStatus({ userId, medicationId, medicationDoc, nowMs = Date.now() }) {
@@ -374,7 +376,9 @@ async function resolveMedicationDoseStatus({ userId, medicationId, medicationDoc
     const resolved = await resolveDoseWindowStatus({ userId, medicationId, window, nowMs });
     const isExpectedToday = window.expectedDate === today;
     if (isExpectedToday && resolved.status === "taken") takenTimesToday.push(window.expectedTime);
-    if (isExpectedToday && resolved.status === "missed") missedCountToday += 1;
+    if (isExpectedToday && ["missed", "expired_missed"].includes(resolved.status)) {
+      missedCountToday += 1;
+    }
     if (activeWindow?.id === window.id && resolved.status === "due") dueNow = 1;
     resolvedWindows.push(serializeWindow(window, resolved.status));
   }
@@ -415,59 +419,87 @@ function serializeWindow(window, status) {
     expectedTime: window.expectedTime,
     startAt: window.startAt.toISOString(),
     endAt: window.endAt.toISOString(),
+    missedReminderAt: window.missedReminderAt.toISOString(),
     status,
   };
 }
 
-async function markActiveWindowTaken({ userId, medicationId, medicationDoc, nowMs = Date.now() }) {
-  const window = getActiveDoseWindow({ medicationDoc, nowMs });
-  if (!window) {
-    throw new Error("No active dose window found for this medication.");
-  }
-  const status = await resolveDoseWindowStatus({ userId, medicationId, window, nowMs });
+async function deleteDoseLogsForWindow({ userId, medicationId, window }) {
   const docId = doseRecordId({
     userId,
     medicationId,
     expectedDate: window.expectedDate,
     expectedTime: window.expectedTime,
   });
-  if (status.status === "missed") {
-    const lateRef = await db.collection("medicationLateIntakeLogs").add({
+  const lateDocId = lateDoseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
+  const currentSnap = await db.collection("medicationIntakeLogs").doc(docId).get();
+  const legacyLateId = currentSnap.exists ? currentSnap.data()?.lateIntakeLogId : null;
+
+  await db.collection("medicationIntakeLogs").doc(docId).delete();
+  await db.collection("medicationLateIntakeLogs").doc(lateDocId).delete().catch(() => {});
+  if (legacyLateId && legacyLateId !== lateDocId) {
+    await db.collection("medicationLateIntakeLogs").doc(String(legacyLateId)).delete().catch(() => {});
+  }
+
+  return { docId, lateDocId };
+}
+
+async function writeLateDoseLog({ userId, medicationId, window }) {
+  const docId = doseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
+  const lateDocId = lateDoseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
+
+  await db.collection("medicationIntakeLogs").doc(docId).delete().catch(() => {});
+  await db.collection("medicationLateIntakeLogs").doc(lateDocId).set(
+    {
+      id: lateDocId,
       userId: String(userId),
       medicationId: String(medicationId),
       expectedDate: window.expectedDate,
       expectedTime: window.expectedTime,
       windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
       windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
+      missedReminderAt: admin.firestore.Timestamp.fromDate(window.missedReminderAt),
       takenAt: admin.firestore.FieldValue.serverTimestamp(),
-      source: "manual_mark_taken_after_window",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    await db.collection("medicationIntakeLogs").doc(docId).set(
-      {
-        id: docId,
-        userId: String(userId),
-        medicationId: String(medicationId),
-        date: window.expectedDate,
-        time: window.expectedTime,
-        windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
-        windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
-        takenAt: admin.firestore.FieldValue.serverTimestamp(),
-        source: "manual_mark_taken_after_missed",
-        lateIntakeLogId: lateRef.id,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
-    return {
+      source: "manual_mark_late_after_window",
       late: true,
-      lateLogId: lateRef.id,
-      docId,
-      window,
-      status: "taken",
-    };
-  }
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
 
+  return { docId, lateDocId };
+}
+
+async function writeTakenDoseLog({ userId, medicationId, window }) {
+  const docId = doseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
+  const lateDocId = lateDoseRecordId({
+    userId,
+    medicationId,
+    expectedDate: window.expectedDate,
+    expectedTime: window.expectedTime,
+  });
+
+  await db.collection("medicationLateIntakeLogs").doc(lateDocId).delete().catch(() => {});
   await db.collection("medicationIntakeLogs").doc(docId).set(
     {
       id: docId,
@@ -477,12 +509,23 @@ async function markActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
       time: window.expectedTime,
       windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
       windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
+      missedReminderAt: admin.firestore.Timestamp.fromDate(window.missedReminderAt),
       takenAt: admin.firestore.FieldValue.serverTimestamp(),
       source: "manual_mark_taken",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     },
     { merge: true },
   );
+
+  return { docId, lateDocId };
+}
+
+async function markActiveWindowTaken({ userId, medicationId, medicationDoc, nowMs = Date.now() }) {
+  const window = getActiveDoseWindow({ medicationDoc, nowMs });
+  if (!window) {
+    throw new Error("No active dose window found for this medication.");
+  }
+  const { docId } = await writeTakenDoseLog({ userId, medicationId, window });
 
   return {
     late: false,
@@ -500,27 +543,16 @@ async function markWindowTaken({ userId, medicationId, medicationDoc, expectedTi
     throw new Error("No matching dose window found for this medication.");
   }
 
-  const docId = doseRecordId({
-    userId,
-    medicationId,
-    expectedDate: window.expectedDate,
-    expectedTime: window.expectedTime,
-  });
-  await db.collection("medicationIntakeLogs").doc(docId).set(
-    {
-      id: docId,
-      userId: String(userId),
-      medicationId: String(medicationId),
-      date: window.expectedDate,
-      time: window.expectedTime,
-      windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
-      windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
-      takenAt: admin.firestore.FieldValue.serverTimestamp(),
-      source: "manual_mark_taken",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
+  if (nowMs < window.startMs) {
+    throw new Error("This dose window has not started yet.");
+  }
+
+  if (nowMs >= window.endMs) {
+    const { docId, lateDocId } = await writeLateDoseLog({ userId, medicationId, window });
+    return { late: true, lateLogId: lateDocId, docId, window, status: "late" };
+  }
+
+  const { docId } = await writeTakenDoseLog({ userId, medicationId, window });
 
   return { late: false, docId, window, status: "taken" };
 }
@@ -530,14 +562,9 @@ async function undoActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
   if (!window) {
     throw new Error("No active dose window found for this medication.");
   }
-  const docId = doseRecordId({
-    userId,
-    medicationId,
-    expectedDate: window.expectedDate,
-    expectedTime: window.expectedTime,
-  });
-  await db.collection("medicationIntakeLogs").doc(docId).delete();
-  return { docId, window, status: "due" };
+  const { docId } = await deleteDoseLogsForWindow({ userId, medicationId, window });
+  const resolved = await resolveDoseWindowStatus({ userId, medicationId, window, nowMs });
+  return { docId, window, status: resolved.status };
 }
 
 async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTime, expectedDate, nowMs = Date.now() }) {
@@ -547,15 +574,9 @@ async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTi
   if (!window) {
     throw new Error("No matching dose window found for this medication.");
   }
-  const docId = doseRecordId({
-    userId,
-    medicationId,
-    expectedDate: window.expectedDate,
-    expectedTime: window.expectedTime,
-  });
-  await db.collection("medicationIntakeLogs").doc(docId).delete();
-  const status = nowMs >= window.endMs ? "missed" : "due";
-  return { docId, window, status };
+  const { docId } = await deleteDoseLogsForWindow({ userId, medicationId, window });
+  const resolved = await resolveDoseWindowStatus({ userId, medicationId, window, nowMs });
+  return { docId, window, status: resolved.status };
 }
 
 async function ensureDoseRecordsForDate({ userId, medicationId, medicationDoc, dateKey }) {

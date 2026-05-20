@@ -3,7 +3,6 @@ const { decryptHealthDocument, decryptHealthProfile } = require("../utils/encryp
 const {
   doseWindowsAround,
   dateKeyFromUtcMs,
-  MISSED_NOTIFICATION_DELAY_MS,
   notificationWindowId,
   resolveMedicationDoseStatus,
   resolveDoseWindowStatus,
@@ -679,7 +678,7 @@ async function checkMissedMedicationReminders() {
             afterDays: 1,
           }).filter(
             (window) =>
-              window.startMs + MISSED_NOTIFICATION_DELAY_MS <= nowMs &&
+              window.missedReminderAtMs <= nowMs &&
               dateKeyFromUtcMs(window.startMs) === todayDateKey(nowMs),
           );
 
@@ -717,6 +716,7 @@ async function checkMissedMedicationReminders() {
               scheduledTime: window.expectedTime,
               windowStartAt: admin.firestore.Timestamp.fromDate(window.startAt),
               windowEndAt: admin.firestore.Timestamp.fromDate(window.endAt),
+              missedReminderAt: admin.firestore.Timestamp.fromDate(window.missedReminderAt),
               dueTime: admin.firestore.Timestamp.fromDate(window.startAt),
               day: window.expectedDate,
               notificationId,

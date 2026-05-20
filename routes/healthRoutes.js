@@ -849,18 +849,20 @@ router.post("/medications/mark-taken", async (req, res) => {
           medicationDoc: medication,
         });
 
-    await resolveMissedMedicationArtifacts({
-      medicationId,
-      profileUserId: logUserId,
-      date: result.window.expectedDate,
-      scheduledTimes: [result.window.expectedTime],
-      window: result.window,
-    });
+    if (!result.late) {
+      await resolveMissedMedicationArtifacts({
+        medicationId,
+        profileUserId: logUserId,
+        date: result.window.expectedDate,
+        scheduledTimes: [result.window.expectedTime],
+        window: result.window,
+      });
+    }
 
     return res.status(200).json({
       success: true,
       message: result.late
-        ? "Medication marked as taken after missed reminder"
+        ? "Medication marked as late"
         : "Medication marked as taken",
       medicationId,
       date: result.window.expectedDate,
@@ -870,6 +872,7 @@ router.post("/medications/mark-taken", async (req, res) => {
         expectedTime: result.window.expectedTime,
         startAt: result.window.startAt.toISOString(),
         endAt: result.window.endAt.toISOString(),
+        missedReminderAt: result.window.missedReminderAt.toISOString(),
         status: result.status,
       },
       late: result.late,
@@ -943,7 +946,7 @@ router.post("/medications/mark-untaken", async (req, res) => {
           medicationDoc: medication,
         });
 
-    if (result.status === "missed") {
+    if (["missed", "expired_missed"].includes(result.status)) {
       await reopenMissedMedicationArtifacts({
         medicationId,
         profileUserId: logUserId,
@@ -964,6 +967,7 @@ router.post("/medications/mark-untaken", async (req, res) => {
         expectedTime: result.window.expectedTime,
         startAt: result.window.startAt.toISOString(),
         endAt: result.window.endAt.toISOString(),
+        missedReminderAt: result.window.missedReminderAt.toISOString(),
         status: result.status,
       },
     });
