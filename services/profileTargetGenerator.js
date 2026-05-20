@@ -1,225 +1,242 @@
+const PROFESSIONAL_REMINDER =
+  "NutriKidney provides nutritional target estimation and foodlogging support guidance only. The application does not diagnose disease, prescribe treatment, adjust medications, or replace the care of a Registered Nutritionist-Dietitian, nephrologist, or physician.";
+
 const SYSTEM_NOTES = [
-  "Targets are based on age, sex, weight, CKD stage, and dialysis status.",
-  "Growth and nutritional adequacy are prioritized.",
-  "No automatic potassium, phosphorus, or sodium restriction is applied at this stage.",
-  "Additional dietary adjustments will be based on future laboratory and clinical data.",
+  "Targets are estimated from CKD status, dialysis status, protein category, clinical status, and body weight.",
+  "Laboratory values and clinical symptoms should guide nutrient restriction decisions.",
+  PROFESSIONAL_REMINDER,
 ];
 
-const ENERGY_TABLE = {
-  "1": { male: [72, 120], female: [72, 120] },
-  "2": { male: [81, 95], female: [79, 92] },
-  "3": { male: [80, 82], female: [76, 77] },
-  "4-6": { male: [67, 93], female: [64, 90] },
-  "7-8": { male: [60, 77], female: [56, 75] },
-  "9-10": { male: [55, 69], female: [49, 63] },
-  "11-12": { male: [48, 63], female: [43, 57] },
-  "13-14": { male: [44, 63], female: [39, 50] },
-  "15-17": { male: [40, 55], female: [36, 46] },
-};
-
-const PROTEIN_TABLE = {
-  "1": [0.9, 1.14],
-  "2": [0.9, 1.05],
-  "3": [0.9, 1.05],
-  "4-6": [0.85, 0.95],
-  "7-8": [0.9, 0.95],
-  "9-10": [0.9, 0.95],
-  "11-12": [0.9, 0.95],
-  "13-14": [0.8, 0.9],
-  "15-17": [0.8, 0.9],
-};
-
-function requireValue(profile, key, missing) {
-  if (profile[key] === undefined || profile[key] === null || profile[key] === "") {
-    missing.push(key);
-  }
-}
-
-function normalizeSex(sex) {
-  const value = String(sex || "").trim().toLowerCase();
-  if (value.startsWith("m")) return "male";
-  if (value.startsWith("f")) return "female";
-  return value;
-}
-
-function normalizeActivity(activity) {
-  const value = String(activity || "").trim().toLowerCase();
-  if (value.startsWith("low")) return "low";
-  if (value.startsWith("moderate")) return "moderate";
-  if (value.startsWith("high")) return "high";
-  return value;
-}
-
-function normalizeDialysisType(dialysisType) {
-  const value = String(dialysisType || "").trim().toLowerCase();
-  if (value === "hd" || value.includes("hemo")) return "HD";
-  if (value === "pd" || value.includes("peritoneal")) return "PD";
-  return "";
-}
-
-function normalizeFluidStatus(status) {
-  const value = String(status || "").trim().toLowerCase();
-  if (value === "yes") return "yes";
-  if (value === "no") return "no";
-  if (value === "not sure" || value === "unsure") return "not sure";
-  return value;
-}
-
-function mapAgeGroup(ageYears) {
-  if (ageYears === 1) return "1";
-  if (ageYears === 2) return "2";
-  if (ageYears === 3) return "3";
-  if (ageYears >= 4 && ageYears <= 6) return "4-6";
-  if (ageYears >= 7 && ageYears <= 8) return "7-8";
-  if (ageYears >= 9 && ageYears <= 10) return "9-10";
-  if (ageYears >= 11 && ageYears <= 12) return "11-12";
-  if (ageYears >= 13 && ageYears <= 14) return "13-14";
-  if (ageYears >= 15 && ageYears <= 17) return "15-17";
-  throw new Error("age_years must be between 1 and 17");
-}
-
-function getFiberRange(ageYears, sex) {
-  if (ageYears >= 1 && ageYears <= 3) return [14, 19];
-  if (ageYears >= 4 && ageYears <= 8) return [18, 25];
-  if (ageYears >= 9 && ageYears <= 13) return sex === "male" ? [24, 31] : [20, 26];
-  if (ageYears >= 14 && ageYears <= 18) return sex === "male" ? [28, 38] : [22, 26];
-  throw new Error("age_years must be between 1 and 18 for fiber targets");
-}
-
-function getCalciumRange(ageYears) {
-  if (ageYears >= 1 && ageYears <= 3) return [450, 700];
-  if (ageYears >= 4 && ageYears <= 10) return [700, 1000];
-  if (ageYears >= 11 && ageYears <= 17) return [900, 1300];
-  throw new Error("age_years must be between 1 and 17 for calcium targets");
-}
-
-function getPhosphateRange(ageYears) {
-  if (ageYears >= 1 && ageYears <= 3) return [250, 500];
-  if (ageYears >= 4 && ageYears <= 10) return [440, 800];
-  if (ageYears >= 11 && ageYears <= 17) return [640, 1250];
-  throw new Error("age_years must be between 1 and 17 for phosphate targets");
-}
-
-function midpoint(range) {
-  return (range[0] + range[1]) / 2;
+function normalizeText(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function toNumber(value) {
-  if (typeof value === "number") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (value === undefined || value === null || value === "") return null;
   const match = String(value).match(/-?\d+(\.\d+)?/);
   return match ? Number(match[0]) : null;
 }
 
-function validateProfile(profile) {
-  const missing = [];
-  [
-    "age_years",
-    "sex",
-    "weight_kg",
-    "bmi",
-    "ckd_stage",
-    "on_dialysis",
-    "physical_activity_level",
-    "fluid_restriction_status",
-  ].forEach((key) => requireValue(profile, key, missing));
-
-  if (profile.on_dialysis === true) {
-    requireValue(profile, "dialysis_type", missing);
-  }
-  if (normalizeFluidStatus(profile.fluid_restriction_status) === "yes") {
-    requireValue(profile, "fluid_limit_ml", missing);
-  }
-  if (missing.length > 0) {
-    throw new Error(`Missing required profile fields: ${missing.join(", ")}`);
-  }
+function isTruthy(value) {
+  if (value === true) return true;
+  const normalized = normalizeText(value);
+  return ["true", "yes", "y", "1", "on dialysis"].includes(normalized);
 }
 
-function generateProfileTargets(profile) {
-  validateProfile(profile);
+function hasDiabetes(profile = {}) {
+  return isTruthy(
+    profile.hasDiabetes ??
+      profile.has_diabetes ??
+      profile.diabetes ??
+      profile.hasDM ??
+      profile.has_dm,
+  );
+}
 
-  const ageYears = Number(profile.age_years);
-  const sex = normalizeSex(profile.sex);
-  const ageGroup = mapAgeGroup(ageYears);
-  const effectiveWeight =
-    profile.on_dialysis === true && profile.dry_weight_kg
-      ? toNumber(profile.dry_weight_kg)
-      : toNumber(profile.weight_kg);
+function hasHighProteinRequirement(profile = {}) {
+  return isTruthy(
+    profile.hasHighProteinRequirement ??
+      profile.has_high_protein_requirement ??
+      profile.highProteinRequirement ??
+      profile.high_protein_requirement,
+  );
+}
 
-  if (!Number.isFinite(effectiveWeight) || effectiveWeight <= 0) {
-    throw new Error("weight_kg or dry_weight_kg must be a positive number");
+function normalizeCkdStage(value) {
+  const stage = normalizeText(value)
+    .replace(/^ckd\s*/, "")
+    .replace(/^stage\s*/, "")
+    .trim();
+
+  if (stage === "5d" || stage === "5 d") return "5D";
+  const match = stage.match(/[1-5]/);
+  return match ? match[0] : "";
+}
+
+function hasCKDStage3to5(profile = {}) {
+  const stage = normalizeCkdStage(profile.ckd_stage ?? profile.ckdStage);
+  return ["3", "4", "5", "5D"].includes(stage);
+}
+
+function weightKg(profile = {}) {
+  const dialysis = isTruthy(
+    profile.isDialysis ?? profile.is_dialysis ?? profile.on_dialysis ?? profile.onDialysis,
+  );
+  const dryWeight = toNumber(profile.dry_weight_kg ?? profile.dryWeightKg ?? profile.dryWeight);
+  const currentWeight = toNumber(profile.weight_kg ?? profile.weightKg ?? profile.weight);
+  return dialysis && dryWeight ? dryWeight : currentWeight;
+}
+
+function gramsPerKgRangeToTarget(range, weight) {
+  if (!weight) return null;
+  return {
+    min_g: Math.round(range[0] * weight * 10) / 10,
+    max_g: Math.round(range[1] * weight * 10) / 10,
+  };
+}
+
+function kcalPerKgRangeToTarget(range, weight) {
+  if (!weight) return null;
+  return {
+    min_kcal: Math.round(range[0] * weight),
+    max_kcal: Math.round(range[1] * weight),
+  };
+}
+
+function calculateProteinTarget(patientData = {}) {
+  const dialysis = isTruthy(
+    patientData.isDialysis ??
+      patientData.is_dialysis ??
+      patientData.on_dialysis ??
+      patientData.onDialysis,
+  );
+  const proteinCategory = normalizeText(
+    patientData.proteinCategory ?? patientData.protein_category,
+  );
+
+  if (dialysis) return { label: "1.0-1.2 g/kg BW/day", range: [1.0, 1.2] };
+  if (hasHighProteinRequirement(patientData)) {
+    return { label: "1.2-1.5 g/kg BW/day", range: [1.2, 1.5] };
   }
-  if (!["male", "female"].includes(sex)) {
-    throw new Error("sex must be male or female");
+  if (hasCKDStage3to5(patientData) && hasDiabetes(patientData)) {
+    return { label: "0.6-0.8 g/kg BW/day", range: [0.6, 0.8] };
   }
-
-  const energyRange = ENERGY_TABLE[ageGroup][sex];
-  const proteinRange = PROTEIN_TABLE[ageGroup];
-  const fiberRange = getFiberRange(ageYears, sex);
-  const calciumRange = getCalciumRange(ageYears);
-  const phosphateRange = getPhosphateRange(ageYears);
-
-  let energyTarget = midpoint(energyRange) * effectiveWeight;
-  const activity = normalizeActivity(profile.physical_activity_level);
-  if (activity === "low") energyTarget *= 0.95;
-  if (activity === "high") energyTarget *= 1.05;
-
-  let proteinTarget = proteinRange[1] * effectiveWeight;
-  const dialysisType = normalizeDialysisType(profile.dialysis_type);
-  if (profile.on_dialysis === true && dialysisType === "HD") {
-    proteinTarget += 0.1 * effectiveWeight;
+  if (proteinCategory === "very low protein") {
+    return { label: "0.28-0.43 g/kg BW/day", range: [0.28, 0.43] };
   }
-  if (profile.on_dialysis === true && dialysisType === "PD") {
-    proteinTarget += 0.225 * effectiveWeight;
+  if (proteinCategory === "low protein") {
+    return { label: "0.55-0.66 g/kg BW/day", range: [0.55, 0.66] };
   }
+  return { label: "0.8-1.0 g/kg BW/day", range: [0.8, 1.0] };
+}
 
-  const fluidStatus = normalizeFluidStatus(profile.fluid_restriction_status);
-  let fluidNote = "Fluid restriction status is unclear. No fluid alert threshold will be applied until a limit is entered.";
-  if (fluidStatus === "yes") {
-    fluidNote = `Fluid intake is restricted. Daily fluid limit: ${profile.fluid_limit_ml} mL/day.`;
-  }
-  if (fluidStatus === "no") {
-    fluidNote = "No fluid restriction has been indicated.";
+function calculateCalorieTarget(patientData = {}) {
+  const appetite = normalizeText(patientData.appetite ?? patientData.appetiteStatus);
+  const bmiStatus = normalizeText(patientData.BMIStatus ?? patientData.bmi_status);
+  const muacStatus = normalizeText(patientData.MUACStatus ?? patientData.muac_status);
+  const dialysis = isTruthy(
+    patientData.isDialysis ??
+      patientData.is_dialysis ??
+      patientData.on_dialysis ??
+      patientData.onDialysis,
+  );
+
+  let note = "Use general CKD calorie support range";
+  if (appetite === "poor" || appetite === "very poor") {
+    note = "Use higher end of calorie range";
+  } else if (bmiStatus === "low" || muacStatus === "low") {
+    note = "Use higher end of calorie range";
+  } else if (dialysis) {
+    note = "Emphasize adequate nutritional intake";
   }
 
   return {
+    label: "30-35 kcal/kg BW/day",
+    range: [30, 35],
+    note,
+    display: `30-35 kcal/kg BW/day. ${note}.`,
+  };
+}
+
+function calculateSodiumTarget(patientData = {}) {
+  const ckdType = normalizeText(patientData.CKDType ?? patientData.ckd_type ?? patientData.ckdType);
+  const stage = normalizeCkdStage(patientData.CKDStage ?? patientData.ckd_stage ?? patientData.ckdStage);
+
+  if (ckdType === "ckd dkd" || ckdType === "dkd") return { label: "<3000 mg/day", limit_mg: 3000 };
+  if (stage === "5D") return { label: "<2300 mg/day", limit_mg: 2300 };
+  return { label: "<2000 mg/day", limit_mg: 2000 };
+}
+
+function calculatePotassiumTarget() {
+  return { label: "<3000 mg/day", limit_mg: 3000 };
+}
+
+function calculatePhosphorusTarget() {
+  return { label: "800-1000 mg/day", min_mg: 800, max_mg: 1000 };
+}
+
+function calculateCalciumTarget() {
+  return { label: "<2000 mg/day", limit_mg: 2000 };
+}
+
+function generateProfileTargets(profile = {}) {
+  const weight = weightKg(profile);
+  if (!weight || weight <= 0) {
+    throw new Error("weight_kg or dry_weight_kg must be a positive number");
+  }
+
+  const protein = calculateProteinTarget(profile);
+  const calories = calculateCalorieTarget(profile);
+  const sodium = calculateSodiumTarget(profile);
+  const potassium = calculatePotassiumTarget(profile);
+  const phosphorus = calculatePhosphorusTarget(profile);
+  const calcium = calculateCalciumTarget(profile);
+  const proteinDaily = gramsPerKgRangeToTarget(protein.range, weight);
+  const calorieDaily = kcalPerKgRangeToTarget(calories.range, weight);
+
+  return {
     child_name: profile.child_name,
-    age_years: ageYears,
+    age_years: toNumber(profile.age_years ?? profile.ageYears),
     sex: profile.sex,
-    ckd_stage: profile.ckd_stage,
-    dialysis_status: profile.on_dialysis === true ? dialysisType : "Not on dialysis",
+    ckd_stage: profile.ckd_stage ?? profile.ckdStage,
+    dialysis_status:
+      isTruthy(profile.on_dialysis ?? profile.onDialysis ?? profile.isDialysis)
+        ? "On dialysis"
+        : "Not on dialysis",
     bmi: toNumber(profile.bmi),
-    energy_target_kcal: Math.round(energyTarget),
-    protein_target_g: Math.round(proteinTarget * 10) / 10,
-    fiber_target_g: Math.round(midpoint(fiberRange)),
-    calcium_target_mg: Math.round(midpoint(calciumRange)),
-    phosphate_target_mg: Math.round(midpoint(phosphateRange)),
-    fluid_note: fluidNote,
+    body_weight_kg: weight,
+    protein_target: protein.label,
+    protein_target_g_per_kg: protein.label,
+    protein_target_min_g: proteinDaily.min_g,
+    protein_target_g: proteinDaily.max_g,
+    calorie_target: calories.display,
+    calorie_target_kcal_per_kg: calories.label,
+    calorie_target_note: calories.note,
+    energy_target_min_kcal: calorieDaily.min_kcal,
+    energy_target_kcal: calorieDaily.max_kcal,
+    sodium_target: sodium.label,
+    sodium_target_mg: sodium.limit_mg,
+    potassium_target: potassium.label,
+    potassium_target_mg: potassium.limit_mg,
+    phosphorus_target: phosphorus.label,
+    phosphorus_target_min_mg: phosphorus.min_mg,
+    phosphorus_target_mg: phosphorus.max_mg,
+    phosphate_target_mg: phosphorus.max_mg,
+    calcium_target: calcium.label,
+    calcium_target_mg: calcium.limit_mg,
+    professional_reminder: PROFESSIONAL_REMINDER,
     system_notes: SYSTEM_NOTES,
     summary_text: [
-      "Nutrition Profile Summary",
+      "Nutrition Summary",
+      `CKD Stage: ${profile.ckd_stage ?? profile.ckdStage ?? "Not specified"}`,
+      `Dialysis Status: ${
+        isTruthy(profile.on_dialysis ?? profile.onDialysis ?? profile.isDialysis)
+          ? "On dialysis"
+          : "Not on dialysis"
+      }`,
       "",
-      `Child: ${profile.child_name}`,
-      `Age: ${ageYears} years`,
-      `Sex: ${profile.sex}`,
-      `CKD Stage: ${profile.ckd_stage}`,
-      `Dialysis Status: ${profile.on_dialysis === true ? dialysisType : "Not on dialysis"}`,
-      `BMI: ${profile.bmi} kg/m2`,
+      "Estimated Nutritional Targets",
+      `- Protein: ${protein.label}`,
+      `- Calories: ${calories.display}`,
+      `- Sodium: ${sodium.label}`,
+      `- Potassium: ${potassium.label}`,
+      `- Phosphorus: ${phosphorus.label}`,
+      `- Calcium: ${calcium.label}`,
       "",
-      "Baseline Nutrition Targets",
-      `- Estimated energy target: ${Math.round(energyTarget)} kcal/day`,
-      `- Estimated protein target: ${Math.round(proteinTarget * 10) / 10} g/day`,
-      `- Estimated fiber target: ${Math.round(midpoint(fiberRange))} g/day`,
-      `- Estimated calcium target: ${Math.round(midpoint(calciumRange))} mg/day`,
-      `- Estimated phosphate target: ${Math.round(midpoint(phosphateRange))} mg/day`,
-      "",
-      "Fluid Note",
-      `- ${fluidNote}`,
-      "",
-      "System Note",
-      ...SYSTEM_NOTES.map((note) => `- ${note}`),
+      "Professional Reminder",
+      PROFESSIONAL_REMINDER,
     ].join("\n"),
   };
 }
 
-module.exports = { generateProfileTargets };
+module.exports = {
+  PROFESSIONAL_REMINDER,
+  generateProfileTargets,
+  calculateProteinTarget,
+  calculateCalorieTarget,
+  calculateSodiumTarget,
+  calculatePotassiumTarget,
+  calculatePhosphorusTarget,
+  calculateCalciumTarget,
+};

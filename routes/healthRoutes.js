@@ -167,7 +167,7 @@ async function resolveMissedMedicationArtifacts({
   const timeSet = new Set(
     [
       ...scheduledTimes,
-      window?.expectedTime,
+      window?.expectedTime,``
     ].map((time) => normalizeClockTime(time)).filter(Boolean),
   );
 
@@ -387,25 +387,49 @@ router.post("/phase2-decision-support", async (req, res) => {
 
   try {
     const profile = req.body.profile || {
+      age_years: req.body.age_years,
+      sex: req.body.sex,
+      weight_kg: req.body.weight_kg,
+      dry_weight_kg: req.body.dry_weight_kg,
+      bmi: req.body.bmi,
       ckd_stage: req.body.ckd_stage,
+      ckd_type: req.body.ckd_type,
+      protein_category: req.body.protein_category,
+      has_diabetes: req.body.has_diabetes,
+      has_high_protein_requirement: req.body.has_high_protein_requirement,
+      appetite: req.body.appetite,
+      bmi_status: req.body.bmi_status,
+      muac_status: req.body.muac_status,
+      on_dialysis: req.body.on_dialysis,
       processed_food_intake: req.body.processed_food_intake,
       meal_pattern: req.body.meal_pattern,
       diet_pattern: req.body.diet_pattern,
       fluid_restriction_status: req.body.fluid_restriction_status,
       fluid_limit_ml: req.body.fluid_limit_ml,
       has_hypertension: req.body.has_hypertension,
+      has_edema: req.body.has_edema,
     };
     const labs = req.body.labs || {
+      albumin: req.body.albumin,
+      albumin_status: req.body.albumin_status,
+      BUN: req.body.BUN ?? req.body.bun,
+      BUN_status: req.body.BUN_status ?? req.body.bun_status,
+      urea: req.body.urea,
+      urea_status: req.body.urea_status,
+      hemoglobin: req.body.hemoglobin,
+      hemoglobin_status: req.body.hemoglobin_status,
       potassium: req.body.potassium,
+      potassium_status: req.body.potassium_status,
       phosphorus: req.body.phosphorus,
       phosphorus_status: req.body.phosphorus_status,
       sodium: req.body.sodium,
       sodium_status: req.body.sodium_status,
       calcium: req.body.calcium,
+      calcium_status: req.body.calcium_status,
       creatinine: req.body.creatinine,
       result_date: req.body.result_date,
     };
-    const intake = req.body.intake || null;
+    const intake = req.body.intake || req.body.foodLogData || req.body.food_log_data || null;
     const decisionSupport = generatePhase2DecisionSupport(profile, labs, intake);
 
     res.status(200).json({
@@ -2126,6 +2150,16 @@ async function recalculateNutritionArtifacts(userId) {
     weight_kg: anthropometrics.weight_kg ?? anthropometrics.weight,
     bmi: anthropometrics.bmi ?? user.bmi,
     ckd_stage: medicalProfile?.ckdStage ?? medicalProfile?.ckd_stage,
+    ckd_type: medicalProfile?.ckdType ?? medicalProfile?.ckd_type,
+    protein_category:
+      medicalProfile?.proteinCategory ?? medicalProfile?.protein_category,
+    has_diabetes: medicalProfile?.hasDiabetes ?? medicalProfile?.has_diabetes,
+    has_high_protein_requirement:
+      medicalProfile?.hasHighProteinRequirement ??
+      medicalProfile?.has_high_protein_requirement,
+    appetite: medicalProfile?.appetite ?? medicalProfile?.appetiteStatus,
+    bmi_status: anthropometrics.bmi_status ?? anthropometrics.bmiStatus,
+    muac_status: anthropometrics.muac_status ?? anthropometrics.muacStatus,
     on_dialysis: medicalProfile?.onDialysis === true,
     dialysis_type: medicalProfile?.dialysisType,
     dry_weight_kg:
@@ -2174,22 +2208,40 @@ async function recalculateNutritionArtifacts(userId) {
       dialysis_type: profile.dialysis_type,
       physical_activity_level: profile.physical_activity_level,
       diet_pattern: medicalProfile?.diet_pattern ?? medicalProfile?.dietPattern,
+      ckd_type: profile.ckd_type,
+      protein_category: profile.protein_category,
+      has_diabetes: profile.has_diabetes,
+      has_high_protein_requirement: profile.has_high_protein_requirement,
+      appetite: profile.appetite,
+      bmi_status: profile.bmi_status,
+      muac_status: profile.muac_status,
       meal_pattern: medicalProfile?.meal_pattern ?? medicalProfile?.mealPattern,
       processed_food_intake:
         medicalProfile?.processed_food_intake ??
         medicalProfile?.processedFoodIntake,
       has_hypertension:
         medicalProfile?.has_hypertension ?? medicalProfile?.hasHypertension,
+      has_edema: medicalProfile?.has_edema ?? medicalProfile?.hasEdema,
       fluid_restriction_status: profile.fluid_restriction_status,
       fluid_limit_ml: profile.fluid_limit_ml,
     },
     {
+      albumin: labResults.albumin,
+      albumin_status: labResults.albumin_status,
+      BUN: labResults.BUN ?? labResults.bun,
+      BUN_status: labResults.BUN_status ?? labResults.bun_status,
+      urea: labResults.urea,
+      urea_status: labResults.urea_status,
+      hemoglobin: labResults.hemoglobin,
+      hemoglobin_status: labResults.hemoglobin_status,
       potassium: labResults.potassium,
+      potassium_status: labResults.potassium_status,
       phosphorus: labResults.phosphorus,
       phosphorus_status: labResults.phosphorus_status,
       sodium: labResults.sodium,
       sodium_status: labResults.sodium_status,
       calcium: labResults.calcium,
+      calcium_status: labResults.calcium_status,
       creatinine: labResults.creatinine,
       result_date: labResults.date ?? labResults.resultDate,
     },

@@ -5,6 +5,7 @@ const fatSecretBridge = require("../services/fatSecretBridgeService");
 const {
   recomputeGamificationForDate,
 } = require("../services/gamificationService");
+const { generatePhase2DecisionSupport } = require("../services/phase2DecisionSupport");
 const {
   decryptHealthDocument,
   decryptHealthProfile,
@@ -277,6 +278,97 @@ function phosphorusValueFromGuide(guide) {
 
 function resolvedPhosphorusValue(phosphorus, raw) {
   return numberOrNull(phosphorus) ?? phosphorusValueFromGuide(phosphorusGuideFromRaw(raw)) ?? 0;
+}
+
+function inferredFoodCategory(payload = {}, body = {}) {
+  const explicit =
+    body.category ??
+    body.foodCategory ??
+    body.food_category ??
+    payload.category ??
+    payload.foodCategory ??
+    payload.food_category ??
+    payload.raw?.category ??
+    payload.raw?.food_category ??
+    payload.raw?.foodCategory;
+  if (explicit) return explicit;
+
+  const name = String(payload.name || payload.foodName || "").toLowerCase();
+  if (/(cola|dark soda|dark soft drink|root beer)/.test(name)) {
+    return "Dark-colored carbonated drink";
+  }
+  if (/(hotdog|hot dog|sausage|ham|bacon|salami|luncheon meat|corned beef)/.test(name)) {
+    return "Processed Meat";
+  }
+  if (/(instant|canned|chips|cracker|processed|fast food)/.test(name)) {
+    return "Processed Food";
+  }
+  return "";
+}
+
+function phase2FoodItemFromPayload(payload = {}, body = {}) {
+  const raw = payload.raw && typeof payload.raw === "object" ? payload.raw : {};
+  const nutrients = payload.finalNutrients || {};
+  const sodium = numberOrNull(nutrients.sodium ?? payload.sodium);
+
+  return cleanObject({
+    name: payload.name || payload.foodName,
+    category: inferredFoodCategory(payload, body),
+    containsSaltAdditive:
+      body.containsSaltAdditive ??
+      body.contains_salt_additive ??
+      raw.containsSaltAdditive ??
+      raw.contains_salt_additive,
+    isHighSodium:
+      body.isHighSodium ??
+      body.is_high_sodium ??
+      raw.isHighSodium ??
+      raw.is_high_sodium ??
+      (sodium !== null ? sodium >= 400 : undefined),
+    containsPotassiumAdditive:
+      body.containsPotassiumAdditive ??
+      body.contains_potassium_additive ??
+      raw.containsPotassiumAdditive ??
+      raw.contains_potassium_additive,
+    containsPhosphateAdditive:
+      body.containsPhosphateAdditive ??
+      body.contains_phosphate_additive ??
+      raw.containsPhosphateAdditive ??
+      raw.contains_phosphate_additive,
+  });
+}
+
+function phase2ProfileFromChildContext(childContext = {}) {
+  return cleanObject({
+    age_years: childContext.age,
+    ckd_stage: childContext.ckd_stage,
+    dialysis_status: childContext.dialysis_status,
+    diet_pattern: childContext.diet_pattern,
+    fluid_restriction_status: childContext.fluid_restriction_status,
+    has_hypertension: childContext.has_hypertension,
+    has_edema: childContext.has_edema,
+  });
+}
+
+function phase2LabsFromBody(body = {}) {
+  return cleanObject({
+    albumin_status: body.albumin_status ?? body.albuminStatus,
+    BUN_status: body.BUN_status ?? body.bun_status ?? body.bunStatus,
+    urea_status: body.urea_status ?? body.ureaStatus,
+    hemoglobin_status: body.hemoglobin_status ?? body.hemoglobinStatus,
+    sodium_status: body.sodium_status ?? body.sodiumStatus,
+    potassium_status: body.potassium_status ?? body.potassiumStatus,
+    phosphorus_status: body.phosphorus_status ?? body.phosphorusStatus,
+    calcium_status: body.calcium_status ?? body.calciumStatus,
+  });
+}
+
+function phase2DecisionSupportForFoodLog({ childContext, payload, body }) {
+  return generatePhase2DecisionSupport(
+    phase2ProfileFromChildContext(childContext),
+    phase2LabsFromBody(body),
+    [phase2FoodItemFromPayload(payload, body)],
+  );
 }
 
 function nutrientTotalsFromPreview(preview = {}) {
@@ -1124,7 +1216,7 @@ router.post("/logs/add", async (req, res) => {
         foodType: raw?.food_type || raw?.foodType,
         raw,
       });
-      const { allergyCheck } = await evaluateAllergyAlert({
+      const { childContext, allergyCheck } = await evaluateAllergyAlert({
         userId,
         childProfileId: childProfileId || profileUserId,
         payload: candidatePayload,
@@ -1177,6 +1269,11 @@ router.post("/logs/add", async (req, res) => {
         createdAt: now,
         updatedAt: now,
       }), allergyCheck, userConfirmedAllergyWarning);
+      const decisionSupport = phase2DecisionSupportForFoodLog({
+        childContext,
+        payload,
+        body: req.body,
+      });
 
       const docRef = await db.collection(FOOD_LOG_COLLECTION).add(payload);
       const hydrationLog = await createHydrationLogFromFood({
@@ -1211,6 +1308,7 @@ router.post("/logs/add", async (req, res) => {
         allergyAlert: allergyCheck.allergyAlert,
         matchedAllergens: allergyCheck.matchedAllergens,
         hydrationLog,
+        decisionSupport,
         log: {
           id: docRef.id,
           ...payload,
@@ -1291,7 +1389,7 @@ router.post("/logs/add", async (req, res) => {
       selectedServingDescription: portion || "1 serving",
       raw,
     });
-    const { allergyCheck } = await evaluateAllergyAlert({
+    const { childContext, allergyCheck } = await evaluateAllergyAlert({
       userId,
       childProfileId: targetChildProfileId,
       payload: candidatePayload,
@@ -1353,6 +1451,11 @@ router.post("/logs/add", async (req, res) => {
       createdAt: now,
       updatedAt: now,
     }), allergyCheck, userConfirmedAllergyWarning);
+    const decisionSupport = phase2DecisionSupportForFoodLog({
+      childContext,
+      payload,
+      body: req.body,
+    });
 
     const docRef = await db.collection(FOOD_LOG_COLLECTION).add(payload);
     const hydrationLog = await createHydrationLogFromFood({
@@ -1387,6 +1490,7 @@ router.post("/logs/add", async (req, res) => {
       allergyAlert: allergyCheck.allergyAlert,
       matchedAllergens: allergyCheck.matchedAllergens,
       hydrationLog,
+      decisionSupport,
       log: {
         id: docRef.id,
         ...payload,

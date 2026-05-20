@@ -1,40 +1,37 @@
+const {
+  PROFESSIONAL_REMINDER,
+  generateProfileTargets,
+} = require("./profileTargetGenerator");
+
 function normalizeText(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function isFrequentProcessedFood(value) {
+function titleStatus(value) {
   const normalized = normalizeText(value);
-  return normalized === "often";
+  if (!normalized) return "";
+  if (normalized.includes("high")) return "High";
+  if (normalized.includes("low")) return "Low";
+  if (normalized.includes("normal") || normalized.includes("within")) return "Normal";
+  return "";
 }
 
 function toNumber(value) {
-  if (typeof value === "number") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (value === undefined || value === null || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function classifySodium(value) {
-  const sodium = toNumber(value);
-
-  if (sodium === null) return null;
-  if (sodium < 135) return "low";
-  if (sodium <= 145) return "normal";
-  return "high";
+function isTruthy(value) {
+  if (value === true) return true;
+  const normalized = normalizeText(value);
+  return ["true", "yes", "y", "1", "present"].includes(normalized);
 }
 
-function classifyPotassium(value) {
-  const potassium = toNumber(value);
-
-  if (potassium === null) return null;
-  if (potassium < 3.5) return "low";
-  if (potassium <= 5.0) return "normal";
-  return "high";
-}
-
-function isAdvancedCkdStage(value) {
-  const stage = normalizeText(value);
-  return stage === "stage 5" || stage === "stage 5d";
+function isDialysisStatus(value) {
+  const normalized = normalizeText(value);
+  return normalized === "on dialysis" || normalized === "dialysis" || normalized === "ckd 5d";
 }
 
 function uniqueMessages(messages) {
@@ -42,11 +39,8 @@ function uniqueMessages(messages) {
   const output = [];
 
   for (const message of messages) {
-    if (!message) continue;
-
-    const trimmed = String(message).trim();
+    const trimmed = String(message || "").trim();
     if (!trimmed || seen.has(trimmed)) continue;
-
     seen.add(trimmed);
     output.push(trimmed);
   }
@@ -54,303 +48,328 @@ function uniqueMessages(messages) {
   return output;
 }
 
-function getMonitoringMode(ckdStage) {
-  const stage = normalizeText(ckdStage);
+function classifySodium(value) {
+  const sodium = toNumber(value);
+  if (sodium === null) return "";
+  if (sodium < 135) return "Low";
+  if (sodium <= 145) return "Normal";
+  return "High";
+}
 
-  if (stage === "stage 1" || stage === "stage 2") {
-    return {
-      mode: "baseline",
-      note: "Early-stage CKD. Continue growth-focused monitoring.",
-    };
+function classifyPotassium(value) {
+  const potassium = toNumber(value);
+  if (potassium === null) return "";
+  if (potassium < 3.5) return "Low";
+  if (potassium <= 5.0) return "Normal";
+  return "High";
+}
+
+function statusFrom(labs = {}, statusKeys = [], valueKeys = [], classifier = null) {
+  for (const key of statusKeys) {
+    const status = titleStatus(labs[key]);
+    if (status) return status;
   }
 
-  if (stage === "stage 3" || stage === "stage 4") {
-    return {
-      mode: "enhanced",
-      note: "Moderate CKD. Closer monitoring of mineral balance and intake is recommended.",
-    };
+  if (!classifier) return "";
+  for (const key of valueKeys) {
+    const status = classifier(labs[key]);
+    if (status) return status;
   }
+  return "";
+}
 
-  if (stage === "stage 5" || stage === "stage 5d") {
-    return {
-      mode: "intensive",
-      note: "Advanced CKD. Nutritional and laboratory monitoring should be more frequent.",
-    };
-  }
-
+function normalizeLabData(labs = {}) {
   return {
-    mode: "intensive",
-    note: "Advanced CKD. Nutritional and laboratory monitoring should be more frequent.",
+    ...labs,
+    albuminStatus: statusFrom(labs, ["albuminStatus", "albumin_status"]),
+    BUNStatus: statusFrom(labs, ["BUNStatus", "bunStatus", "bun_status", "BUN_status"]),
+    ureaStatus: statusFrom(labs, ["ureaStatus", "urea_status"]),
+    hemoglobinStatus: statusFrom(labs, ["hemoglobinStatus", "hemoglobin_status", "hgb_status"]),
+    sodiumStatus: statusFrom(
+      labs,
+      ["sodiumStatus", "sodium_status"],
+      ["sodium"],
+      classifySodium,
+    ),
+    potassiumStatus: statusFrom(
+      labs,
+      ["potassiumStatus", "potassium_status"],
+      ["potassium"],
+      classifyPotassium,
+    ),
+    phosphorusStatus: statusFrom(labs, [
+      "phosphorusStatus",
+      "phosphorus_status",
+      "phosphateStatus",
+      "phosphate_status",
+    ]),
+    calciumStatus: statusFrom(labs, ["calciumStatus", "calcium_status"]),
   };
 }
 
-function evaluatePotassium({ labs, profile }) {
-  const output = [];
-  const potassiumStatus = classifyPotassium(labs.potassium);
-
-  if (potassiumStatus === null) {
-    return output;
-  }
-
-  if (potassiumStatus === "low") {
-    output.push("Potassium is below the normal range. Review intake and possible clinical causes.");
-    return output;
-  }
-
-  if (potassiumStatus === "normal") {
-    output.push("No potassium restriction is needed at this time.");
-    return output;
-  }
-
-  output.push("Potassium is above the normal range. Reduce processed foods with potassium additives first.");
-  output.push("Do not automatically remove all fruits and vegetables. Prefer lower-potassium substitutions if needed.");
-
-  if (isFrequentProcessedFood(profile.processed_food_intake)) {
-    output.push("Frequent processed food intake may contribute to excess potassium additives.");
-  }
-
-  return output;
+function normalizePatientData(profile = {}) {
+  return {
+    ...profile,
+    appetite: profile.appetite ?? profile.appetiteStatus ?? profile.appetite_status,
+    hasHypertension:
+      profile.hasHypertension ?? profile.has_hypertension ?? profile.hypertension,
+    hasEdema: profile.hasEdema ?? profile.has_edema ?? profile.edema,
+    isDialysis:
+      profile.isDialysis ??
+      profile.is_dialysis ??
+      profile.on_dialysis ??
+      profile.onDialysis ??
+      isDialysisStatus(profile.dialysis_status),
+    CKDStage: profile.CKDStage ?? profile.ckd_stage ?? profile.ckdStage,
+    CKDType: profile.CKDType ?? profile.ckd_type ?? profile.ckdType,
+  };
 }
 
-function evaluatePhosphorus({ labs, profile }) {
-  const output = [];
-  const phosphorusStatus = normalizeText(labs.phosphorus_status);
+function checkNutritionAlerts(patientData = {}, labData = {}) {
+  const patient = normalizePatientData(patientData);
+  const labs = normalizeLabData(labData);
+  const alerts = [];
+  const appetite = normalizeText(patient.appetite);
 
-  if (!phosphorusStatus) {
-    return output;
+  if (appetite === "poor" || appetite === "very poor") {
+    alerts.push("Nutritional intake may require attention.");
   }
 
-  if (phosphorusStatus === "normal") {
-    output.push("No phosphate restriction is needed at this time.");
-    return output;
+  if (labs.albuminStatus === "Low" && appetite === "poor") {
+    alerts.push("Possible nutrition-risk concern based on low albumin and poor appetite.");
   }
 
-  if (phosphorusStatus === "high") {
-    output.push("Phosphorus is elevated. Reduce processed foods with phosphate additives first.");
-    output.push("Natural high-protein foods should not be reduced first unless the elevation persists.");
+  if (labs.BUNStatus === "High" || labs.ureaStatus === "High") {
+    alerts.push("Protein intake may require monitoring.");
+  }
 
-    if (isFrequentProcessedFood(profile.processed_food_intake)) {
-      output.push("Frequent processed food intake may increase phosphate additive exposure.");
+  if (labs.hemoglobinStatus === "Low") {
+    alerts.push("Hemoglobin-related nutrition review may be helpful.");
+  }
+
+  if (labs.sodiumStatus === "High") {
+    alerts.push("High sodium intake may require attention.");
+  }
+
+  if (isTruthy(patient.hasHypertension)) {
+    alerts.push("Sodium restriction may be beneficial.");
+  }
+
+  if (isTruthy(patient.hasEdema)) {
+    alerts.push("Swelling may be associated with fluid retention.");
+  }
+
+  if (labs.potassiumStatus === "High") {
+    alerts.push("Potassium intake may require monitoring.");
+  }
+
+  if (labs.phosphorusStatus === "High") {
+    alerts.push("Phosphorus intake may require attention.");
+  }
+
+  if (labs.calciumStatus === "High") {
+    alerts.push("Calcium intake may require monitoring.");
+  }
+
+  if (labs.calciumStatus === "Low") {
+    alerts.push("Calcium intake may require attention.");
+  }
+
+  if (labs.phosphorusStatus === "High" && labs.calciumStatus !== "Normal") {
+    alerts.push("Calcium and phosphorus balance may require monitoring.");
+  }
+
+  return uniqueMessages(alerts);
+}
+
+function foodLogsFrom(foodLogData) {
+  if (Array.isArray(foodLogData)) return foodLogData;
+  if (!foodLogData || typeof foodLogData !== "object") return [];
+  if (Array.isArray(foodLogData.foodLogs)) return foodLogData.foodLogs;
+  if (Array.isArray(foodLogData.food_logs)) return foodLogData.food_logs;
+  if (Array.isArray(foodLogData.logs)) return foodLogData.logs;
+  return [];
+}
+
+function foodFlag(foodItem = {}, keys = []) {
+  return keys.some((key) => isTruthy(foodItem[key]));
+}
+
+function analyzeFoodLog(foodLogData = [], labData = {}, patientData = {}) {
+  const labs = normalizeLabData(labData);
+  const patient = normalizePatientData(patientData);
+  const educationMessages = [];
+
+  for (const foodItem of foodLogsFrom(foodLogData)) {
+    const category = normalizeText(foodItem.category ?? foodItem.foodCategory ?? foodItem.food_category);
+
+    if (category === "processed food" || category.includes("processed food")) {
+      educationMessages.push("Fresh foods are preferred over processed foods.");
     }
 
-    return output;
-  }
-
-  if (phosphorusStatus === "low") {
-    output.push("Phosphorus is below the expected range. Dietary intake may need review.");
-  }
-
-  return output;
-}
-
-function evaluateSodium({ labs, profile }) {
-  const output = [];
-  const sodiumStatus =
-    classifySodium(labs.sodium) || normalizeText(labs.sodium_status);
-  const hypertensionStatus = normalizeText(profile.has_hypertension);
-  const hasHypertension = hypertensionStatus === "yes";
-  const frequentProcessedFood = isFrequentProcessedFood(profile.processed_food_intake);
-
-  if (sodiumStatus === "high") {
-    output.push("Reduce processed and high-salt foods. Prefer fresh home-prepared foods.");
-  } else if (hasHypertension) {
-    output.push("Limit high-salt and processed foods. Prefer fresh home-prepared foods.");
-  } else {
-    output.push("No sodium-focused dietary alert is needed at this time.");
-  }
-
-  if (frequentProcessedFood) {
-    output.push("Frequent processed food intake may increase sodium burden.");
-  }
-
-  if ((sodiumStatus === "high" || hasHypertension) && isAdvancedCkdStage(profile.ckd_stage)) {
-    output.push("Closer sodium and fluid monitoring is recommended in advanced CKD.");
-  }
-
-  return output;
-}
-
-function evaluateFluid({ profile, intake }) {
-  const output = [];
-  const fluidRestrictionStatus = normalizeText(profile.fluid_restriction_status);
-  const fluidLimitMl = toNumber(profile.fluid_limit_ml);
-  const loggedFluidMl = intake ? toNumber(intake.fluid_ml) : null;
-
-  if (fluidRestrictionStatus === "no") {
-    output.push("No fluid restriction has been indicated.");
-    return output;
-  }
-
-  if (fluidRestrictionStatus === "not sure" || fluidRestrictionStatus === "not_sure") {
-    output.push("Fluid restriction status is unclear.");
-    return output;
-  }
-
-  if (fluidRestrictionStatus !== "yes" || fluidLimitMl === null) {
-    return output;
-  }
-
-  output.push(`Fluid restriction is active. Daily fluid limit: ${fluidLimitMl} mL.`);
-
-  if (loggedFluidMl === null) {
-    return output;
-  }
-
-  if (loggedFluidMl >= 0.8 * fluidLimitMl && loggedFluidMl <= fluidLimitMl) {
-    output.push("Approaching fluid limit.");
-  }
-
-  if (loggedFluidMl > fluidLimitMl) {
-    output.push("Daily fluid limit exceeded.");
-  }
-
-  return output;
-}
-
-function evaluateDietPattern({ profile, labs }) {
-  const output = [];
-  const dietPattern = normalizeText(profile.diet_pattern);
-  const potassiumStatus = classifyPotassium(labs.potassium);
-  const phosphorusStatus = normalizeText(labs.phosphorus_status);
-
-  if (!dietPattern) {
-    return output;
-  }
-
-  if (dietPattern === "regular diet") {
-    output.push("Reported diet pattern: Regular diet.");
-  } else if (dietPattern === "renal diet") {
-    output.push("Reported diet pattern: Renal diet. This will be used as context for current recommendations.");
-  } else if (dietPattern === "high protein") {
-    output.push("Reported diet pattern: High protein.");
-  } else if (dietPattern === "low protein") {
-    output.push("Reported diet pattern: Low protein. Low protein diets are not routinely recommended for children unless clinically indicated.");
-  } else if (dietPattern === "low salt / low fat") {
-    output.push("Reported diet pattern: Low salt / Low fat.");
-  } else if (dietPattern === "low fat") {
-    output.push("Reported diet pattern: Low fat.");
-  } else if (dietPattern === "low salt") {
-    output.push("Reported diet pattern: Low salt.");
-  } else if (dietPattern === "low potassium") {
-    if (potassiumStatus === "normal") {
-      output.push("Reported diet pattern: Low potassium. This restriction may not currently be necessary based on laboratory values.");
-    } else {
-      output.push("Reported diet pattern: Low potassium.");
+    if (
+      foodFlag(foodItem, ["containsSaltAdditive", "contains_salt_additive", "isHighSodium", "is_high_sodium"])
+    ) {
+      educationMessages.push("Processed foods are commonly high in salt and sodium additives.");
     }
-  } else if (dietPattern === "low phosphorus") {
-    if (phosphorusStatus === "normal") {
-      output.push("Reported diet pattern: Low phosphorus. This restriction may not currently be necessary based on laboratory values.");
-    } else {
-      output.push("Reported diet pattern: Low phosphorus.");
+
+    if (foodFlag(foodItem, ["containsPotassiumAdditive", "contains_potassium_additive"])) {
+      educationMessages.push("Processed foods containing potassium additives should be avoided when possible.");
     }
-  } else if (dietPattern === "low purine") {
-    output.push("Reported diet pattern: Low purine.");
-  } else if (dietPattern === "vegetarian") {
-    output.push("Reported diet pattern: Vegetarian. Ensure adequate protein quality and intake.");
-  } else if (dietPattern === "vegan") {
-    output.push("Reported diet pattern: Vegan. Ensure adequate protein quality and intake.");
-  } else if (dietPattern === "other") {
-    output.push("Reported diet pattern: Other.");
+
+    if (foodFlag(foodItem, ["containsPhosphateAdditive", "contains_phosphate_additive"])) {
+      educationMessages.push("Processed foods containing phosphate additives should be avoided when possible.");
+    }
+
+    if (category === "dark-colored carbonated drink" || category === "dark colored carbonated drink") {
+      educationMessages.push("Dark-colored carbonated drinks may contain phosphate additives.");
+    }
+
+    if (category === "processed meat") {
+      educationMessages.push("Processed meats may contain phosphate additives and sodium additives.");
+    }
   }
 
-  return output;
+  if (labs.potassiumStatus === "Normal") {
+    educationMessages.push("Fruits and vegetables should not be routinely omitted solely because of potassium content.");
+  }
+
+  if (labs.phosphorusStatus === "High") {
+    educationMessages.push("Phosphate additives are highly absorbable.");
+  }
+
+  if (labs.potassiumStatus === "High") {
+    educationMessages.push("Potassium restriction should be based on serum potassium levels.");
+  }
+
+  if (isTruthy(patient.isDialysis)) {
+    educationMessages.push("Protein and nutrient losses may occur during dialysis.");
+  }
+
+  return uniqueMessages(educationMessages);
 }
 
-function evaluateMealPattern(profile) {
-  const output = [];
-  const mealPattern = normalizeText(profile.meal_pattern);
-
-  if (mealPattern === "regular (3 meals)") {
-    output.push("Meal pattern: Regular 3 meals.");
+function estimatedTargetsFor(profile = {}) {
+  try {
+    return generateProfileTargets(profile);
+  } catch (error) {
+    return {
+      target_error: error.message,
+    };
   }
-
-  if (mealPattern === "3 meals + snacks") {
-    output.push("Meal pattern: 3 meals with snacks. This may support adequate energy intake.");
-  }
-
-  if (mealPattern === "irregular") {
-    output.push("Meal pattern: Irregular. Irregular meals may affect energy intake and growth.");
-  }
-
-  return output;
 }
 
-function evaluateProcessedFood(profile) {
-  const output = [];
-  const processedFoodIntake = normalizeText(profile.processed_food_intake);
+function displayRecommendation(recommendation, alerts, educationMessages, patientData = {}) {
+  const summary = [
+    "Nutrition Summary",
+    `CKD Stage: ${patientData.CKDStage ?? patientData.ckd_stage ?? patientData.ckdStage ?? "Not specified"}`,
+    `Dialysis Status: ${isTruthy(patientData.isDialysis) ? "On dialysis" : "Not on dialysis"}`,
+    "",
+    "Estimated Nutritional Targets",
+    `- Protein: ${recommendation.protein_target ?? "Not available"}`,
+    `- Calories: ${recommendation.calorie_target ?? "Not available"}`,
+    `- Sodium: ${recommendation.sodium_target ?? "Not available"}`,
+    `- Potassium: ${recommendation.potassium_target ?? "Not available"}`,
+    `- Phosphorus: ${recommendation.phosphorus_target ?? "Not available"}`,
+    `- Calcium: ${recommendation.calcium_target ?? "Not available"}`,
+    "",
+    "Nutrition Alerts",
+    ...(alerts.length ? alerts.map((alert) => `- ${alert}`) : ["- No nutrition alerts generated."]),
+    "",
+    "Foodlogging Educational Guidance",
+    ...(educationMessages.length
+      ? educationMessages.map((message) => `- ${message}`)
+      : ["- No foodlogging education messages generated."]),
+    "",
+    "Professional Reminder",
+    PROFESSIONAL_REMINDER,
+  ];
 
-  if (processedFoodIntake === "often") {
-    output.push("Processed food intake: Often.");
-  }
+  return summary.join("\n");
+}
 
-  if (processedFoodIntake === "sometimes") {
-    output.push("Processed food intake: Sometimes.");
-  }
-
-  if (processedFoodIntake === "rarely") {
-    output.push("Processed food intake: Rarely.");
-  }
-
-  return output;
+function getMonitoringMode(ckdStage) {
+  const stage = normalizeText(ckdStage);
+  if (stage.includes("1") || stage.includes("2")) return { mode: "baseline" };
+  if (stage.includes("3") || stage.includes("4")) return { mode: "enhanced" };
+  return { mode: "intensive" };
 }
 
 function generatePhase2DecisionSupport(profile = {}, labs = {}, intake = null) {
-  const normalizedProfile = {
-    ...profile,
-    processed_food_intake:
-      profile.processed_food_intake ?? profile.processedFoodIntake,
-    meal_pattern: profile.meal_pattern ?? profile.mealPattern,
-    diet_pattern: profile.diet_pattern ?? profile.dietPattern,
-    fluid_restriction_status:
-      profile.fluid_restriction_status ?? profile.fluidRestrictionStatus,
-    fluid_limit_ml: profile.fluid_limit_ml ?? profile.fluidLimitMl,
-    has_hypertension: profile.has_hypertension ?? profile.hasHypertension,
-  };
-
-  const normalizedLabs = {
-    ...labs,
-    phosphorus_status: labs.phosphorus_status ?? labs.phosphorusStatus,
-    sodium_status: labs.sodium_status ?? labs.sodiumStatus,
-  };
-
-  const monitoring = getMonitoringMode(normalizedProfile.ckd_stage);
-  const messages = [monitoring.note];
-
-  messages.push(
-    ...evaluatePotassium({
-      labs: normalizedLabs,
-      profile: normalizedProfile,
-    }),
-  );
-  messages.push(
-    ...evaluatePhosphorus({
-      labs: normalizedLabs,
-      profile: normalizedProfile,
-    }),
-  );
-  messages.push(
-    ...evaluateSodium({
-      labs: normalizedLabs,
-      profile: normalizedProfile,
-    }),
-  );
-  messages.push(...evaluateFluid({ profile: normalizedProfile, intake }));
-  messages.push(...evaluateDietPattern({ profile: normalizedProfile, labs: normalizedLabs }));
-  messages.push(...evaluateMealPattern(normalizedProfile));
-  messages.push(...evaluateProcessedFood(normalizedProfile));
-
-  const finalMessages = uniqueMessages(messages);
+  const patientData = normalizePatientData(profile);
+  const labData = normalizeLabData(labs);
+  const foodLogData = intake?.foodLogs ?? intake?.food_logs ?? intake?.logs ?? intake ?? [];
+  const recommendation = estimatedTargetsFor(patientData);
+  const alerts = checkNutritionAlerts(patientData, labData);
+  const educationMessages = analyzeFoodLog(foodLogData, labData, patientData);
+  const finalMessages = uniqueMessages([...alerts, ...educationMessages]);
+  const monitoring = getMonitoringMode(patientData.CKDStage);
 
   return {
     monitoring_mode: monitoring.mode,
+    nutrition_summary: {
+      ckd_stage: patientData.CKDStage ?? null,
+      dialysis_status: isTruthy(patientData.isDialysis) ? "On dialysis" : "Not on dialysis",
+    },
+    estimated_nutritional_targets: recommendation,
+    nutrition_alerts: alerts,
+    foodlogging_educational_guidance: educationMessages,
+    professional_reminder: PROFESSIONAL_REMINDER,
     insights: finalMessages,
     recommendations: finalMessages,
-    summary_text: finalMessages.map((note) => `- ${note}`).join("\n"),
+    summary_text: displayRecommendation(recommendation, alerts, educationMessages, patientData),
   };
+}
+
+function isAdvancedCkdStage(value) {
+  const stage = normalizeText(value);
+  return stage.includes("5");
+}
+
+function evaluatePotassium({ labs = {} } = {}) {
+  const status = normalizeLabData(labs).potassiumStatus;
+  if (status === "High") return ["Potassium intake may require monitoring."];
+  if (status === "Normal") return ["Fruits and vegetables should not be routinely omitted solely because of potassium content."];
+  return [];
+}
+
+function evaluatePhosphorus({ labs = {} } = {}) {
+  return normalizeLabData(labs).phosphorusStatus === "High"
+    ? ["Phosphorus intake may require attention.", "Phosphate additives are highly absorbable."]
+    : [];
+}
+
+function evaluateSodium({ labs = {}, profile = {} } = {}) {
+  return checkNutritionAlerts(profile, labs).filter((message) =>
+    message.toLowerCase().includes("sodium"),
+  );
+}
+
+function evaluateFluid({ profile = {} } = {}) {
+  return isTruthy(profile.hasEdema ?? profile.has_edema ?? profile.edema)
+    ? ["Swelling may be associated with fluid retention."]
+    : [];
+}
+
+function evaluateDietPattern() {
+  return [];
+}
+
+function evaluateMealPattern() {
+  return [];
+}
+
+function evaluateProcessedFood(profile = {}) {
+  return normalizeText(profile.processed_food_intake ?? profile.processedFoodIntake) === "often"
+    ? ["Fresh foods are preferred over processed foods."]
+    : [];
 }
 
 module.exports = {
   generatePhase2DecisionSupport,
+  checkNutritionAlerts,
+  analyzeFoodLog,
+  displayRecommendation,
   getMonitoringMode,
   evaluatePotassium,
   evaluatePhosphorus,

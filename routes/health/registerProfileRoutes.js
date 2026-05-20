@@ -544,6 +544,15 @@ function registerProfileRoutes(router, deps) {
         step3?.physical_activity_level ?? step3?.physicalActivityLevel;
       const hasHypertension =
         step3?.has_hypertension ?? step3?.hasHypertension;
+      const hasEdema = step3?.has_edema ?? step3?.hasEdema ?? step2?.has_edema ?? step2?.hasEdema;
+      const appetite = step3?.appetite ?? step3?.appetiteStatus ?? step2?.appetite;
+      const bmiStatus = step1?.bmi_status ?? step1?.bmiStatus;
+      const muacStatus = step1?.muac_status ?? step1?.muacStatus;
+      const ckdType = step1?.ckd_type ?? step1?.ckdType;
+      const proteinCategory = step3?.protein_category ?? step3?.proteinCategory;
+      const hasDiabetes = step1?.has_diabetes ?? step1?.hasDiabetes ?? step2?.has_diabetes ?? step2?.hasDiabetes;
+      const hasHighProteinRequirement =
+        step3?.has_high_protein_requirement ?? step3?.hasHighProteinRequirement;
       const dietPattern = step3?.diet_pattern ?? step3?.dietPattern;
       const processedFoodIntake =
         step3?.processed_food_intake ?? step3?.processedFoodIntake;
@@ -695,6 +704,29 @@ function registerProfileRoutes(router, deps) {
         medicalProfilePayload.hasHypertension = hasHypertension;
         medicalProfilePayload.has_hypertension = hasHypertension;
       }
+      if (hasEdema) {
+        medicalProfilePayload.hasEdema = hasEdema;
+        medicalProfilePayload.has_edema = hasEdema;
+      }
+      if (appetite) {
+        medicalProfilePayload.appetite = appetite;
+      }
+      if (ckdType) {
+        medicalProfilePayload.ckdType = ckdType;
+        medicalProfilePayload.ckd_type = ckdType;
+      }
+      if (proteinCategory) {
+        medicalProfilePayload.proteinCategory = proteinCategory;
+        medicalProfilePayload.protein_category = proteinCategory;
+      }
+      if (hasDiabetes) {
+        medicalProfilePayload.hasDiabetes = hasDiabetes;
+        medicalProfilePayload.has_diabetes = hasDiabetes;
+      }
+      if (hasHighProteinRequirement) {
+        medicalProfilePayload.hasHighProteinRequirement = hasHighProteinRequirement;
+        medicalProfilePayload.has_high_protein_requirement = hasHighProteinRequirement;
+      }
       medicalProfilePayload.allergies = allergies;
       if (setupMedications.length > 0) {
         medicalProfilePayload.medications = setupMedications;
@@ -807,14 +839,28 @@ function registerProfileRoutes(router, deps) {
           medicalProfileId,
           testName: "Blood Test",
           date: step4?.resultDate ?? null,
+          albumin: parseFloat(step4?.albumin) || null,
+          albumin_status:
+            step4?.albumin_status ?? step4?.albuminStatus ?? null,
+          BUN: parseFloat(step4?.BUN ?? step4?.bun) || null,
+          BUN_status:
+            step4?.BUN_status ?? step4?.bun_status ?? step4?.bunStatus ?? null,
+          urea: parseFloat(step4?.urea) || null,
+          urea_status: step4?.urea_status ?? step4?.ureaStatus ?? null,
+          hemoglobin: parseFloat(step4?.hemoglobin) || null,
+          hemoglobin_status:
+            step4?.hemoglobin_status ?? step4?.hemoglobinStatus ?? null,
           creatinine: parseFloat(step4?.creatinine) || null,
           potassium: parseFloat(step4?.potassium) || null,
+          potassium_status:
+            step4?.potassium_status ?? step4?.potassiumStatus ?? null,
           phosphorus: parseFloat(step4?.phosphorus) || null,
           phosphorus_status:
             step4?.phosphorus_status ?? step4?.phosphorusStatus ?? null,
           sodium: parseFloat(step4?.sodium) || null,
           sodium_status: step4?.sodium_status ?? step4?.sodiumStatus ?? null,
           calcium: parseFloat(step4?.calcium) || null,
+          calcium_status: step4?.calcium_status ?? step4?.calciumStatus ?? null,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         };
 
@@ -832,6 +878,13 @@ function registerProfileRoutes(router, deps) {
         weight_kg: weightKg,
         bmi,
         ckd_stage: step1?.ckdStage,
+        ckd_type: ckdType,
+        protein_category: proteinCategory,
+        has_diabetes: hasDiabetes,
+        has_high_protein_requirement: hasHighProteinRequirement,
+        appetite,
+        bmi_status: bmiStatus,
+        muac_status: muacStatus,
         on_dialysis: step2?.isOnDialysis === true,
         dialysis_type: step2?.dialysisType,
         dry_weight_kg: step1?.dryWeight,
@@ -857,6 +910,13 @@ function registerProfileRoutes(router, deps) {
           weight_kg: weightKg,
           bmi,
           ckd_stage: step1?.ckdStage,
+          ckd_type: ckdType,
+          protein_category: proteinCategory,
+          has_diabetes: hasDiabetes,
+          has_high_protein_requirement: hasHighProteinRequirement,
+          appetite,
+          bmi_status: bmiStatus,
+          muac_status: muacStatus,
           dialysis_status:
             step2?.isOnDialysis === true ? "on dialysis" : "not on dialysis",
           dialysis_type: step2?.dialysisType,
@@ -865,17 +925,28 @@ function registerProfileRoutes(router, deps) {
           meal_pattern: mealPattern,
           processed_food_intake: processedFoodIntake,
           has_hypertension: hasHypertension,
+          has_edema: hasEdema,
           fluid_restriction_status: fluidRestrictionStatus,
           fluid_limit_ml: fluidLimitMl,
         },
         {
+          albumin: step4?.albumin,
+          albumin_status: step4?.albumin_status ?? step4?.albuminStatus,
+          BUN: step4?.BUN ?? step4?.bun,
+          BUN_status: step4?.BUN_status ?? step4?.bun_status ?? step4?.bunStatus,
+          urea: step4?.urea,
+          urea_status: step4?.urea_status ?? step4?.ureaStatus,
+          hemoglobin: step4?.hemoglobin,
+          hemoglobin_status: step4?.hemoglobin_status ?? step4?.hemoglobinStatus,
           potassium: step4?.potassium,
+          potassium_status: step4?.potassium_status ?? step4?.potassiumStatus,
           phosphorus: step4?.phosphorus,
           phosphorus_status:
             step4?.phosphorus_status ?? step4?.phosphorusStatus,
           sodium: step4?.sodium,
           sodium_status: step4?.sodium_status ?? step4?.sodiumStatus,
           calcium: step4?.calcium,
+          calcium_status: step4?.calcium_status ?? step4?.calciumStatus,
           creatinine: step4?.creatinine,
           result_date: step4?.resultDate,
         },
