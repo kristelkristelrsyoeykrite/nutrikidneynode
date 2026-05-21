@@ -233,6 +233,17 @@ function scheduleClocksForDate({ medicationDoc, dateKey }) {
   return uniqueClocks(clocks);
 }
 
+function actualDateKeyForScheduledClock({ normalized, dateKey, clock }) {
+  const kind = scheduleKind(normalized);
+  if (!["fixed_times", "frequency", "interval"].includes(kind)) return dateKey;
+  if (!usesDoseWindowHandoff(normalized)) return dateKey;
+  const anchorClock = parseClockTime(normalized.dailyTime);
+  if (!anchorClock || !clock) return dateKey;
+  return clockToMinutes(clock) < clockToMinutes(anchorClock)
+    ? addDaysToDateKey(dateKey, 1)
+    : dateKey;
+}
+
 function uniqueClocks(clocks) {
   const seen = new Set();
   const out = [];
@@ -254,10 +265,12 @@ function windowsForDateRange({ medicationDoc, startDateKey, days }) {
     const dateKey = addDaysToDateKey(startDateKey, offset);
     const clocks = scheduleClocksForDate({ medicationDoc, dateKey });
     for (const clock of clocks) {
-      const startDate = dateForManilaClock({ dateKey, clock });
+      const actualDateKey = actualDateKeyForScheduledClock({ normalized, dateKey, clock });
+      if (!isDateKeyInRange(actualDateKey, normalized.startDate, normalized.endDate)) continue;
+      const startDate = dateForManilaClock({ dateKey: actualDateKey, clock });
       if (!startDate) continue;
       starts.push({
-        startDateKey: dateKey,
+        startDateKey: actualDateKey,
         startTime: clock.text,
         startMs: startDate.getTime(),
       });
@@ -333,9 +346,14 @@ function findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs = D
   );
   if (expectedDate) {
     const exact = matching[0] || null;
-    const nextWindow = windows.find((window) => window.startMs > nowMs);
-    if (exact && normalizedTime === "00:00" && nowMs >= exact.endMs && nextWindow?.expectedTime === normalizedTime) {
-      return nextWindow;
+    const nextMatchingWindow = windows.find(
+      (window) => window.expectedTime === normalizedTime && window.startMs > nowMs,
+    );
+    if (!exact && nextMatchingWindow) {
+      return nextMatchingWindow;
+    }
+    if (exact && normalizedTime === "00:00" && nowMs >= exact.endMs && nextMatchingWindow) {
+      return nextMatchingWindow;
     }
     return exact;
   }

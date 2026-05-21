@@ -369,6 +369,69 @@ async function repeatedDoseStaleDateUndoTest() {
   assert.equal(staleUndo.window.expectedDate, "2026-05-20");
 }
 
+async function wrappedStartTimeMultipleDoseTest() {
+  const userId = "user_wrapped";
+  const medicationId = "med_wrapped";
+  const medicationDoc = {
+    isActive: true,
+    startDate: "2026-05-20",
+    endDate: "2026-05-22",
+    frequency_type: "fixed_times",
+    start_time: "20:00",
+    scheduled_times: ["20:00", "04:00", "12:00"],
+  };
+
+  const windows = dose.doseWindowsAround({
+    medicationDoc,
+    nowMs: atManila("2026-05-20", "18:43"),
+    beforeDays: 0,
+    afterDays: 2,
+  });
+
+  const firstWindows = windows.slice(0, 4).map((window) => window.id);
+  assert.deepEqual(firstWindows, [
+    "2026-05-20_20:00",
+    "2026-05-21_04:00",
+    "2026-05-21_12:00",
+    "2026-05-21_20:00",
+  ]);
+
+  const tonight = await dose.markWindowTaken({
+    userId,
+    medicationId,
+    medicationDoc,
+    expectedTime: "8:00 PM",
+    expectedDate: "2026-05-20",
+    nowMs: atManila("2026-05-20", "19:00"),
+  });
+  assert.equal(tonight.status, "taken");
+  assert.equal(tonight.window.expectedDate, "2026-05-20");
+
+  await assert.rejects(
+    () => dose.markWindowTaken({
+      userId,
+      medicationId,
+      medicationDoc,
+      expectedTime: "4:00 AM",
+      expectedDate: "2026-05-20",
+      nowMs: atManila("2026-05-20", "19:00"),
+    }),
+    /not started/,
+  );
+
+  await assert.rejects(
+    () => dose.markWindowTaken({
+      userId,
+      medicationId,
+      medicationDoc,
+      expectedTime: "12:00 PM",
+      expectedDate: "2026-05-20",
+      nowMs: atManila("2026-05-20", "19:00"),
+    }),
+    /not started/,
+  );
+}
+
 async function onceDailyMedicationResetsByDateTest() {
   const userId = "user_once";
   const medicationId = "med_once";
@@ -467,6 +530,7 @@ async function onceDailyMedicationResetsByDateTest() {
   await intervalMedicationWindowTest();
   await fixedTimesMidnightSelectionTest();
   await repeatedDoseStaleDateUndoTest();
+  await wrappedStartTimeMultipleDoseTest();
   await onceDailyMedicationResetsByDateTest();
   console.log("PASS medication dose window status simulation");
 })();
