@@ -408,6 +408,19 @@ async function getWindowLog({ userId, medicationId, window }) {
   return logBelongsToWindow(lateLog, window) ? lateLog : null;
 }
 
+async function findLoggedWindowByTime({ userId, medicationId, medicationDoc, expectedTime, nowMs = Date.now() }) {
+  const normalizedTime = parseClockTime(expectedTime)?.text;
+  if (!normalizedTime) return null;
+  const matching = doseWindowsAround({ medicationDoc, nowMs })
+    .filter((window) => window.expectedTime === normalizedTime)
+    .sort((a, b) => Math.abs(nowMs - a.startMs) - Math.abs(nowMs - b.startMs));
+  for (const window of matching) {
+    const log = await getWindowLog({ userId, medicationId, window });
+    if (log) return { window, log };
+  }
+  return null;
+}
+
 async function resolveDoseWindowStatus({ userId, medicationId, window, nowMs = Date.now() }) {
   const log = await getWindowLog({ userId, medicationId, window });
   if (log) return { status: log.late ? "late" : "taken", log };
@@ -606,6 +619,17 @@ async function markWindowTaken({ userId, medicationId, medicationDoc, expectedTi
       status: existingLog.late ? "late" : "taken",
     };
   }
+  const loggedMatch = expectedTime
+    ? await findLoggedWindowByTime({ userId, medicationId, medicationDoc, expectedTime, nowMs })
+    : null;
+  if (loggedMatch) {
+    return {
+      late: Boolean(loggedMatch.log.late),
+      docId: loggedMatch.log.id,
+      window: loggedMatch.window,
+      status: loggedMatch.log.late ? "late" : "taken",
+    };
+  }
 
   if (nowMs < window.startMs - EARLY_MARK_TAKEN_GRACE_MS) {
     throw new Error("This dose window has not started yet.");
@@ -637,9 +661,13 @@ async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTi
   if (!window) {
     throw new Error("No matching dose window found for this medication.");
   }
-  const { docId } = await deleteDoseLogsForWindow({ userId, medicationId, window });
-  const resolved = await resolveDoseWindowStatus({ userId, medicationId, window, nowMs });
-  return { docId, window, status: resolved.status };
+  const loggedMatch = expectedTime
+    ? await findLoggedWindowByTime({ userId, medicationId, medicationDoc, expectedTime, nowMs })
+    : null;
+  const targetWindow = loggedMatch?.window || window;
+  const { docId } = await deleteDoseLogsForWindow({ userId, medicationId, window: targetWindow });
+  const resolved = await resolveDoseWindowStatus({ userId, medicationId, window: targetWindow, nowMs });
+  return { docId, window: targetWindow, status: resolved.status };
 }
 
 async function ensureDoseRecordsForDate({ userId, medicationId, medicationDoc, dateKey }) {
