@@ -2177,6 +2177,10 @@ async function recalculateNutritionArtifacts(userId) {
     physical_activity_level:
       medicalProfile?.physical_activity_level ??
       medicalProfile?.physicalActivityLevel,
+    has_hypertension:
+      medicalProfile?.has_hypertension ?? medicalProfile?.hasHypertension,
+    has_edema:
+      medicalProfile?.has_edema ?? medicalProfile?.hasEdema,
     fluid_restriction_status:
       medicalProfile?.fluid_restriction_status ??
       medicalProfile?.fluidRestrictionStatus,
