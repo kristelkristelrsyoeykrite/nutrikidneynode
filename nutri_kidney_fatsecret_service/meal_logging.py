@@ -37,6 +37,7 @@ from models import (
 )
 from response_formatter import ResponseFormatter
 from phosphorus_service import get_phosphorus_guide
+from water_content_identification import USDAWaterContentIdentifier
 
 logger = logging.getLogger(__name__)
 
@@ -530,6 +531,13 @@ class MealLoggingService:
             final_nutrients,
             child_context,
         )
+        fluid_contribution = self._build_fluid_contribution(
+            food_details=food_details,
+            raw_details=details,
+            serving=serving,
+            quantity=request.quantity,
+            child_context=child_context,
+        )
 
         return MealPreviewResult(
             preview_id=str(uuid4()),
@@ -553,9 +561,70 @@ class MealLoggingService:
             potassium_reliability_note=food_details.potassium_reliability_note,
             safety_flags=safety["safety_flags"],
             insights=safety["insights"],
+            fluid_contribution=fluid_contribution,
             child_context_snapshot=child_context,
             user_notes=request.user_notes,
         )
+
+    def _build_fluid_contribution(
+        self,
+        food_details: MealFoodDetailsResult,
+        raw_details: Dict[str, Any],
+        serving: MealServing,
+        quantity: float,
+        child_context: ChildProfileContext,
+    ) -> Dict[str, Any]:
+        targets = child_context.targets or {}
+        daily_limit = (
+            targets.get("dailyFluidLimitMl")
+            or targets.get("daily_fluid_limit_ml")
+            or targets.get("fluidLimitMl")
+            or targets.get("fluid_limit_ml")
+        )
+        # Check if fluid restriction is actually disabled (daily_limit will be None if disabled)
+        # Only show "Enable fluid restriction" message if daily_limit is None/not set
+        if daily_limit is None:
+            return {
+                "message": "Enable fluid restriction to monitor the fluid content of food.",
+                "water_data_available": False,
+                "total_fluid_contribution_ml": 0.0,
+            }
+
+        current_consumed = (
+            targets.get("currentDailyFluidConsumedMl")
+            or targets.get("current_daily_fluid_consumed_ml")
+            or 0.0
+        )
+        serving_grams = None
+        if serving.metric_serving_unit and serving.metric_serving_unit.lower() in {
+            "g",
+            "gram",
+            "grams",
+        }:
+            if serving.metric_serving_amount is not None:
+                serving_grams = serving.metric_serving_amount * quantity
+
+        try:
+            return USDAWaterContentIdentifier().analyze_selected_food(
+                food_name=food_details.food_name,
+                daily_fluid_limit_ml=daily_limit,
+                total_daily_fluid_consumed_ml=current_consumed,
+                fatsecret_food_details=raw_details,
+                serving_amount_grams=serving_grams,
+                serving_size=serving_grams,
+                serving_unit="g" if serving_grams is not None else None,
+            ).to_dict()
+        except Exception as error:
+            logger.warning(
+                "Fluid contribution preview unavailable for %s: %s",
+                food_details.food_name,
+                error,
+            )
+            return {
+                "message": "No water content data available for this food.",
+                "water_data_available": False,
+                "total_fluid_contribution_ml": 0.0,
+            }
 
     def _get_raw_food_details(self, food_id: str) -> Dict[str, Any]:
         if food_id in self._food_details_cache:
