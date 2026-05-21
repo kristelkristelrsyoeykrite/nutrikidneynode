@@ -283,7 +283,8 @@ async function fixedTimesMidnightSelectionTest() {
       userId,
       medicationId,
       medicationDoc,
-      expectedTime: "08:00",
+      expectedTime: "8:00 AM",
+      expectedDate: "2026-05-20",
       nowMs: atManila("2026-05-20", "18:00"),
     }),
     /too late/,
@@ -294,7 +295,8 @@ async function fixedTimesMidnightSelectionTest() {
     userId,
     medicationId,
     medicationDoc,
-    expectedTime: "16:00",
+    expectedTime: "4:00 PM",
+    expectedDate: "2026-05-20",
     nowMs: atManila("2026-05-20", "16:30"),
   });
   assert.equal(afternoonTaken.status, "taken");
@@ -304,7 +306,8 @@ async function fixedTimesMidnightSelectionTest() {
     userId,
     medicationId,
     medicationDoc,
-    expectedTime: "16:00",
+    expectedTime: "4:00 PM",
+    expectedDate: "2026-05-20",
     nowMs: atManila("2026-05-20", "18:00"),
   });
   assert.equal(undone.status, "missed");
@@ -315,7 +318,8 @@ async function fixedTimesMidnightSelectionTest() {
       userId,
       medicationId,
       medicationDoc,
-      expectedTime: "00:00",
+      expectedTime: "12:00 AM",
+      expectedDate: "2026-05-20",
       nowMs: atManila("2026-05-20", "18:00"),
     }),
     /not started/,
