@@ -4,6 +4,7 @@ const { decryptHealthDocument } = require("./encryption");
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MISSED_NOTIFICATION_DELAY_MS = 5 * 60 * 1000;
+const EARLY_MARK_TAKEN_GRACE_MS = 60 * 60 * 1000;
 const UNDO_WINDOW_MS = 2 * 60 * 1000;
 
 function todayDateKey(nowMs = Date.now()) {
@@ -349,7 +350,7 @@ function logBelongsToWindow(log = {}, window) {
   const logDate = String(log.date || log.expectedDate || "").trim();
   const logTime = parseClockTime(String(log.time || log.expectedTime || ""))?.text;
   const takenMs = timestampMs(log.takenAt || log.createdAt);
-  if (logDate === window.expectedDate && logTime === window.expectedTime && !takenMs) {
+  if (logDate === window.expectedDate && logTime === window.expectedTime) {
     return true;
   }
   if (!takenMs) return false;
@@ -570,13 +571,12 @@ async function markWindowTaken({ userId, medicationId, medicationDoc, expectedTi
     throw new Error("No matching dose window found for this medication.");
   }
 
-  if (nowMs < window.startMs) {
+  if (nowMs < window.startMs - EARLY_MARK_TAKEN_GRACE_MS) {
     throw new Error("This dose window has not started yet.");
   }
 
   if (nowMs >= window.endMs) {
-    const { docId, lateDocId } = await writeLateDoseLog({ userId, medicationId, window });
-    return { late: true, lateLogId: lateDocId, docId, window, status: "late" };
+    throw new Error("Medication is too late and cannot be marked as taken.");
   }
 
   const { docId } = await writeTakenDoseLog({ userId, medicationId, window });
@@ -691,4 +691,5 @@ module.exports = {
   doseRecordId,
   notificationWindowId,
   MISSED_NOTIFICATION_DELAY_MS,
+  EARLY_MARK_TAKEN_GRACE_MS,
 };
