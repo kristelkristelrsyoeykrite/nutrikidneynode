@@ -585,7 +585,13 @@ function registerProfileRoutes(router, deps) {
         step3?.physical_activity_level ?? step3?.physicalActivityLevel;
       const hasHypertension =
         step3?.has_hypertension ?? step3?.hasHypertension;
-      const hasEdema = step3?.has_edema ?? step3?.hasEdema ?? step2?.has_edema ?? step2?.hasEdema;
+      const hasEdema =
+        step3?.has_edema ??
+        step3?.hasEdema ??
+        step2?.has_edema ??
+        step2?.hasEdema ??
+        step1?.has_edema ??
+        step1?.hasEdema;
       const isPostTransplant =
         step1?.is_post_transplant ??
         step1?.isPostTransplant ??

@@ -500,8 +500,9 @@ async function buildChildContext(userId, requestedChildProfileId) {
     rawChildProfile ||
     {};
   const medicalProfile = decryptHealthDocument(rawMedicalProfile);
-  const targets =
+  const rawTargets =
     (await getDocData("nutritionTargets", nutritionTargetId)) || {};
+  const targets = decryptHealthDocument(rawTargets);
   const fluidRestrictionStatus =
     medicalProfile?.fluidRestrictionStatus ||
     medicalProfile?.fluid_restriction_status ||
@@ -512,7 +513,8 @@ async function buildChildContext(userId, requestedChildProfileId) {
           medicalProfile?.fluid_limit_ml ??
           targets.fluidLimitMl ??
           targets.fluid_limit_ml ??
-          targets.dailyFluidLimitMl,
+          targets.dailyFluidLimitMl ??
+          targets.daily_fluid_limit_ml,
       )
     : null;
   const postTransplantStatus =
