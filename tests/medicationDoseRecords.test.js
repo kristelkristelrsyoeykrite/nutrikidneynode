@@ -151,34 +151,25 @@ async function fixedTimesMedicationWindowTest() {
   });
   assert.equal(undone.status, "missed");
 
-  const late = await dose.markWindowTaken({
-    userId,
-    medicationId,
-    medicationDoc,
-    expectedDate: "2026-05-20",
-    expectedTime: "22:30",
-    nowMs: atManila("2026-05-21", "06:31"),
-  });
-  assert.equal(late.status, "late");
-  assert.equal(late.late, true);
+  await assert.rejects(
+    () => dose.markWindowTaken({
+      userId,
+      medicationId,
+      medicationDoc,
+      expectedDate: "2026-05-20",
+      expectedTime: "22:30",
+      nowMs: atManila("2026-05-21", "06:31"),
+    }),
+    /too late/,
+  );
 
-  const lateResolved = await dose.resolveDoseWindowStatus({
+  const expiredResolved = await dose.resolveDoseWindowStatus({
     userId,
     medicationId,
     window,
     nowMs: atManila("2026-05-21", "06:32"),
   });
-  assert.equal(lateResolved.status, "late");
-
-  const undoneLate = await dose.undoWindowTaken({
-    userId,
-    medicationId,
-    medicationDoc,
-    expectedDate: "2026-05-20",
-    expectedTime: "22:30",
-    nowMs: atManila("2026-05-21", "06:33"),
-  });
-  assert.equal(undoneLate.status, "expired_missed");
+  assert.equal(expiredResolved.status, "expired_missed");
 
   await assert.rejects(
     () => dose.markWindowTaken({
@@ -191,6 +182,17 @@ async function fixedTimesMedicationWindowTest() {
     }),
     /not started/,
   );
+
+  const earlyTaken = await dose.markWindowTaken({
+    userId,
+    medicationId,
+    medicationDoc,
+    expectedDate: "2026-05-21",
+    expectedTime: "22:30",
+    nowMs: atManila("2026-05-21", "21:31"),
+  });
+  assert.equal(earlyTaken.status, "taken");
+  assert.equal(earlyTaken.late, false);
 }
 
 async function intervalMedicationWindowTest() {
@@ -253,15 +255,181 @@ async function intervalMedicationWindowTest() {
   });
   assert.equal(undone.status, "missed");
 
-  const late = await dose.markWindowTaken({
+  await assert.rejects(
+    () => dose.markWindowTaken({
+      userId,
+      medicationId,
+      medicationDoc,
+      expectedDate: "2026-05-20",
+      expectedTime: "14:00",
+      nowMs: atManila("2026-05-20", "20:01"),
+    }),
+    /too late/,
+  );
+}
+
+async function fixedTimesMidnightSelectionTest() {
+  const userId = "user_midnight";
+  const medicationId = "med_midnight";
+  const medicationDoc = {
+    isActive: true,
+    startDate: "2026-05-20",
+    endDate: "2026-05-22",
+    scheduledTimes: ["08:00", "16:00", "00:00"],
+  };
+
+  await assert.rejects(
+    () => dose.markWindowTaken({
+      userId,
+      medicationId,
+      medicationDoc,
+      expectedTime: "8:00 AM",
+      expectedDate: "2026-05-20",
+      nowMs: atManila("2026-05-20", "18:00"),
+    }),
+    /too late/,
+  );
+
+  mockServerNow = new Date(atManila("2026-05-20", "16:30"));
+  const afternoonTaken = await dose.markWindowTaken({
     userId,
     medicationId,
     medicationDoc,
+    expectedTime: "4:00 PM",
     expectedDate: "2026-05-20",
-    expectedTime: "14:00",
-    nowMs: atManila("2026-05-20", "20:01"),
+    nowMs: atManila("2026-05-20", "16:30"),
   });
-  assert.equal(late.status, "late");
+  assert.equal(afternoonTaken.status, "taken");
+  assert.equal(afternoonTaken.window.expectedDate, "2026-05-20");
+
+  const undone = await dose.undoWindowTaken({
+    userId,
+    medicationId,
+    medicationDoc,
+    expectedTime: "4:00 PM",
+    expectedDate: "2026-05-20",
+    nowMs: atManila("2026-05-20", "18:00"),
+  });
+  assert.equal(undone.status, "missed");
+  assert.equal(undone.window.expectedDate, "2026-05-20");
+
+  await assert.rejects(
+    () => dose.markWindowTaken({
+      userId,
+      medicationId,
+      medicationDoc,
+      expectedTime: "12:00 AM",
+      expectedDate: "2026-05-20",
+      nowMs: atManila("2026-05-20", "18:00"),
+    }),
+    /not started/,
+  );
+}
+
+async function repeatedDoseStaleDateUndoTest() {
+  const userId = "user_repeated_stale";
+  const medicationId = "med_repeated_stale";
+  const medicationDoc = {
+    isActive: true,
+    startDate: "2026-05-19",
+    endDate: "2026-05-22",
+    scheduledTimes: ["08:00", "16:00", "00:00"],
+  };
+
+  mockServerNow = new Date(atManila("2026-05-20", "16:30"));
+  await dose.markWindowTaken({
+    userId,
+    medicationId,
+    medicationDoc,
+    expectedTime: "4:00 PM",
+    expectedDate: "2026-05-20",
+    nowMs: atManila("2026-05-20", "16:30"),
+  });
+
+  const staleMark = await dose.markWindowTaken({
+    userId,
+    medicationId,
+    medicationDoc,
+    expectedTime: "4:00 PM",
+    expectedDate: "2026-05-19",
+    nowMs: atManila("2026-05-20", "18:00"),
+  });
+  assert.equal(staleMark.status, "taken");
+  assert.equal(staleMark.window.expectedDate, "2026-05-20");
+
+  const staleUndo = await dose.undoWindowTaken({
+    userId,
+    medicationId,
+    medicationDoc,
+    expectedTime: "4:00 PM",
+    expectedDate: "2026-05-19",
+    nowMs: atManila("2026-05-20", "18:00"),
+  });
+  assert.equal(staleUndo.status, "missed");
+  assert.equal(staleUndo.window.expectedDate, "2026-05-20");
+}
+
+async function wrappedStartTimeMultipleDoseTest() {
+  const userId = "user_wrapped";
+  const medicationId = "med_wrapped";
+  const medicationDoc = {
+    isActive: true,
+    startDate: "2026-05-20",
+    endDate: "2026-05-22",
+    frequency_type: "fixed_times",
+    start_time: "20:00",
+    scheduled_times: ["20:00", "04:00", "12:00"],
+  };
+
+  const windows = dose.doseWindowsAround({
+    medicationDoc,
+    nowMs: atManila("2026-05-20", "18:43"),
+    beforeDays: 0,
+    afterDays: 2,
+  });
+
+  const firstWindows = windows.slice(0, 4).map((window) => window.id);
+  assert.deepEqual(firstWindows, [
+    "2026-05-20_20:00",
+    "2026-05-21_04:00",
+    "2026-05-21_12:00",
+    "2026-05-21_20:00",
+  ]);
+
+  const tonight = await dose.markWindowTaken({
+    userId,
+    medicationId,
+    medicationDoc,
+    expectedTime: "8:00 PM",
+    expectedDate: "2026-05-20",
+    nowMs: atManila("2026-05-20", "19:00"),
+  });
+  assert.equal(tonight.status, "taken");
+  assert.equal(tonight.window.expectedDate, "2026-05-20");
+
+  await assert.rejects(
+    () => dose.markWindowTaken({
+      userId,
+      medicationId,
+      medicationDoc,
+      expectedTime: "4:00 AM",
+      expectedDate: "2026-05-20",
+      nowMs: atManila("2026-05-20", "19:00"),
+    }),
+    /not started/,
+  );
+
+  await assert.rejects(
+    () => dose.markWindowTaken({
+      userId,
+      medicationId,
+      medicationDoc,
+      expectedTime: "12:00 PM",
+      expectedDate: "2026-05-20",
+      nowMs: atManila("2026-05-20", "19:00"),
+    }),
+    /not started/,
+  );
 }
 
 async function onceDailyMedicationResetsByDateTest() {
@@ -360,6 +528,9 @@ async function onceDailyMedicationResetsByDateTest() {
 (async () => {
   await fixedTimesMedicationWindowTest();
   await intervalMedicationWindowTest();
+  await fixedTimesMidnightSelectionTest();
+  await repeatedDoseStaleDateUndoTest();
+  await wrappedStartTimeMultipleDoseTest();
   await onceDailyMedicationResetsByDateTest();
   console.log("PASS medication dose window status simulation");
 })();

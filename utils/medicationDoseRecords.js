@@ -4,6 +4,7 @@ const { decryptHealthDocument } = require("./encryption");
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MISSED_NOTIFICATION_DELAY_MS = 5 * 60 * 1000;
+const EARLY_MARK_TAKEN_GRACE_MS = 60 * 60 * 1000;
 const UNDO_WINDOW_MS = 2 * 60 * 1000;
 
 function todayDateKey(nowMs = Date.now()) {
@@ -38,12 +39,22 @@ function addDaysToDateKey(dateKey, deltaDays) {
 
 function parseClockTime(text) {
   if (typeof text !== "string") return null;
-  const match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return null;
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
+  const normalized = text.trim();
+  const match24Hour = normalized.match(/^(\d{1,2}):(\d{2})$/);
+  const match12Hour = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?$/i);
+  if (!match24Hour && !match12Hour) return null;
+  let hour = Number(match24Hour?.[1] || match12Hour?.[1]);
+  const minute = Number(match24Hour?.[2] || match12Hour?.[2] || 0);
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  if (minute < 0 || minute > 59) return null;
+  if (match12Hour) {
+    if (hour < 1 || hour > 12) return null;
+    const period = match12Hour[3].toLowerCase();
+    if (period === "a") hour = hour === 12 ? 0 : hour;
+    if (period === "p") hour = hour === 12 ? 12 : hour + 12;
+  } else if (hour < 0 || hour > 23) {
+    return null;
+  }
   return {
     hour,
     minute,
@@ -222,6 +233,17 @@ function scheduleClocksForDate({ medicationDoc, dateKey }) {
   return uniqueClocks(clocks);
 }
 
+function actualDateKeyForScheduledClock({ normalized, dateKey, clock }) {
+  const kind = scheduleKind(normalized);
+  if (!["fixed_times", "frequency", "interval"].includes(kind)) return dateKey;
+  if (!usesDoseWindowHandoff(normalized)) return dateKey;
+  const anchorClock = parseClockTime(normalized.dailyTime);
+  if (!anchorClock || !clock) return dateKey;
+  return clockToMinutes(clock) < clockToMinutes(anchorClock)
+    ? addDaysToDateKey(dateKey, 1)
+    : dateKey;
+}
+
 function uniqueClocks(clocks) {
   const seen = new Set();
   const out = [];
@@ -243,10 +265,12 @@ function windowsForDateRange({ medicationDoc, startDateKey, days }) {
     const dateKey = addDaysToDateKey(startDateKey, offset);
     const clocks = scheduleClocksForDate({ medicationDoc, dateKey });
     for (const clock of clocks) {
-      const startDate = dateForManilaClock({ dateKey, clock });
+      const actualDateKey = actualDateKeyForScheduledClock({ normalized, dateKey, clock });
+      if (!isDateKeyInRange(actualDateKey, normalized.startDate, normalized.endDate)) continue;
+      const startDate = dateForManilaClock({ dateKey: actualDateKey, clock });
       if (!startDate) continue;
       starts.push({
-        startDateKey: dateKey,
+        startDateKey: actualDateKey,
         startTime: clock.text,
         startMs: startDate.getTime(),
       });
@@ -314,15 +338,36 @@ function getActiveDoseWindow({ medicationDoc, nowMs = Date.now() }) {
 function findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs = Date.now() }) {
   const normalizedTime = parseClockTime(expectedTime)?.text;
   if (!normalizedTime) return null;
-  const matching = doseWindowsAround({ medicationDoc, nowMs }).filter(
+  const windows = doseWindowsAround({ medicationDoc, nowMs });
+  const matching = windows.filter(
     (window) =>
       window.expectedTime === normalizedTime &&
       (!expectedDate || window.expectedDate === String(expectedDate)),
   );
+  if (expectedDate) {
+    const exact = matching[0] || null;
+    const nextMatchingWindow = windows.find(
+      (window) => window.expectedTime === normalizedTime && window.startMs > nowMs,
+    );
+    if (!exact && nextMatchingWindow) {
+      return nextMatchingWindow;
+    }
+    if (exact && normalizedTime === "00:00" && nowMs >= exact.endMs && nextMatchingWindow) {
+      return nextMatchingWindow;
+    }
+    return exact;
+  }
   return matching.find(
     (window) => window.startMs <= nowMs && nowMs < window.endMs,
   ) || matching.find(
+    (window) => window.startMs - EARLY_MARK_TAKEN_GRACE_MS <= nowMs && nowMs < window.endMs,
+  ) || matching.find((window) => {
+    const nextWindow = windows.find((item) => item.startMs > nowMs);
+    return nextWindow?.id === window.id;
+  }) || matching.find(
     (window) => dateKeyFromUtcMs(window.startMs) === todayDateKey(nowMs),
+  ) || matching.find(
+    (window) => nowMs < window.startMs,
   ) || matching[0] || null;
 }
 
@@ -349,7 +394,7 @@ function logBelongsToWindow(log = {}, window) {
   const logDate = String(log.date || log.expectedDate || "").trim();
   const logTime = parseClockTime(String(log.time || log.expectedTime || ""))?.text;
   const takenMs = timestampMs(log.takenAt || log.createdAt);
-  if (logDate === window.expectedDate && logTime === window.expectedTime && !takenMs) {
+  if (logDate === window.expectedDate && logTime === window.expectedTime) {
     return true;
   }
   if (!takenMs) return false;
@@ -379,6 +424,19 @@ async function getWindowLog({ userId, medicationId, window }) {
   if (!lateSnap.exists) return null;
   const lateLog = { id: lateSnap.id, late: true, ...(lateSnap.data() || {}) };
   return logBelongsToWindow(lateLog, window) ? lateLog : null;
+}
+
+async function findLoggedWindowByTime({ userId, medicationId, medicationDoc, expectedTime, nowMs = Date.now() }) {
+  const normalizedTime = parseClockTime(expectedTime)?.text;
+  if (!normalizedTime) return null;
+  const matching = doseWindowsAround({ medicationDoc, nowMs })
+    .filter((window) => window.expectedTime === normalizedTime)
+    .sort((a, b) => Math.abs(nowMs - a.startMs) - Math.abs(nowMs - b.startMs));
+  for (const window of matching) {
+    const log = await getWindowLog({ userId, medicationId, window });
+    if (log) return { window, log };
+  }
+  return null;
 }
 
 async function resolveDoseWindowStatus({ userId, medicationId, window, nowMs = Date.now() }) {
@@ -563,20 +621,40 @@ async function markActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
 }
 
 async function markWindowTaken({ userId, medicationId, medicationDoc, expectedTime, expectedDate, nowMs = Date.now() }) {
-  const window =
-    findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs }) ||
-    getActiveDoseWindow({ medicationDoc, nowMs });
+  const window = expectedTime
+    ? findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs })
+    : getActiveDoseWindow({ medicationDoc, nowMs });
   if (!window) {
     throw new Error("No matching dose window found for this medication.");
   }
 
-  if (nowMs < window.startMs) {
+  const existingLog = await getWindowLog({ userId, medicationId, window });
+  if (existingLog) {
+    return {
+      late: Boolean(existingLog.late),
+      docId: existingLog.id,
+      window,
+      status: existingLog.late ? "late" : "taken",
+    };
+  }
+  const loggedMatch = expectedTime
+    ? await findLoggedWindowByTime({ userId, medicationId, medicationDoc, expectedTime, nowMs })
+    : null;
+  if (loggedMatch) {
+    return {
+      late: Boolean(loggedMatch.log.late),
+      docId: loggedMatch.log.id,
+      window: loggedMatch.window,
+      status: loggedMatch.log.late ? "late" : "taken",
+    };
+  }
+
+  if (nowMs < window.startMs - EARLY_MARK_TAKEN_GRACE_MS) {
     throw new Error("This dose window has not started yet.");
   }
 
   if (nowMs >= window.endMs) {
-    const { docId, lateDocId } = await writeLateDoseLog({ userId, medicationId, window });
-    return { late: true, lateLogId: lateDocId, docId, window, status: "late" };
+    throw new Error("Medication is too late and cannot be marked as taken.");
   }
 
   const { docId } = await writeTakenDoseLog({ userId, medicationId, window });
@@ -595,15 +673,19 @@ async function undoActiveWindowTaken({ userId, medicationId, medicationDoc, nowM
 }
 
 async function undoWindowTaken({ userId, medicationId, medicationDoc, expectedTime, expectedDate, nowMs = Date.now() }) {
-  const window =
-    findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs }) ||
-    getActiveDoseWindow({ medicationDoc, nowMs });
+  const window = expectedTime
+    ? findWindowByTime({ medicationDoc, expectedTime, expectedDate, nowMs })
+    : getActiveDoseWindow({ medicationDoc, nowMs });
   if (!window) {
     throw new Error("No matching dose window found for this medication.");
   }
-  const { docId } = await deleteDoseLogsForWindow({ userId, medicationId, window });
-  const resolved = await resolveDoseWindowStatus({ userId, medicationId, window, nowMs });
-  return { docId, window, status: resolved.status };
+  const loggedMatch = expectedTime
+    ? await findLoggedWindowByTime({ userId, medicationId, medicationDoc, expectedTime, nowMs })
+    : null;
+  const targetWindow = loggedMatch?.window || window;
+  const { docId } = await deleteDoseLogsForWindow({ userId, medicationId, window: targetWindow });
+  const resolved = await resolveDoseWindowStatus({ userId, medicationId, window: targetWindow, nowMs });
+  return { docId, window: targetWindow, status: resolved.status };
 }
 
 async function ensureDoseRecordsForDate({ userId, medicationId, medicationDoc, dateKey }) {
@@ -691,4 +773,5 @@ module.exports = {
   doseRecordId,
   notificationWindowId,
   MISSED_NOTIFICATION_DELAY_MS,
+  EARLY_MARK_TAKEN_GRACE_MS,
 };

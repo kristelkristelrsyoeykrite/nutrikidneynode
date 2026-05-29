@@ -232,6 +232,8 @@ function registerProfileRoutes(router, deps) {
         fluid_limit_ml,
         hasHypertension,
         has_hypertension,
+        hasEdema,
+        has_edema,
         isPostTransplant,
         is_post_transplant,
         requiresSterileDiet,
@@ -313,6 +315,7 @@ function registerProfileRoutes(router, deps) {
         fluidRestrictionStatus ?? fluid_restriction_status;
       const fluidLimitValue = fluidLimitMl ?? fluid_limit_ml;
       const hypertensionValue = hasHypertension ?? has_hypertension;
+      const edemaValue = hasEdema ?? has_edema;
       const postTransplantValue = isPostTransplant ?? is_post_transplant;
       const sterileDietInput = requiresSterileDiet ?? requires_sterile_diet;
       const sterileDietWeeksValue = sterileDietWeeks ?? sterile_diet_weeks;
@@ -415,6 +418,8 @@ function registerProfileRoutes(router, deps) {
           fluidLimitValue === undefined ? undefined : Number(fluidLimitValue),
         hasHypertension: hypertensionValue,
         has_hypertension: hypertensionValue,
+        hasEdema: edemaValue,
+        has_edema: edemaValue,
         isPostTransplant: postTransplantValue,
         is_post_transplant: postTransplantValue,
         requiresSterileDiet: sterileDietValue,
