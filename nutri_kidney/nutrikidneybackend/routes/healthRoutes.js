@@ -13,6 +13,10 @@ const {
   encryptHealthDocument,
   decryptHealthDocument,
 } = require("../utils/encryption");
+const {
+  consumeAiUsage,
+  getAiUsageStatus,
+} = require("../utils/aiUsageLimiter");
 
 function requestMeta(req, extra = {}) {
   const body = req.body && typeof req.body === "object" ? req.body : {};
@@ -21,6 +25,98 @@ function requestMeta(req, extra = {}) {
     keys: Object.keys(body).length,
     ...extra,
   };
+}
+
+function medicationTargetId({
+  userId,
+  uid,
+  profileUserId,
+  childProfileId,
+  child_profile_id,
+} = {}) {
+  return profileUserId || childProfileId || child_profile_id || userId || uid;
+}
+
+function medicationOwnerIds(medication = {}) {
+  return [
+    medication.userId,
+    medication.uid,
+    medication.profileUserId,
+    medication.childProfileId,
+    medication.child_profile_id,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function medicationDoseLogOwnerId(medication = {}, fallbackUserId) {
+  return medicationOwnerIds(medication)[0] || String(fallbackUserId || "").trim();
+}
+
+function normalizeClockTime(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return "";
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return "";
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return "";
+  return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
+}
+
+function canAccessMedication(medication = {}, targetProfileId, requesterUserId) {
+  const owners = medicationOwnerIds(medication);
+  if (owners.length === 0) return true;
+  const target = String(targetProfileId || "").trim();
+  const requester = String(requesterUserId || "").trim();
+  return owners.some((owner) => owner === target || owner === requester);
+}
+
+async function deleteQuerySnapshot(snapshot) {
+  if (snapshot.empty) return 0;
+  let deleted = 0;
+  for (let index = 0; index < snapshot.docs.length; index += 400) {
+    const batch = db.batch();
+    for (const doc of snapshot.docs.slice(index, index + 400)) {
+      batch.delete(doc.ref);
+      deleted += 1;
+    }
+    await batch.commit();
+  }
+  return deleted;
+}
+
+async function cleanupMedicationReminderArtifacts({
+  medicationId,
+  profileUserId,
+  scheduledTimes = [],
+}) {
+  if (!medicationId) return;
+
+  const collectionsWithMedicationId = ["notifications", "upcomingReminders"];
+  for (const collectionName of collectionsWithMedicationId) {
+    const snapshot = await db
+      .collection(collectionName)
+      .where("medicationId", "==", medicationId)
+      .get();
+    await deleteQuerySnapshot(snapshot);
+  }
+
+  const today = todayDateKey();
+  for (const time of scheduledTimes) {
+    const timeText = String(time || "").trim();
+    if (!timeText) continue;
+    await db
+      .collection("medicationIntakeLogs")
+      .doc(`${profileUserId}_${medicationId}_${today}_${timeText}`)
+      .delete()
+      .catch(() => {});
+    await db
+      .collection("reminderState")
+      .doc(`${profileUserId}_missed_medication_${medicationId}_${today}_${timeText}`)
+      .delete()
+      .catch(() => {});
+  }
 }
 
 //////////////////// STEP 1 - Just collect data ////////////////////
@@ -145,13 +241,21 @@ router.post("/phase2-decision-support", async (req, res) => {
 router.post("/extract-prescription", async (req, res) => {
   console.log("Prescription OCR requested");
 
+  let aiUsage = null;
   try {
-    const { imageBase64, image_base64, contentType, content_type } = req.body;
+    const { imageBase64, image_base64, contentType, content_type, userId, uid } = req.body;
     const imagePayload = imageBase64 || image_base64;
 
     if (!imagePayload) {
       throw new Error("imageBase64 is required");
     }
+
+    aiUsage = await consumeAiUsage({
+      db,
+      admin,
+      uid: userId || uid,
+      feature: "medication_ocr",
+    });
 
     const result = await prescriptionOcrBridge.scanMedicationPrescription({
       image_base64: imagePayload,
@@ -161,12 +265,14 @@ router.post("/extract-prescription", async (req, res) => {
     return res.status(200).json({
       success: true,
       ...result,
+      aiUsage,
     });
   } catch (error) {
     console.error("EXTRACT_PRESCRIPTION ERROR:", error.message);
     return res.status(error.statusCode || 400).json({
       success: false,
       error: error.message,
+      aiUsage: error.aiUsage || aiUsage,
       details: error.data || null,
     });
   }
@@ -175,13 +281,21 @@ router.post("/extract-prescription", async (req, res) => {
 router.post("/medications/scan", async (req, res) => {
   console.log("Medication scan requested");
 
+  let aiUsage = null;
   try {
-    const { imageBase64, image_base64, contentType, content_type } = req.body;
+    const { imageBase64, image_base64, contentType, content_type, userId, uid } = req.body;
     const imagePayload = imageBase64 || image_base64;
 
     if (!imagePayload) {
       throw new Error("imageBase64 is required");
     }
+
+    aiUsage = await consumeAiUsage({
+      db,
+      admin,
+      uid: userId || uid,
+      feature: "medication_ocr",
+    });
 
     const result = await prescriptionOcrBridge.scanMedicationPrescription({
       image_base64: imagePayload,
@@ -191,13 +305,36 @@ router.post("/medications/scan", async (req, res) => {
     return res.status(200).json({
       success: true,
       ...result,
+      aiUsage,
     });
   } catch (error) {
     console.error("MEDICATION_SCAN ERROR:", error.message);
     return res.status(error.statusCode || 400).json({
       success: false,
       error: error.message,
+      aiUsage: error.aiUsage || aiUsage,
       details: error.data || null,
+    });
+  }
+});
+
+router.post("/ai-usage/status", async (req, res) => {
+  try {
+    const { userId, uid, feature } = req.body;
+    const aiUsage = await getAiUsageStatus({
+      db,
+      uid: userId || uid,
+      feature: feature || "medication_ocr",
+    });
+
+    return res.status(200).json({
+      success: true,
+      aiUsage,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      error: error.message,
     });
   }
 });
@@ -239,7 +376,12 @@ router.post("/medications/confirm", async (req, res) => {
       source,
     } = req.body;
 
-    const medicationUserId = userId || uid || childProfileId || child_profile_id;
+    const medicationUserId = medicationTargetId({
+      userId,
+      uid,
+      childProfileId,
+      child_profile_id,
+    });
     const medicationNameValue =
       medicineName || medicationName || medication_name || name;
 
@@ -379,8 +521,12 @@ router.put("/medications/:medicationId", async (req, res) => {
       source,
     } = req.body;
 
-    const medicationUserId =
-      userId || uid || childProfileId || child_profile_id;
+    const medicationUserId = medicationTargetId({
+      userId,
+      uid,
+      childProfileId,
+      child_profile_id,
+    });
     if (!medicationUserId || !medicationId) {
       throw new Error("Missing required medication update fields");
     }
@@ -394,8 +540,8 @@ router.put("/medications/:medicationId", async (req, res) => {
       });
     }
 
-    const existing = doc.data() || {};
-    if (existing.userId && existing.userId !== medicationUserId) {
+    const existing = decryptHealthDocument(doc.data() || {});
+    if (!canAccessMedication(existing, medicationUserId, userId || uid)) {
       return res.status(403).json({
         success: false,
         error: "Medication does not belong to this user",
@@ -407,7 +553,7 @@ router.put("/medications/:medicationId", async (req, res) => {
     const medicationPayload = cleanObject({
       userId: medicationUserId,
       uid: medicationUserId,
-      childProfileId: childProfileId || child_profile_id,
+      childProfileId: childProfileId || child_profile_id || medicationUserId,
       name: medicationNameValue,
       medicationName: medicationNameValue,
       medication_name: medicationNameValue,
@@ -469,7 +615,12 @@ router.post("/medications/mark-taken", async (req, res) => {
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
 
-    const medicationUserId = profileUserId || childProfileId || userId || uid;
+    const medicationUserId = medicationTargetId({
+      userId,
+      uid,
+      profileUserId,
+      childProfileId,
+    });
     if (!medicationUserId || !medicationId) {
       throw new Error("Missing userId and/or medicationId");
     }
@@ -484,24 +635,36 @@ router.post("/medications/mark-taken", async (req, res) => {
     }
 
     const medication = decryptHealthDocument(medDoc.data() || {});
+    if (!canAccessMedication(medication, medicationUserId, userId || uid)) {
+      return res.status(403).json({
+        success: false,
+        error: "Medication does not belong to this profile",
+      });
+    }
     const scheduledTimes = Array.isArray(medication.scheduled_times)
       ? medication.scheduled_times
       : [];
-    const startTime = String(medication.start_time || "").trim();
+    const startTime = normalizeClockTime(medication.start_time);
     const candidateTimes =
-      scheduledTimes.length > 0 ? scheduledTimes : startTime ? [startTime] : [];
+      scheduledTimes.length > 0
+        ? scheduledTimes.map(normalizeClockTime).filter(Boolean)
+        : startTime
+          ? [startTime]
+          : [];
 
     if (candidateTimes.length === 0) {
       throw new Error("Medication has no scheduled time(s) to mark as taken.");
     }
 
     const today = todayDateKey();
+    const logUserId = medicationDoseLogOwnerId(medication, medicationUserId);
+    const requestedTime = normalizeClockTime(time);
 
     const doseTimesToMark =
       candidateTimes.length <= 1
         ? candidateTimes
-        : time
-          ? [time]
+        : requestedTime
+          ? [requestedTime]
           : [];
 
     if (doseTimesToMark.length === 0) {
@@ -509,15 +672,15 @@ router.post("/medications/mark-taken", async (req, res) => {
     }
 
     const writes = doseTimesToMark.map((doseTime) => {
-      const timeText = String(doseTime || "").trim();
-      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+      const timeText = normalizeClockTime(doseTime);
+      const docId = `${logUserId}_${medicationId}_${today}_${timeText}`;
       return db
         .collection("medicationIntakeLogs")
         .doc(docId)
         .set(
           {
             id: docId,
-            userId: medicationUserId,
+            userId: logUserId,
             medicationId,
             date: today,
             time: timeText,
@@ -556,7 +719,12 @@ router.post("/medications/mark-untaken", async (req, res) => {
     const { userId, uid, profileUserId, childProfileId, medicationId, time } =
       req.body || {};
 
-    const medicationUserId = profileUserId || childProfileId || userId || uid;
+    const medicationUserId = medicationTargetId({
+      userId,
+      uid,
+      profileUserId,
+      childProfileId,
+    });
     if (!medicationUserId || !medicationId) {
       throw new Error("Missing userId and/or medicationId");
     }
@@ -571,24 +739,36 @@ router.post("/medications/mark-untaken", async (req, res) => {
     }
 
     const medication = decryptHealthDocument(medDoc.data() || {});
+    if (!canAccessMedication(medication, medicationUserId, userId || uid)) {
+      return res.status(403).json({
+        success: false,
+        error: "Medication does not belong to this profile",
+      });
+    }
     const scheduledTimes = Array.isArray(medication.scheduled_times)
       ? medication.scheduled_times
       : [];
-    const startTime = String(medication.start_time || "").trim();
+    const startTime = normalizeClockTime(medication.start_time);
     const candidateTimes =
-      scheduledTimes.length > 0 ? scheduledTimes : startTime ? [startTime] : [];
+      scheduledTimes.length > 0
+        ? scheduledTimes.map(normalizeClockTime).filter(Boolean)
+        : startTime
+          ? [startTime]
+          : [];
 
     if (candidateTimes.length === 0) {
       throw new Error("Medication has no scheduled time(s) to mark as untaken.");
     }
 
     const today = todayDateKey();
+    const logUserId = medicationDoseLogOwnerId(medication, medicationUserId);
+    const requestedTime = normalizeClockTime(time);
 
     const doseTimesToUnmark =
       candidateTimes.length <= 1
         ? candidateTimes
-        : time
-          ? [time]
+        : requestedTime
+          ? [requestedTime]
           : [];
 
     if (doseTimesToUnmark.length === 0) {
@@ -596,8 +776,8 @@ router.post("/medications/mark-untaken", async (req, res) => {
     }
 
     const writes = doseTimesToUnmark.map((doseTime) => {
-      const timeText = String(doseTime || "").trim();
-      const docId = `${medicationUserId}_${medicationId}_${today}_${timeText}`;
+      const timeText = normalizeClockTime(doseTime);
+      const docId = `${logUserId}_${medicationId}_${today}_${timeText}`;
       return db.collection("medicationIntakeLogs").doc(docId).delete();
     });
 
@@ -624,11 +804,13 @@ router.delete("/medications/:medicationId", async (req, res) => {
 
   try {
     const medicationId = req.params.medicationId;
-    const medicationUserId =
-      req.query.userId ||
-      req.query.uid ||
-      req.query.childProfileId ||
-      req.query.child_profile_id;
+    const medicationUserId = medicationTargetId({
+      userId: req.query.userId,
+      uid: req.query.uid,
+      profileUserId: req.query.profileUserId,
+      childProfileId: req.query.childProfileId,
+      child_profile_id: req.query.child_profile_id,
+    });
 
     if (!medicationUserId || !medicationId) {
       throw new Error("Missing required medication delete fields");
@@ -643,8 +825,8 @@ router.delete("/medications/:medicationId", async (req, res) => {
       });
     }
 
-    const existing = doc.data() || {};
-    if (existing.userId && existing.userId !== medicationUserId) {
+    const existing = decryptHealthDocument(doc.data() || {});
+    if (!canAccessMedication(existing, medicationUserId, req.query.userId || req.query.uid)) {
       return res.status(403).json({
         success: false,
         error: "Medication does not belong to this user",
@@ -652,6 +834,14 @@ router.delete("/medications/:medicationId", async (req, res) => {
     }
 
     await docRef.delete();
+    await cleanupMedicationReminderArtifacts({
+      medicationId,
+      profileUserId: medicationUserId,
+      scheduledTimes:
+        Array.isArray(existing.scheduled_times) && existing.scheduled_times.length > 0
+          ? existing.scheduled_times
+          : [existing.start_time || existing.time],
+    });
 
     return res.status(200).json({
       success: true,
@@ -701,7 +891,12 @@ router.post("/save-medication", async (req, res) => {
     } = req.body;
 
     const medicationNameValue = medication_name || medicationName || name;
-    const medicationUserId = profileUserId || childProfileId || userId || uid;
+    const medicationUserId = medicationTargetId({
+      userId,
+      uid,
+      profileUserId,
+      childProfileId,
+    });
     const requestedChildProfileId = profileUserId || childProfileId;
 
     if (!medicationUserId || !medicationNameValue || !frequency_type || !start_time) {
@@ -818,7 +1013,7 @@ router.post("/update-medication", async (req, res) => {
     // Allow updates if the medication belongs to either:
     // - the selected profile (child/self), or
     // - the requester (caregiver) for legacy records.
-    if (ownerId && !ownerMatchesTarget && !ownerMatchesRequester) {
+    if (!canAccessMedication(existing, normalizedTargetProfileId, normalizedRequesterId)) {
       return res.status(403).json({
         success: false,
         error: "Medication does not belong to this user",
@@ -879,7 +1074,12 @@ router.post("/delete-medication", async (req, res) => {
 
   try {
     const { userId, uid, profileUserId, childProfileId, medicationId } = req.body;
-    const medicationUserId = profileUserId || childProfileId || userId || uid;
+    const medicationUserId = medicationTargetId({
+      userId,
+      uid,
+      profileUserId,
+      childProfileId,
+    });
 
     if (!medicationUserId || !medicationId) {
       throw new Error("Missing required medication delete fields");
@@ -895,8 +1095,8 @@ router.post("/delete-medication", async (req, res) => {
       });
     }
 
-    const existing = doc.data() || {};
-    if (existing.userId && existing.userId !== medicationUserId) {
+    const existing = decryptHealthDocument(doc.data() || {});
+    if (!canAccessMedication(existing, medicationUserId, userId || uid)) {
       return res.status(403).json({
         success: false,
         error: "Medication does not belong to this user",
@@ -904,6 +1104,14 @@ router.post("/delete-medication", async (req, res) => {
     }
 
     await docRef.delete();
+    await cleanupMedicationReminderArtifacts({
+      medicationId,
+      profileUserId: medicationUserId,
+      scheduledTimes:
+        Array.isArray(existing.scheduled_times) && existing.scheduled_times.length > 0
+          ? existing.scheduled_times
+          : [existing.start_time || existing.time],
+    });
 
     res.status(200).json({
       success: true,

@@ -254,7 +254,15 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
         email: widget.accountLabel,
       );
       if (response['success'] != true) {
-        throw Exception(response['error'] ?? 'Unable to start MFA setup.');
+        final retryAfter = int.tryParse(
+          response['retryAfterSeconds']?.toString() ?? '',
+        );
+        final retryMessage = retryAfter == null || retryAfter <= 0
+            ? ''
+            : ' Try again in about ${retryAfter ~/ 60 + 1} minute(s).';
+        throw Exception(
+          '${response['error'] ?? 'Unable to start MFA setup.'}$retryMessage',
+        );
       }
 
       final isReusing = response['reusedSecret'] == true;
@@ -331,71 +339,67 @@ class _AuthenticatorMfaPageState extends State<AuthenticatorMfaPage>
     final controller = TextEditingController();
     var errorText = '';
 
-    try {
-      return await showDialog<String>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) {
-          return StatefulBuilder(
-            builder: (context, setDialogState) {
-              return AlertDialog(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                title: const Text('Disable MFA'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Enter the current 6-digit code from Microsoft Authenticator to turn off MFA.',
-                    ),
-                    const SizedBox(height: 12),
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: const Text('Disable MFA'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Enter the current 6-digit code from Microsoft Authenticator to turn off MFA.',
+                  ),
+                  const SizedBox(height: 12),
                   TextField(
-                      controller: controller,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.digitsOnly,
-                      ],
-                      maxLength: 6,
-                      decoration: InputDecoration(
-                        labelText: '6-digit code',
-                        counterText: '',
-                        errorText: errorText.isEmpty ? null : errorText,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                    controller: controller,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                    maxLength: 6,
+                    decoration: InputDecoration(
+                      labelText: '6-digit code',
+                      counterText: '',
+                      errorText: errorText.isEmpty ? null : errorText,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.of(dialogContext).pop(),
-                    child: const Text('Cancel'),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      final code = controller.text.trim();
-                      if (!RegExp(r'^\d{6}$').hasMatch(code)) {
-                        setDialogState(() {
-                          errorText = 'Enter a valid 6-digit code.';
-                        });
-                        return;
-                      }
-                      Navigator.of(dialogContext).pop(code);
-                    },
-                    child: const Text('Disable'),
                   ),
                 ],
-              );
-            },
-          );
-        },
-      );
-    } finally {
-      controller.dispose();
-    }
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final code = controller.text.trim();
+                    if (!RegExp(r'^\d{6}$').hasMatch(code)) {
+                      setDialogState(() {
+                        errorText = 'Enter a valid 6-digit code.';
+                      });
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop(code);
+                  },
+                  child: const Text('Disable'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _disableMfa() async {

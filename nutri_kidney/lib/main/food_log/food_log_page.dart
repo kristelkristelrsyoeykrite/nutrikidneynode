@@ -15,6 +15,10 @@ class FoodLogPage extends StatefulWidget {
 }
 
 class _FoodLogPageState extends State<FoodLogPage> {
+  static final Map<String, Map<String, dynamic>> _targetCache = {};
+  static final Map<String, DateTime> _targetCacheTimes = {};
+  static const Duration _targetCacheTtl = Duration(minutes: 10);
+
   int _currentIndex = 1; // 1 corresponds to 'Food'
   String _selectedMealType = 'Breakfast';
 
@@ -30,8 +34,14 @@ class _FoodLogPageState extends State<FoodLogPage> {
   final ImagePicker _imagePicker = ImagePicker();
   Map<String, dynamic>? _imageReviewFoodDetails;
   Map<String, dynamic>? _imageReviewSelectedServing;
+  Map<String, dynamic>? _imageReviewFluidContribution;
+  Map<String, dynamic>? _foodImageAiUsage;
+  Map<String, dynamic> _nutritionTargets = {};
+  bool _isLoadingImageReviewFluid = false;
+  String? _imageReviewFluidContributionKey;
   bool _isSavingImageReview = false;
   String? _quickAddLoadingName;
+  Timer? _searchDebounce;
   final TextEditingController _imageReviewQuantityController =
       TextEditingController(text: '1');
 
@@ -67,9 +77,16 @@ class _FoodLogPageState extends State<FoodLogPage> {
   @override
   void initState() {
     super.initState();
+    _hydrateNutritionTargetsFromCache();
     _searchController.addListener(() {
-      setState(() {
-        _searchQuery = _searchController.text.trim().toLowerCase();
+      _searchDebounce?.cancel();
+      _searchDebounce = Timer(const Duration(milliseconds: 180), () {
+        if (!mounted) return;
+        final nextQuery = _searchController.text.trim().toLowerCase();
+        if (nextQuery == _searchQuery) return;
+        setState(() {
+          _searchQuery = nextQuery;
+        });
       });
     });
     _resolvedCaregiverNoChildEmptyState = widget.caregiverNoChildEmptyState;
@@ -80,16 +97,71 @@ class _FoodLogPageState extends State<FoodLogPage> {
     } else {
       _loadFoodLogs();
     }
+    _loadFoodImageAiUsage();
   }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
     _imageReviewQuantityController.dispose();
     super.dispose();
   }
 
   String get _selectedDate => DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+  String get _nutritionTargetCacheKey =>
+      widget.profileUserId?.trim().isNotEmpty == true
+          ? widget.profileUserId!.trim()
+          : 'active';
+
+  bool get _hasFreshNutritionTargetCache {
+    final cachedAt = _targetCacheTimes[_nutritionTargetCacheKey];
+    if (cachedAt == null) return false;
+    return DateTime.now().difference(cachedAt) < _targetCacheTtl;
+  }
+
+  void _hydrateNutritionTargetsFromCache() {
+    final cached = _targetCache[_nutritionTargetCacheKey];
+    if (cached == null || cached.isEmpty) return;
+    _nutritionTargets = Map<String, dynamic>.from(cached);
+  }
+
+  Future<void> _loadFoodImageAiUsage() async {
+    try {
+      final response = await ApiService.getAiUsageStatus('food_image');
+      if (!mounted) return;
+      setState(() {
+        _foodImageAiUsage = ApiService.aiUsageFromResponse(response);
+      });
+    } catch (_) {
+      // Usage text is helpful, but scanning should still be available if this fails.
+    }
+  }
+
+  void _applyFoodImageAiUsage(Map<String, dynamic> response) {
+    final usage = ApiService.aiUsageFromResponse(response);
+    if (usage == null || !mounted) return;
+    setState(() {
+      _foodImageAiUsage = usage;
+    });
+  }
+
+  Future<void> _showAiLimitDialog(Map<String, dynamic> response) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Daily scan limit reached'),
+        content: Text(ApiService.aiLimitMessage(response)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _loadFoodLogs() async {
     if (!mounted) return;
@@ -149,7 +221,45 @@ class _FoodLogPageState extends State<FoodLogPage> {
   }
 
   Future<void> _loadFoodLogBackgroundData() async {
+    unawaited(_loadNutritionTargets());
     await _loadGamificationSummary();
+  }
+
+  Future<void> _loadNutritionTargets() async {
+    final cacheKey = _nutritionTargetCacheKey;
+    final cached = _targetCache[cacheKey];
+    if (cached != null && cached.isNotEmpty) {
+      if (mounted && _nutritionTargets.isEmpty) {
+        setState(() {
+          _nutritionTargets = Map<String, dynamic>.from(cached);
+        });
+      }
+      if (_hasFreshNutritionTargetCache) return;
+    }
+
+    try {
+      final response = await ApiService.getDashboardSummary(
+        profileUserId: widget.profileUserId,
+      );
+      if (!mounted) return;
+      final targets = response['nutritionTargets'];
+      final nextTargets = targets is Map
+          ? Map<String, dynamic>.from(targets)
+          : <String, dynamic>{};
+      if (nextTargets.isNotEmpty) {
+        _targetCache[cacheKey] = Map<String, dynamic>.from(nextTargets);
+        _targetCacheTimes[cacheKey] = DateTime.now();
+      }
+      setState(() {
+        _nutritionTargets = nextTargets;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      if (cached != null && cached.isNotEmpty) return;
+      setState(() {
+        _nutritionTargets = {};
+      });
+    }
   }
 
   Future<void> _loadGamificationSummary({
@@ -217,13 +327,6 @@ class _FoodLogPageState extends State<FoodLogPage> {
           message: 'Amazing work! Two full weeks of steady tracking.',
           icon: Icons.whatshot,
           color: Color(0xFFFF7043),
-        );
-      case 'rainbow_eater':
-        return const _AchievementDetails(
-          title: 'Rainbow Eater',
-          message: 'Congratulations! You logged foods from 5 color groups.',
-          icon: Icons.palette_outlined,
-          color: Color(0xFF7E57C2),
         );
       case 'hydration_hero':
         return const _AchievementDetails(
@@ -823,6 +926,85 @@ class _FoodLogPageState extends State<FoodLogPage> {
     return confirmed == true;
   }
 
+  List<String> _decisionSupportMessages(Map<String, dynamic>? response) {
+    final decisionSupport = response?['decisionSupport'];
+    if (decisionSupport is! Map) return const [];
+
+    final rawMessages =
+        decisionSupport['foodlogging_educational_guidance'] ??
+            decisionSupport['foodloggingEducationalGuidance'] ??
+            decisionSupport['educationMessages'];
+    if (rawMessages is! List) return const [];
+
+    final seen = <String>{};
+    final messages = <String>[];
+    for (final message in rawMessages) {
+      final text = message?.toString().trim() ?? '';
+      if (text.isEmpty || seen.contains(text)) continue;
+      seen.add(text);
+      messages.add(text);
+    }
+    return messages;
+  }
+
+  Future<void> _showDecisionSupportGuidance(
+    Map<String, dynamic>? response,
+  ) async {
+    final messages = _decisionSupportMessages(response);
+    if (!mounted || messages.isEmpty) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Food guidance'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 320),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: messages
+                  .map(
+                    (message) => Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            Icons.info_outline,
+                            color: Color(0xFF66BB6A),
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              message,
+                              style: const TextStyle(
+                                color: Color(0xFF37474F),
+                                fontSize: 14,
+                                height: 1.35,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<Map<String, dynamic>?> _submitFoodLogWithAllergyCheck(
     Map<String, dynamic> request,
   ) async {
@@ -847,6 +1029,9 @@ class _FoodLogPageState extends State<FoodLogPage> {
         needsManualReview: request['needsManualReview'] == true,
         raw: request['raw'] as Map<String, dynamic>?,
         waterMl: request['waterMl'] as double?,
+        fluidContribution: request['fluidContribution'] is Map
+            ? Map<String, dynamic>.from(request['fluidContribution'] as Map)
+            : null,
         userConfirmedAllergyWarning: confirmed,
       );
     }
@@ -917,7 +1102,9 @@ class _FoodLogPageState extends State<FoodLogPage> {
           _loggedMeals.putIfAbsent(_selectedMealType, () => []).add(savedFood);
         });
         await _loadGamificationSummary(showAchievementPopup: true);
+        unawaited(_loadNutritionTargets());
       }
+      await _showDecisionSupportGuidance(response);
     } finally {
       if (mounted) {
         setState(() {
@@ -1154,12 +1341,17 @@ class _FoodLogPageState extends State<FoodLogPage> {
         contentType: _contentTypeForImage(pickedImage.path),
       );
       if (!mounted) return;
+      _applyFoodImageAiUsage(response);
       if (processingDialogOpen) {
         Navigator.of(context, rootNavigator: true).pop();
         processingDialogOpen = false;
       }
 
       if (response['success'] == false) {
+        if (response['rateLimited'] == true) {
+          await _showAiLimitDialog(response);
+          return;
+        }
         throw Exception(
           response['error'] ?? 'The image could not be identified as food.',
         );
@@ -1210,6 +1402,9 @@ class _FoodLogPageState extends State<FoodLogPage> {
             'display_food_id': food.foodId,
           };
           _imageReviewSelectedServing = firstServing;
+          _imageReviewFluidContribution = null;
+          _imageReviewFluidContributionKey = null;
+          _isLoadingImageReviewFluid = false;
           _imageReviewQuantityController.text = '1';
         });
         debugPrint('IMAGE_RECOGNITION_INLINE_REVIEW_READY');
@@ -1900,6 +2095,66 @@ class _FoodLogPageState extends State<FoodLogPage> {
     );
     bool isSavingServing = false;
     final isEditing = existingLog != null;
+    Map<String, dynamic>? fluidContributionPreview;
+    bool isLoadingFluidPreview = false;
+    String? fluidContributionPreviewKey;
+
+    Future<Map<String, dynamic>> loadFluidContributionPreview() async {
+      if (food.foodId == null) {
+        return {
+          'message': 'No water content data available for this food.',
+          'water_data_available': false,
+          'total_fluid_contribution_ml': 0.0,
+        };
+      }
+      try {
+        final response = await ApiService.previewFoodLog(
+          profileUserId: widget.profileUserId,
+          mealType: _selectedMealType,
+          foodId: food.foodId!,
+          servingId: selectedServing['serving_id']?.toString() ?? '',
+          quantity: double.tryParse(quantityController.text.trim()) ?? 1.0,
+        );
+        return _fluidContributionFromPreview(response) ??
+            {
+              'message': 'No water content data available for this food.',
+              'water_data_available': false,
+              'total_fluid_contribution_ml': 0.0,
+            };
+      } catch (_) {
+        return {
+          'message': 'No water content data available for this food.',
+          'water_data_available': false,
+          'total_fluid_contribution_ml': 0.0,
+        };
+      }
+    }
+
+    Future<void> refreshFluidContributionPreview(
+      BuildContext dialogContext,
+      StateSetter setStateDialog,
+    ) async {
+      if (isEditing || food.foodId == null) return;
+      final quantity = double.tryParse(quantityController.text.trim()) ?? 0.0;
+      if (quantity <= 0) return;
+      final servingId = selectedServing['serving_id']?.toString() ?? '';
+      if (servingId.isEmpty) return;
+      final previewKey = '$servingId|${quantity.toStringAsFixed(3)}';
+      if (isLoadingFluidPreview || fluidContributionPreviewKey == previewKey) {
+        return;
+      }
+
+      setStateDialog(() {
+        isLoadingFluidPreview = true;
+        fluidContributionPreviewKey = previewKey;
+      });
+      final preview = await loadFluidContributionPreview();
+      if (!dialogContext.mounted) return;
+      setStateDialog(() {
+        fluidContributionPreview = preview;
+        isLoadingFluidPreview = false;
+      });
+    }
 
     debugPrint('FOOD_REVIEW_PANEL_SHOW servings=${servings.length}');
     await showModalBottomSheet(
@@ -1932,6 +2187,21 @@ class _FoodLogPageState extends State<FoodLogPage> {
             final servingText = selectedServing['display_text']?.toString() ??
                 selectedServing['serving_description']?.toString() ??
                 'Serving';
+            if (!isEditing && quantity > 0 && !isLoadingFluidPreview) {
+              final servingId = selectedServing['serving_id']?.toString() ?? '';
+              final previewKey = '$servingId|${quantity.toStringAsFixed(3)}';
+              if (servingId.isNotEmpty &&
+                  fluidContributionPreviewKey != previewKey) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (dialogContext.mounted) {
+                    refreshFluidContributionPreview(
+                      dialogContext,
+                      setStateDialog,
+                    );
+                  }
+                });
+              }
+            }
 
             return Padding(
               padding: EdgeInsets.only(
@@ -2011,6 +2281,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
                             onTap: () {
                               setStateDialog(() {
                                 selectedServing = serving;
+                                fluidContributionPreview = null;
+                                fluidContributionPreviewKey = null;
                               });
                             },
                           );
@@ -2023,7 +2295,10 @@ class _FoodLogPageState extends State<FoodLogPage> {
                       controller: quantityController,
                       isNumber: true,
                       hint: 'e.g. 1, 0.5, 2',
-                      onChanged: (_) => setStateDialog(() {}),
+                      onChanged: (_) => setStateDialog(() {
+                        fluidContributionPreview = null;
+                        fluidContributionPreviewKey = null;
+                      }),
                     ),
                     const SizedBox(height: 12),
                     Text(
@@ -2083,6 +2358,13 @@ class _FoodLogPageState extends State<FoodLogPage> {
                                 ? '${phosphorus.round()} mg (guide)'
                                 : 'Not available',
                           ),
+                          if (!isEditing) ...[
+                            const Divider(height: 20),
+                            _buildFluidContributionInline(
+                              fluidContributionPreview,
+                              isLoadingFluidPreview,
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -2155,6 +2437,10 @@ class _FoodLogPageState extends State<FoodLogPage> {
                                           _savingLogKeys.add(logKey);
                                         });
                                       }
+                                      final fluidContribution = isEditing
+                                          ? null
+                                          : fluidContributionPreview ??
+                                              await loadFluidContributionPreview();
                                       final response = isEditing
                                           ? await ApiService.updateFoodLog(
                                               profileUserId:
@@ -2196,6 +2482,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
                                               'phosphorus': phosphorus,
                                               'source': 'fatsecret',
                                               'raw': foodDetails,
+                                              'fluidContribution':
+                                                  fluidContribution,
                                             });
                                       if (response == null) {
                                         return;
@@ -2238,9 +2526,17 @@ class _FoodLogPageState extends State<FoodLogPage> {
                                         await _loadGamificationSummary(
                                           showAchievementPopup: !isEditing,
                                         );
+                                        if (!isEditing) {
+                                          unawaited(_loadNutritionTargets());
+                                        }
                                       }
                                       if (dialogContext.mounted) {
                                         Navigator.pop(dialogContext);
+                                      }
+                                      if (!isEditing) {
+                                        unawaited(
+                                          _showDecisionSupportGuidance(response),
+                                        );
                                       }
                                     } catch (e) {
                                       if (dialogContext.mounted) {
@@ -2295,6 +2591,201 @@ class _FoodLogPageState extends State<FoodLogPage> {
         );
       },
     );
+  }
+
+  Map<String, dynamic>? _fluidContributionFromPreview(
+    Map<String, dynamic> response,
+  ) {
+    final preview = response['preview'];
+    final previewMap = preview is Map
+        ? Map<String, dynamic>.from(preview)
+        : const <String, dynamic>{};
+    final rawFluid = previewMap['fluid_contribution'] ??
+        previewMap['fluidContribution'] ??
+        response['fluid_contribution'] ??
+        response['fluidContribution'];
+    if (rawFluid is! Map) return null;
+    return Map<String, dynamic>.from(rawFluid);
+  }
+
+  double? _fluidNumber(Map<String, dynamic> fluid, List<String> keys) {
+    for (final key in keys) {
+      final value = fluid[key];
+      if (value is num) return value.toDouble();
+      final parsed = double.tryParse(value?.toString() ?? '');
+      if (parsed != null) return parsed;
+    }
+    return null;
+  }
+
+  bool _fluidBool(Map<String, dynamic> fluid, List<String> keys) {
+    for (final key in keys) {
+      final value = fluid[key];
+      if (value is bool) return value;
+      final text = value?.toString().toLowerCase().trim();
+      if (text == 'true') return true;
+    }
+    return false;
+  }
+
+  Widget _buildFluidContributionInline(
+    Map<String, dynamic>? fluid,
+    bool isLoading,
+  ) {
+    if (isLoading) {
+      return const Row(
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Checking food fluid content...',
+              style: TextStyle(color: Color(0xFF546E7A), fontSize: 12),
+            ),
+          ),
+        ],
+      );
+    }
+
+    if (fluid == null) {
+      return const Text(
+        'Fluid content will appear here when available.',
+        style: TextStyle(color: Color(0xFF78909C), fontSize: 12),
+      );
+    }
+
+    final waterMl = _fluidNumber(
+      fluid,
+      ['total_fluid_contribution_ml', 'totalFluidContributionMl'],
+    );
+    final percent = _fluidNumber(
+      fluid,
+      ['fluid_contribution_percent', 'fluidContributionPercent'],
+    );
+    final message = fluid['message']?.toString();
+    final warning = fluid['warning']?.toString();
+    final showWarning = _fluidBool(
+      fluid,
+      ['show_fluid_warning', 'showFluidWarning'],
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Fluid contribution',
+          style: TextStyle(
+            color: Color(0xFF37474F),
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 4),
+        if (message != null && message.trim().isNotEmpty)
+          Text(
+            message,
+            style: const TextStyle(color: Color(0xFF546E7A), fontSize: 12),
+          )
+        else ...[
+          Text(
+            'Approximately ${waterMl?.toStringAsFixed(1) ?? '0.0'} mL of fluid.',
+            style: const TextStyle(color: Color(0xFF546E7A), fontSize: 12),
+          ),
+          Text(
+            'Uses ${percent?.toStringAsFixed(2) ?? '0.00'}% of the daily fluid allowance.',
+            style: const TextStyle(color: Color(0xFF546E7A), fontSize: 12),
+          ),
+        ],
+        if (showWarning && warning != null && warning.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            warning,
+            style: const TextStyle(
+              color: Color(0xFFD84315),
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<Map<String, dynamic>?> _previewFluidContribution({
+    required String foodId,
+    required String servingId,
+    required double quantity,
+  }) async {
+    try {
+      final response = await ApiService.previewFoodLog(
+        profileUserId: widget.profileUserId,
+        mealType: _selectedMealType,
+        foodId: foodId,
+        servingId: servingId,
+        quantity: quantity,
+      );
+      final fluid = _fluidContributionFromPreview(response);
+      if (fluid == null) {
+        return {
+          'message': 'No water content data available for this food.',
+          'water_data_available': false,
+          'total_fluid_contribution_ml': 0.0,
+        };
+      }
+      return fluid;
+    } catch (_) {
+      return {
+        'message': 'No water content data available for this food.',
+        'water_data_available': false,
+        'total_fluid_contribution_ml': 0.0,
+      };
+    }
+  }
+
+  Future<void> _refreshImageReviewFluidContribution() async {
+    final foodDetails = _imageReviewFoodDetails;
+    final selectedServing = _imageReviewSelectedServing;
+    if (foodDetails == null || selectedServing == null) return;
+
+    final foodId =
+        foodDetails['food_id']?.toString() ?? foodDetails['foodId']?.toString();
+    final servingId = selectedServing['serving_id']?.toString();
+    final quantity =
+        double.tryParse(_imageReviewQuantityController.text.trim()) ?? 0.0;
+    if (foodId == null ||
+        foodId.isEmpty ||
+        servingId == null ||
+        servingId.isEmpty ||
+        quantity <= 0) {
+      return;
+    }
+
+    final previewKey = '$foodId|$servingId|${quantity.toStringAsFixed(3)}';
+    if (_isLoadingImageReviewFluid ||
+        _imageReviewFluidContributionKey == previewKey) {
+      return;
+    }
+
+    setState(() {
+      _isLoadingImageReviewFluid = true;
+      _imageReviewFluidContributionKey = previewKey;
+    });
+
+    final fluidContribution = await _previewFluidContribution(
+      foodId: foodId,
+      servingId: servingId,
+      quantity: quantity,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _imageReviewFluidContribution = fluidContribution;
+      _isLoadingImageReviewFluid = false;
+    });
   }
 
   @override
@@ -2474,6 +2965,17 @@ class _FoodLogPageState extends State<FoodLogPage> {
                       'AI-powered food recognition',
                       style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13),
                     ),
+                    if (ApiService.aiUsageLabel(_foodImageAiUsage) != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Used today: ${ApiService.aiUsageLabel(_foodImageAiUsage)}',
+                        style: const TextStyle(
+                          color: Color(0xFF607D8B),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 16),
                     ElevatedButton(
                       onPressed: _showImageInputOptions,
@@ -2647,43 +3149,116 @@ class _FoodLogPageState extends State<FoodLogPage> {
               const SizedBox(height: 24),
 
               // --- Today's Summary Card ---
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEDF7F0),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      "Today's Summary",
-                      style: TextStyle(
-                        color: Color(0xFF546E7A),
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
+              Builder(
+                builder: (context) {
+                  final totalCalories = _totalCalories();
+                  final calorieMax = _calorieTargetMaxKcal;
+                  final calorieMin = _calorieTargetMinKcal;
+                  final hasCalorieTarget = calorieMax != null && calorieMax > 0;
+                  final caloriesReached =
+                      hasCalorieTarget && totalCalories >= calorieMax;
+                  final calorieProgress = hasCalorieTarget
+                      ? (totalCalories / calorieMax).clamp(0.0, 1.0).toDouble()
+                      : 0.0;
+                  final summaryShadowColor = caloriesReached
+                      ? Colors.red.withOpacity(0.28)
+                      : const Color(0xFF66BB6A).withOpacity(0.16);
+
+                  return Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEDF7F0),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: summaryShadowColor,
+                          blurRadius: caloriesReached ? 24 : 16,
+                          offset: const Offset(0, 10),
+                        ),
+                      ],
+                      border: Border.all(
+                        color: caloriesReached
+                            ? Colors.red.withOpacity(0.35)
+                            : const Color(0xFFBFE8CB),
                       ),
                     ),
-                    const SizedBox(height: 20),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _buildSummaryItem(
-                          'Protein',
-                          '${_totalNutrient((food) => food.protein).round()}g',
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              "Today's Summary",
+                              style: TextStyle(
+                                color: Color(0xFF546E7A),
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 5,
+                              ),
+                              decoration: BoxDecoration(
+                                color: caloriesReached
+                                    ? Colors.red.withOpacity(0.10)
+                                    : Colors.white.withOpacity(0.75),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                caloriesReached
+                                    ? 'Upper target reached'
+                                    : _calorieTargetText(),
+                                style: TextStyle(
+                                  color: caloriesReached
+                                      ? Colors.red.shade700
+                                      : const Color(0xFF607D8B),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                        _buildSummaryItem(
-                          'Carbs',
-                          '${_totalNutrient((food) => food.carbohydrate).round()}g',
+                        const SizedBox(height: 16),
+                        _buildCalorieSummaryItem(
+                          totalCalories: totalCalories,
+                          targetMin: calorieMin,
+                          targetMax: calorieMax,
+                          progress: calorieProgress,
+                          isOverTarget: caloriesReached,
                         ),
-                        _buildSummaryItem(
-                          'Fat',
-                          '${_totalNutrient((food) => food.fat).round()}g',
+                        const SizedBox(height: 18),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildSummaryItem(
+                                'Protein',
+                                '${_totalNutrient((food) => food.protein).round()}g',
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _buildSummaryItem(
+                                'Carbs',
+                                '${_totalNutrient((food) => food.carbohydrate).round()}g',
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _buildSummaryItem(
+                                'Fat',
+                                '${_totalNutrient((food) => food.fat).round()}g',
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
-                ),
+                  );
+                },
               ),
               const SizedBox(height: 40),
             ],
@@ -2738,7 +3313,13 @@ class _FoodLogPageState extends State<FoodLogPage> {
               // --- UPDATED LOGIC HERE: Now routes to ProfilePage ---
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) => const ProfilePage()),
+                MaterialPageRoute(
+                  builder: (context) => ProfilePage(
+                    profileUserId: widget.profileUserId,
+                    caregiverNoChildEmptyState:
+                        _resolvedCaregiverNoChildEmptyState,
+                  ),
+                ),
               );
             } else {
               setState(() {
@@ -2864,7 +3445,13 @@ class _FoodLogPageState extends State<FoodLogPage> {
           } else if (index == 4) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const ProfilePage()),
+              MaterialPageRoute(
+                builder: (context) => ProfilePage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
             );
           } else {
             setState(() {
@@ -2923,6 +3510,40 @@ class _FoodLogPageState extends State<FoodLogPage> {
 
   int _totalCalories() =>
       _allLoggedFoods.fold(0, (total, food) => total + food.calories);
+
+  double? _targetNumber(List<String> keys) {
+    for (final key in keys) {
+      final value = _nutritionTargets[key];
+      if (value is num) return value.toDouble();
+      final parsed = double.tryParse(value?.toString() ?? '');
+      if (parsed != null) return parsed;
+    }
+    return null;
+  }
+
+  double? get _calorieTargetMinKcal => _targetNumber([
+        'energy_target_min_kcal',
+        'calorie_target_min_kcal',
+        'calories_target_min_kcal',
+      ]);
+
+  double? get _calorieTargetMaxKcal => _targetNumber([
+        'energy_target_kcal',
+        'calorie_target_kcal',
+        'calories_target_kcal',
+      ]);
+
+  String _calorieTargetText() {
+    final min = _calorieTargetMinKcal;
+    final max = _calorieTargetMaxKcal;
+    if (min != null && min > 0 && max != null && max > 0) {
+      return 'Target ${min.round()}-${max.round()} kcal';
+    }
+    if (max != null && max > 0) {
+      return 'Target ${max.round()} kcal';
+    }
+    return 'Target updates with profile';
+  }
 
   double _totalNutrient(double Function(FoodItem food) select) =>
       _allLoggedFoods.fold(0, (total, food) => total + select(food));
@@ -3044,6 +3665,18 @@ class _FoodLogPageState extends State<FoodLogPage> {
         _savingLogKeys.add(logKey);
       });
 
+      Map<String, dynamic>? fluidContribution = _imageReviewFluidContribution;
+      if (foodId != null &&
+          foodId.isNotEmpty &&
+          selectedServing['serving_id'] != null &&
+          fluidContribution == null) {
+        fluidContribution = await _previewFluidContribution(
+          foodId: foodId,
+          servingId: selectedServing['serving_id'].toString(),
+          quantity: quantity,
+        );
+      }
+
       final response = await _submitFoodLogWithAllergyCheck({
         'mealType': _selectedMealType,
         'date': _selectedDate,
@@ -3061,6 +3694,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
         'phosphorus': phosphorus,
         'source': 'fatsecret_image',
         'raw': foodDetails,
+        'fluidContribution': fluidContribution,
       });
       if (response == null) {
         return;
@@ -3077,9 +3711,14 @@ class _FoodLogPageState extends State<FoodLogPage> {
         _loggedMeals.putIfAbsent(_selectedMealType, () => []).add(savedFood);
         _imageReviewFoodDetails = null;
         _imageReviewSelectedServing = null;
+        _imageReviewFluidContribution = null;
+        _imageReviewFluidContributionKey = null;
+        _isLoadingImageReviewFluid = false;
         _imageReviewQuantityController.text = '1';
       });
       await _loadGamificationSummary(showAchievementPopup: true);
+      unawaited(_loadNutritionTargets());
+      await _showDecisionSupportGuidance(response);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3120,6 +3759,20 @@ class _FoodLogPageState extends State<FoodLogPage> {
     final sodium = _asDouble(nutrients['sodium']) * quantity;
     final potassium = _asDouble(nutrients['potassium']) * quantity;
     final phosphorus = _asDouble(nutrients['phosphorus']) * quantity;
+    final foodId =
+        foodDetails['food_id']?.toString() ?? foodDetails['foodId']?.toString();
+    final servingId = selectedServing['serving_id']?.toString();
+    final fluidPreviewKey =
+        foodId != null && servingId != null && quantity > 0
+            ? '$foodId|$servingId|${quantity.toStringAsFixed(3)}'
+            : null;
+    if (fluidPreviewKey != null &&
+        !_isLoadingImageReviewFluid &&
+        _imageReviewFluidContributionKey != fluidPreviewKey) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _refreshImageReviewFluidContribution();
+      });
+    }
 
     return Container(
       width: double.infinity,
@@ -3154,6 +3807,9 @@ class _FoodLogPageState extends State<FoodLogPage> {
                         setState(() {
                           _imageReviewFoodDetails = null;
                           _imageReviewSelectedServing = null;
+                          _imageReviewFluidContribution = null;
+                          _imageReviewFluidContributionKey = null;
+                          _isLoadingImageReviewFluid = false;
                           _imageReviewQuantityController.text = '1';
                         });
                       },
@@ -3215,6 +3871,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
                           setState(() {
                             _imageReviewSelectedServing =
                                 Map<String, dynamic>.from(serving);
+                            _imageReviewFluidContribution = null;
+                            _imageReviewFluidContributionKey = null;
                           });
                         },
                 );
@@ -3227,7 +3885,10 @@ class _FoodLogPageState extends State<FoodLogPage> {
             controller: _imageReviewQuantityController,
             isNumber: true,
             hint: 'e.g. 1, 0.5, 2',
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) => setState(() {
+              _imageReviewFluidContribution = null;
+              _imageReviewFluidContributionKey = null;
+            }),
           ),
           const SizedBox(height: 12),
           Text(
@@ -3278,6 +3939,11 @@ class _FoodLogPageState extends State<FoodLogPage> {
                       ? '${phosphorus.round()} mg (guide)'
                       : 'Not available',
                 ),
+                const Divider(height: 20),
+                _buildFluidContributionInline(
+                  _imageReviewFluidContribution,
+                  _isLoadingImageReviewFluid,
+                ),
               ],
             ),
           ),
@@ -3292,6 +3958,9 @@ class _FoodLogPageState extends State<FoodLogPage> {
                           setState(() {
                             _imageReviewFoodDetails = null;
                             _imageReviewSelectedServing = null;
+                            _imageReviewFluidContribution = null;
+                            _imageReviewFluidContributionKey = null;
+                            _isLoadingImageReviewFluid = false;
                             _imageReviewQuantityController.text = '1';
                           });
                         },
@@ -3610,24 +4279,138 @@ class _FoodLogPageState extends State<FoodLogPage> {
     );
   }
 
-  Widget _buildSummaryItem(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 13),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: const TextStyle(
-            color: Color(0xFF66BB6A),
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
+  Widget _buildCalorieSummaryItem({
+    required int totalCalories,
+    required double? targetMin,
+    required double? targetMax,
+    required double progress,
+    required bool isOverTarget,
+  }) {
+    final accentColor = isOverTarget ? Colors.red : const Color(0xFF00A86B);
+    final targetText = targetMin != null && targetMin > 0 && targetMax != null
+        ? '${targetMin.round()}-${targetMax.round()} kcal target'
+        : targetMax != null && targetMax > 0
+            ? '${targetMax.round()} kcal target'
+            : 'Profile target pending';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: isOverTarget
+                ? Colors.red.withOpacity(0.30)
+                : const Color(0xFF00A86B).withOpacity(0.14),
+            blurRadius: isOverTarget ? 20 : 14,
+            offset: const Offset(0, 8),
           ),
+        ],
+        border: Border.all(
+          color: isOverTarget
+              ? Colors.red.withOpacity(0.40)
+              : const Color(0xFFE0F2E8),
         ),
-      ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: accentColor.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  Icons.local_fire_department,
+                  color: accentColor,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Calories',
+                      style: TextStyle(
+                        color: Color(0xFF607D8B),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '$totalCalories kcal',
+                      style: TextStyle(
+                        color: isOverTarget
+                            ? Colors.red.shade700
+                            : const Color(0xFF263238),
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                targetText,
+                textAlign: TextAlign.right,
+                style: TextStyle(
+                  color: isOverTarget ? Colors.red.shade700 : const Color(0xFF78909C),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              minHeight: 8,
+              value: progress,
+              backgroundColor: const Color(0xFFECEFF1),
+              valueColor: AlwaysStoppedAnimation<Color>(accentColor),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSummaryItem(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.82),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFDDEFE3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 12),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Color(0xFF66BB6A),
+              fontSize: 17,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
     );
   }
 

@@ -253,7 +253,6 @@ ACHIEVEMENTS = Badges you unlock by completing goals!
 
 Examples:
 - "7 Day Streak": Log meals for 7 days
-- "Rainbow Eater": Eat 5 different colored foods
 - "Hydration Hero": Log water 10 times
 - "Balanced Week": Stay within nutrition targets for 7 days
 

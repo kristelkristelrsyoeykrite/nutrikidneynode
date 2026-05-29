@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
+import '../../login/login.dart';
+import '../../services/auth_service.dart';
 import '../authenticator_mfa_page.dart';
 import '../../services/api_service.dart';
+import '../../services/notification_service.dart';
 
 class AccountManagementPage extends StatefulWidget {
   final String email;
@@ -30,6 +34,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   late final TextEditingController _confirmPasswordController;
   late final TextEditingController _verificationController;
   bool _isSaving = false;
+  bool _isDeleting = false;
   bool _showCurrentPassword = false;
   bool _showNewPassword = false;
   bool _showConfirmPassword = false;
@@ -185,6 +190,221 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     } finally {
       if (mounted) {
         setState(() => _isSaving = false);
+      }
+    }
+  }
+
+  Future<String?> _promptForSecret({
+    required String title,
+    required String message,
+    required String label,
+    bool obscureText = false,
+    bool digitsOnly = false,
+    int? maxLength,
+    String? Function(String value)? validator,
+  }) async {
+    final controller = TextEditingController();
+    String? errorText;
+
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(title),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(message),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    obscureText: obscureText,
+                    keyboardType:
+                        digitsOnly ? TextInputType.number : TextInputType.text,
+                    maxLength: maxLength,
+                    decoration: InputDecoration(
+                      labelText: label,
+                      counterText: '',
+                      errorText: errorText,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    final value = controller.text.trim();
+                    final validationError = validator?.call(value);
+                    if (validationError != null) {
+                      setDialogState(() => errorText = validationError);
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop(value);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFD32F2F),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Continue'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _deleteAccount() async {
+    if (_isDeleting) return;
+
+    setState(() => _isDeleting = true);
+    try {
+      final proceed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Delete Account?'),
+            content: const Text(
+              'This will disable sign-in immediately and schedule permanent deletion of your NutriKidney account and health data. You will need your password and Microsoft Authenticator to continue.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Color(0xFFD32F2F),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Continue'),
+              ),
+            ],
+          );
+        },
+      );
+      if (!mounted || proceed != true) return;
+
+      final settingsResponse = await ApiService.getSecuritySettings();
+      final settings =
+          authenticatorSecuritySettingsFromResponse(settingsResponse);
+      if (settings['authenticatorEnabled'] != true ||
+          settings['hasAuthenticatorSecret'] != true) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Enable Microsoft Authenticator MFA before deleting this account.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      final password = await _promptForSecret(
+        title: 'Reauthenticate',
+        message:
+            'Enter your current password before account deletion can continue.',
+        label: 'Current password',
+        obscureText: true,
+        validator: (value) =>
+            value.isEmpty ? 'Current password is required.' : null,
+      );
+      if (!mounted || password == null) return;
+
+      final currentUser = FirebaseAuth.instance.currentUser;
+      final email = currentUser?.email ?? widget.email;
+      if (currentUser == null || email.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please sign in again before deleting.')),
+        );
+        return;
+      }
+
+      final credential = EmailAuthProvider.credential(
+        email: email,
+        password: password,
+      );
+      await currentUser.reauthenticateWithCredential(credential);
+
+      if (!mounted) return;
+      final totpCode = await _promptForSecret(
+        title: 'Microsoft Authenticator',
+        message:
+            'Enter the 6-digit verification code from Microsoft Authenticator. Codes expire every 30 seconds.',
+        label: '6-digit code',
+        digitsOnly: true,
+        maxLength: 6,
+        validator: (value) =>
+            RegExp(r'^\d{6}$').hasMatch(value) ? null : 'Enter a valid 6-digit code.',
+      );
+      if (!mounted || totpCode == null) return;
+
+      final confirmation = await _promptForSecret(
+        title: 'Final Confirmation',
+        message:
+            'This permanently schedules deletion of your NutriKidney account and health data. Type DELETE MY ACCOUNT to continue.',
+        label: 'DELETE MY ACCOUNT',
+        validator: (value) => value == 'DELETE MY ACCOUNT'
+            ? null
+            : 'Type DELETE MY ACCOUNT exactly.',
+      );
+      if (!mounted || confirmation == null) return;
+
+      final idToken = await currentUser.getIdToken(true);
+      final response = await ApiService.requestAccountDeletion(
+        password: password,
+        totpCode: totpCode,
+        idToken: idToken ?? '',
+      );
+      if (response['success'] != true) {
+        throw Exception(response['error'] ?? 'Account deletion failed.');
+      }
+
+      await NotificationService.cancelAllForCurrentUser();
+      await AuthService.signOut();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            response['scheduledDeletionAt'] == null
+                ? 'Account deletion requested.'
+                : 'Account scheduled for deletion on ${response['scheduledDeletionAt']}.',
+          ),
+        ),
+      );
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginPage()),
+        (route) => false,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error.toString().replaceFirst('Exception: ', ''),
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isDeleting = false);
       }
     }
   }
@@ -514,6 +734,72 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
                       ),
                     ],
                   ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: const Color(0xFFFFCDD2)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Delete Account',
+                      style: TextStyle(
+                        color: Color(0xFFD32F2F),
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Deleting your account permanently removes health records, medications, food logs, hydration logs, caregiver links, notifications, analytics, and uploaded files. This action cannot be undone.',
+                      style: TextStyle(
+                        color: Color(0xFF78909C),
+                        fontSize: 13,
+                        height: 1.4,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Requires password reauthentication, Microsoft Authenticator, and final typed confirmation.',
+                      style: TextStyle(
+                        color: Color(0xFF546E7A),
+                        fontSize: 12,
+                        height: 1.4,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _isSaving || _isDeleting ? null : _deleteAccount,
+                        icon: _isDeleting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.delete_forever_outlined),
+                        label: Text(
+                          _isDeleting ? 'Scheduling Deletion...' : 'Delete Account',
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFD32F2F),
+                          side: const BorderSide(color: Color(0xFFD32F2F)),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:nutri_kidney/create_account/profile_setup_intro.dart';
 import 'package:nutri_kidney/services/api_service.dart';
+import 'package:nutri_kidney/services/notification_service.dart';
 import 'adolescent_dashboard.dart';
 import 'caregiver_dashboard.dart';
 import 'food_log.dart';
@@ -27,6 +28,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Map<String, dynamic> _caregiverDashboardState = {};
   Map<String, dynamic> _nutritionTargets = {};
   Map<String, dynamic> _medicalProfile = {};
+  Map<String, dynamic> _phase2DecisionSupport = {};
   Map<String, dynamic> _labResults = {};
   Map<String, dynamic> _anthropometrics = {};
   Map<String, dynamic>? _intakeData;
@@ -48,7 +50,12 @@ class _DashboardPageState extends State<DashboardPage> {
   int get _medicationTotalCount {
     return _medications.length > 0
         ? _medications.length
-        : (_numberFrom(_medicationData?["count"]) ?? 0).toInt();
+        : (_numberFrom(
+                  _medicationData?["totalActiveMedications"] ??
+                      _medicationData?["count"],
+                ) ??
+                0)
+            .toInt();
   }
 
   bool get _hasMedicationData => _medicationTotalCount > 0;
@@ -115,8 +122,7 @@ class _DashboardPageState extends State<DashboardPage> {
         );
         _nutritionTargets = _asStringMap(response["nutritionTargets"]);
         _medicalProfile = _asStringMap(response["medicalProfile"]);
-        Map<String, dynamic> _phase2DecisionSupport = {};
-            _asStringMap(response["phase2DecisionSupport"]);
+        _phase2DecisionSupport = _asStringMap(response["phase2DecisionSupport"]);
         _labResults = _asStringMap(response["labResults"]);
         _anthropometrics = _asStringMap(response["anthropometrics"]);
         _intakeData = _nullableStringMap(response["intakeData"]);
@@ -194,22 +200,22 @@ class _DashboardPageState extends State<DashboardPage> {
           ApiService.userId;
       if (targetUserId == null || targetUserId.isEmpty) return;
 
-      final snapshot = await FirebaseFirestore.instance
-          .collection("notifications")
-          .where("userId", isEqualTo: targetUserId)
-          .where("type", isEqualTo: "missed_medication_reminder")
-          .where("isMissed", isEqualTo: true)
-          .where("read", isEqualTo: false)
-          .limit(20)
-          .get();
+      final response = await ApiService.getMissedMedicationReminders(
+        profileUserId: targetUserId,
+        limit: 20,
+      );
+      if (response["success"] != true) {
+        throw Exception(
+          response["error"] ?? "Failed to load missed medication reminders",
+        );
+      }
 
       if (!mounted) return;
 
-      final missedMedications = snapshot.docs
-          .map((doc) => {
-                ...doc.data() as Map<String, dynamic>,
-                "id": doc.id,
-              })
+      final reminders = response["reminders"];
+      final missedMedications = (reminders is List ? reminders : const [])
+          .whereType<Map>()
+          .map((item) => item.map((key, value) => MapEntry(key.toString(), value)))
           .toList()
         ..sort(
           (a, b) =>
@@ -287,6 +293,29 @@ class _DashboardPageState extends State<DashboardPage> {
     return value?.toString().trim() ?? '';
   }
 
+  String _normalizedText(dynamic value) {
+    return _optionalText(value).toLowerCase().trim().replaceAll('_', ' ');
+  }
+
+  double? _sodiumTargetFromMedicalProfile() {
+    final ckdType = _normalizedText(
+      _medicalProfile["ckdType"] ??
+          _medicalProfile["ckd_type"] ??
+          _medicalProfile["kidneyDiseaseType"] ??
+          _medicalProfile["kidney_disease_type"] ??
+          _medicalProfile["kidneyType"],
+    );
+    final ckdStage = _normalizedText(
+      _medicalProfile["ckdStage"] ?? _medicalProfile["ckd_stage"],
+    );
+
+    if (ckdType == "ckd dkd" || ckdType == "dkd") return 3000;
+    if (ckdStage == "stage 5d" || ckdStage == "ckd 5d" || ckdStage == "5d") {
+      return 2300;
+    }
+    return 2000;
+  }
+
   DateTime _dateTimeFrom(dynamic value) {
     if (value is Timestamp) return value.toDate();
     if (value is DateTime) return value;
@@ -343,6 +372,21 @@ class _DashboardPageState extends State<DashboardPage> {
     return '$hour:$minute';
   }
 
+  String _formatDoseTimeLabel(String time) {
+    final scheduled = _dateTimeForMedicationTime(time);
+    return scheduled == null ? time : _formatClockTime(scheduled);
+  }
+
+  String _missedMedicationMessage(Map<String, dynamic> missed) {
+    final fallback = missed["body"] ?? "You missed your medication reminder.";
+    final message = fallback.toString();
+    final scheduledTime = missed["scheduledTime"]?.toString();
+    if (scheduledTime == null || scheduledTime.trim().isEmpty) return message;
+
+    final displayTime = _formatDoseTimeLabel(scheduledTime);
+    return message.replaceAll(scheduledTime, displayTime);
+  }
+
   int _missedMedicationCountFromSummary() {
     var count = 0;
     for (final medication in _medications) {
@@ -373,9 +417,13 @@ class _DashboardPageState extends State<DashboardPage> {
     return _missedMedications
         .map((missed) => {
               "kind": "missed_medication",
+              "id": missed["medicationId"] ?? missed["id"],
+              "notificationId": missed["id"],
               "name": "Missed Medication",
-              "message": missed["body"] ?? "You missed your medication reminder.",
-              "time": _dateTimeFrom(missed["timestamp"]),
+              "message": _missedMedicationMessage(missed),
+              "time": _dateTimeFrom(missed["dueTime"] ?? missed["timestamp"]),
+              "scheduledTime": missed["scheduledTime"],
+              "expectedDate": missed["day"] ?? missed["date"],
               "isMissed": true,
               "color": "red",
             })
@@ -407,9 +455,14 @@ class _DashboardPageState extends State<DashboardPage> {
   Future<void> _promptMarkMedicationTaken(Map<String, dynamic> reminder) async {
     final medicationId = reminder["id"]?.toString();
     final dateTime = reminder["time"] as DateTime?;
+    final scheduledTime = reminder["scheduledTime"]?.toString();
+    final expectedDate = reminder["expectedDate"]?.toString();
     if (medicationId == null || medicationId.isEmpty || dateTime == null) return;
 
-    final doseTime = _formatDoseTime(dateTime);
+    final doseTime = scheduledTime != null && scheduledTime.isNotEmpty
+        ? scheduledTime
+        : _formatDoseTime(dateTime);
+    final doseTimeLabel = _formatDoseTimeLabel(doseTime);
 
     final didConfirm = await showModalBottomSheet<bool>(
       context: context,
@@ -436,7 +489,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Dose time: $doseTime',
+                  'Dose time: $doseTimeLabel',
                   style: const TextStyle(
                     fontSize: 13,
                     color: Color(0xFF78909C),
@@ -479,6 +532,7 @@ class _DashboardPageState extends State<DashboardPage> {
       await ApiService.markMedicationTaken(
         medicationId,
         time: doseTime,
+        expectedDate: expectedDate,
         profileUserId: _selectedManagedProfileUserId,
       );
       if (!mounted) return;
@@ -906,6 +960,7 @@ class _DashboardPageState extends State<DashboardPage> {
           _nutritionTargets["sodium_target_mg"] ??
               _nutritionTargets["sodiumTargetMg"],
         ) ??
+        _sodiumTargetFromMedicalProfile() ??
         _defaultSodiumTargetMg;
   }
 
@@ -1070,7 +1125,11 @@ class _DashboardPageState extends State<DashboardPage> {
 
   bool get _hasFluidRestriction {
     final status = (_medicalProfile["fluidRestrictionStatus"] ??
-            _medicalProfile["fluid_restriction_status"])
+            _medicalProfile["fluid_restriction_status"] ??
+            _nutritionTargets["fluidRestrictionStatus"] ??
+            _nutritionTargets["fluid_restriction_status"] ??
+            _phase2DecisionSupport["fluidRestrictionStatus"] ??
+            _phase2DecisionSupport["fluid_restriction_status"])
         ?.toString()
         .trim()
         .toLowerCase();
@@ -1079,7 +1138,16 @@ class _DashboardPageState extends State<DashboardPage> {
 
   double? get _fluidLimitMl {
     return _numberFrom(
-      _medicalProfile["fluidLimitMl"] ?? _medicalProfile["fluid_limit_ml"],
+      _medicalProfile["fluidLimitMl"] ??
+          _medicalProfile["fluid_limit_ml"] ??
+          _nutritionTargets["fluidLimitMl"] ??
+          _nutritionTargets["fluid_limit_ml"] ??
+          _nutritionTargets["dailyFluidLimitMl"] ??
+          _nutritionTargets["daily_fluid_limit_ml"] ??
+          _phase2DecisionSupport["fluidLimitMl"] ??
+          _phase2DecisionSupport["fluid_limit_ml"] ??
+          _phase2DecisionSupport["dailyFluidLimitMl"] ??
+          _phase2DecisionSupport["daily_fluid_limit_ml"],
     );
   }
 
@@ -1281,7 +1349,13 @@ class _DashboardPageState extends State<DashboardPage> {
             } else if (index == 4) {
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) => const ProfilePage()),
+                MaterialPageRoute(
+                  builder: (context) => ProfilePage(
+                    profileUserId: _selectedManagedProfileUserId,
+                    caregiverNoChildEmptyState:
+                        _isCaregiverViewer && _managedChildren.isEmpty,
+                  ),
+                ),
               );
             } else {
               setState(() {
@@ -1387,7 +1461,13 @@ class _DashboardPageState extends State<DashboardPage> {
           onTap: () {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const ProfilePage()),
+              MaterialPageRoute(
+                builder: (context) => ProfilePage(
+                  profileUserId: _selectedManagedProfileUserId,
+                  caregiverNoChildEmptyState:
+                      _isCaregiverViewer && _managedChildren.isEmpty,
+                ),
+              ),
             );
           },
           child: Container(
@@ -1608,31 +1688,40 @@ class _DashboardPageState extends State<DashboardPage> {
   // --- 3. Metrics Row ---
   Widget _buildMetricsRow() {
     final medicationTotal = _medicationTotalCount;
-    final medicationTaken = _medications
-        .where(
-          (medication) {
-            final doseWindow = medication["doseWindow"] is Map
-                ? Map<String, dynamic>.from(medication["doseWindow"])
-                : null;
-            final windowStatus =
-                doseWindow?["status"]?.toString().trim().toLowerCase();
-            if (windowStatus != null && windowStatus.isNotEmpty) {
-              return windowStatus == "taken";
-            }
-            return _optionalText(medication["status"]).toLowerCase() == "taken";
-          },
-        )
-        .length;
+    final medicationTaken = (_numberFrom(_medicationData?["dosesTakenToday"]) ??
+            _medications.where((medication) {
+              final doseWindow = medication["doseWindow"] is Map
+                  ? Map<String, dynamic>.from(medication["doseWindow"])
+                  : null;
+              final windowStatus =
+                  doseWindow?["status"]?.toString().trim().toLowerCase();
+              if (windowStatus != null && windowStatus.isNotEmpty) {
+                return windowStatus == "taken";
+              }
+              return _optionalText(medication["status"]).toLowerCase() == "taken";
+            }).length)
+        .toInt();
+    final medicationDueNow =
+        (_numberFrom(_medicationData?["dosesDueNow"]) ?? 0).toInt();
     final nextReminder = _nextMedicationReminder;
     final nextReminderTime = nextReminder?["time"] as DateTime?;
-    final missedCount = _missedMedications.isNotEmpty
-        ? _missedMedications.length
-        : _missedMedicationCountFromSummary();
+    final missedCount = (_numberFrom(_medicationData?["missedDosesToday"]) ??
+            (_missedMedications.isNotEmpty
+                ? _missedMedications.length
+                : _missedMedicationCountFromSummary()))
+        .toInt();
     final missedLabel = missedCount == 1
         ? '1 missed medication'
         : missedCount > 1
             ? '$missedCount missed medications'
             : null;
+    final medicationSubValue = missedLabel != null
+        ? missedLabel
+        : medicationDueNow > 0
+            ? '$medicationDueNow due now'
+            : nextReminderTime == null
+                ? 'No medication logged yet'
+                : 'Next: ${_formatClockTime(nextReminderTime)}';
 
     final fluidExceeded = _fluidTargetLiters != null &&
         _fluidTargetLiters! > 0 &&
@@ -1674,16 +1763,14 @@ class _DashboardPageState extends State<DashboardPage> {
             icon: Icons.medication_outlined,
             iconColor: const Color(0xFFAB47BC),
             mainValue:
-                _hasMedicationData ? '$medicationTaken/$medicationTotal' : 'Not set',
-            subValue: missedLabel != null
-                ? missedLabel
-                : nextReminderTime == null
-                    ? 'No medication logged yet'
-                    : 'Next: ${_formatClockTime(nextReminderTime)}',
+                _hasMedicationData ? '$medicationTaken taken' : 'Not set',
+            subValue: medicationSubValue,
             hintText: _hasMedicationData ? null : 'No medication logged yet',
             progressColor: const Color(0xFFAB47BC),
             progressValue:
-                medicationTotal == 0 ? 0 : medicationTaken / medicationTotal,
+                medicationTotal == 0
+                    ? 0
+                    : (medicationTaken / medicationTotal).clamp(0, 1),
             backgroundColor:
                 missedCount > 0 ? const Color(0xFFFFF1F2) : null,
             borderColor:

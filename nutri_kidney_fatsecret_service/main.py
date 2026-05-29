@@ -58,7 +58,8 @@ async def health_check():
         "message": "NutriKidney FatSecret Python service is running",
         "external_services": {
             "fatsecret": "not_checked",
-            "google_vision": "not_checked"
+            "google_vision": "not_checked",
+            "usda_fooddata_central": "not_checked"
         },
         "endpoints": {
             "search_foods": "POST /api/v1/foods/search?query=<food>&page=<page>",

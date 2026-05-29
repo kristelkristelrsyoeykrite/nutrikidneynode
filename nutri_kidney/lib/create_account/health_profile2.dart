@@ -690,7 +690,21 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
                     color: Color(0xFF00BFA5),
                   ),
                   title: const Text('Scan Prescription'),
-                  subtitle: const Text('Use OCR to extract medication details'),
+                  subtitle: FutureBuilder<Map<String, dynamic>>(
+                    future: ApiService.getAiUsageStatus('medication_ocr'),
+                    builder: (context, snapshot) {
+                      final label = ApiService.aiUsageLabel(
+                        snapshot.hasData
+                            ? ApiService.aiUsageFromResponse(snapshot.data!)
+                            : null,
+                      );
+                      return Text(
+                        label == null
+                            ? 'Use OCR to extract medication details'
+                            : 'Use OCR to extract medication details - used today: $label',
+                      );
+                    },
+                  ),
                   onTap: _isScanningPrescription
                       ? null
                       : () {
@@ -815,6 +829,10 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
 
       if (!mounted) return;
       if (response["success"] != true) {
+        if (response["rateLimited"] == true) {
+          await _showAiLimitDialog(response);
+          return;
+        }
         throw Exception(response["error"] ?? "Prescription scan failed");
       }
 
@@ -841,6 +859,22 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
         });
       }
     }
+  }
+
+  Future<void> _showAiLimitDialog(Map<String, dynamic> response) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Daily scan limit reached'),
+        content: Text(ApiService.aiLimitMessage(response)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showPrescriptionScanResultSheet({

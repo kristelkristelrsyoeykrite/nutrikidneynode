@@ -29,6 +29,9 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
   String? _selectedSex;
   String? _kidneyDiseaseType;
   String? _appetiteStatus;
+  String? _hasEdema;
+  String? _isPostTransplant;
+  String? _postTransplantWeeks;
 
   String? _dryWeight;
   String? _muac;
@@ -114,6 +117,14 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     if (age > 18) {
       return 'Required';
     }
+    return null;
+  }
+
+  bool get _requiresPostTransplantWeeks => _isPostTransplant == "yes";
+
+  int? get _sterileDietWeeksValue {
+    if (_postTransplantWeeks == "6-8 weeks") return 8;
+    if (_postTransplantWeeks == "8 weeks onwards") return 9;
     return null;
   }
 
@@ -209,6 +220,9 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
         _bmiController.text.trim().isNotEmpty &&
         _diagnosisDate != null &&
         _kidneyDiseaseType != null &&
+        _hasEdema != null &&
+        _isPostTransplant != null &&
+        (!_requiresPostTransplantWeeks || _postTransplantWeeks != null) &&
         _appetiteStatus != null;
   }
 
@@ -315,10 +329,27 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
       "bmi": double.parse(_bmiController.text),
       "diagnosisDate": _diagnosisDate!.toIso8601String(),
       "kidneyType": _kidneyDiseaseType,
+      "kidneyDiseaseType": _kidneyDiseaseType,
+      "ckdType": _kidneyDiseaseType,
+      "ckd_type": _kidneyDiseaseType,
       "dryWeight": _dryWeight,
       "muac": _muac,
       "appetiteStatus": _appetiteStatus,
       "ckdStage": _ckdStage,
+      "hasEdema": _hasEdema,
+      "has_edema": _hasEdema,
+      "isPostTransplant": _isPostTransplant,
+      "is_post_transplant": _isPostTransplant,
+      "requiresSterileDiet": _isPostTransplant == "yes",
+      "requires_sterile_diet": _isPostTransplant == "yes",
+      "sterileDietWeeks":
+          _requiresPostTransplantWeeks ? _sterileDietWeeksValue : null,
+      "sterile_diet_weeks":
+          _requiresPostTransplantWeeks ? _sterileDietWeeksValue : null,
+      "weeksPostTransplant":
+          _requiresPostTransplantWeeks ? _sterileDietWeeksValue : null,
+      "weeks_post_transplant":
+          _requiresPostTransplantWeeks ? _sterileDietWeeksValue : null,
     };
 
     try {
@@ -555,7 +586,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
 
                     // MUAC
                     _buildDropdown(
-                      "MUAC (if Applicable)",
+                      "Mid-Upper Arm Circumference (MUAC) (if Applicable)",
                       _muac,
                       ["< 11.5 cm", "11.5 - 12.5 cm", "> 12.5 cm"],
                       (val) => setState(() => _muac = val),
@@ -603,6 +634,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       "Type of Kidney Disease (Required)",
                       _kidneyDiseaseType,
                       [
+                        "CKD DKD",
                         "Congenital Anomaly",
                         "Glomerulonephritis",
                         "Hereditary Nephropathy",
@@ -616,6 +648,67 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
                       helperText: _requiredHint(
                         'kidneyDisease',
                         _kidneyDiseaseType == null,
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    _buildDropdown(
+                      "Does the child have edema? (Required)",
+                      _hasEdema,
+                      ["yes", "no", "not sure"],
+                      (val) => setState(() {
+                        _touchedFields.add('edema');
+                        _hasEdema = val;
+                      }),
+                      onTap: () => _markTouched('edema'),
+                      helperText: _requiredHint(
+                        'edema',
+                        _hasEdema == null,
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    _buildDropdown(
+                      "Is the child on post-transplant? (Required)",
+                      _isPostTransplant,
+                      ["yes", "no", "not sure"],
+                      (val) => setState(() {
+                        _touchedFields.add('postTransplant');
+                        _isPostTransplant = val;
+                        if (val != "yes") {
+                          _postTransplantWeeks = null;
+                        }
+                      }),
+                      onTap: () => _markTouched('postTransplant'),
+                      helperText: _requiredHint(
+                        'postTransplant',
+                        _isPostTransplant == null,
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    _buildDropdown(
+                      "Weeks post-transplant",
+                      _requiresPostTransplantWeeks
+                          ? _postTransplantWeeks
+                          : null,
+                      ["6-8 weeks", "8 weeks onwards"],
+                      _requiresPostTransplantWeeks
+                          ? (val) => setState(() {
+                                _touchedFields.add('postTransplantWeeks');
+                                _postTransplantWeeks = val;
+                              })
+                          : null,
+                      onTap: _requiresPostTransplantWeeks
+                          ? () => _markTouched('postTransplantWeeks')
+                          : null,
+                      helperText: _requiredHint(
+                        'postTransplantWeeks',
+                        _requiresPostTransplantWeeks &&
+                            _postTransplantWeeks == null,
                       ),
                     ),
 
@@ -816,7 +909,7 @@ class _HealthProfile1PageState extends State<HealthProfile1Page> {
     String label,
     String? value,
     List<String> items,
-    ValueChanged<String?> onChanged,
+    ValueChanged<String?>? onChanged,
     {String? helperText,
     VoidCallback? onTap}
   ) {

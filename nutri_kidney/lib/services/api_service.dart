@@ -139,16 +139,40 @@ class ApiService {
     if (response.body.isEmpty) {
       return {
         "success": response.statusCode >= 200 && response.statusCode < 300,
+        "statusCode": response.statusCode,
+        "rateLimited": response.statusCode == 429,
       };
     }
 
-    final decoded = jsonDecode(response.body);
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(response.body);
+    } on FormatException {
+      final preview = response.body
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+      return {
+        "success": false,
+        "statusCode": response.statusCode,
+        "rateLimited": response.statusCode == 429,
+        "error": response.statusCode >= 500
+            ? "The backend is temporarily unavailable. Please try again."
+            : "Unexpected server response.",
+        "rawBody": preview.length > 240 ? preview.substring(0, 240) : preview,
+      };
+    }
     if (decoded is Map<String, dynamic>) {
-      return decoded;
+      return {
+        ...decoded,
+        "statusCode": response.statusCode,
+        "rateLimited": response.statusCode == 429,
+      };
     }
 
     return {
       "success": response.statusCode >= 200 && response.statusCode < 300,
+      "statusCode": response.statusCode,
+      "rateLimited": response.statusCode == 429,
       "data": decoded,
     };
   }
@@ -158,8 +182,13 @@ class ApiService {
     Map<String, dynamic> data,
     void Function(Map<String, dynamic>) cache,
   ) async {
+    final payload = {
+      ...data,
+      if (activeChildProfileId != null) "childProfileId": activeChildProfileId,
+      if (activeChildProfileId != null) "profileUserId": activeChildProfileId,
+    };
     cache(Map<String, dynamic>.from(data));
-    await _post(path, body: data);
+    await _post(path, body: payload);
   }
 
   static Future<void> sendStep1(Map<String, dynamic> data) async {
@@ -245,6 +274,7 @@ class ApiService {
 
   static Future<Map<String, dynamic>> getHealthSummary({
     String? profileUserId,
+    bool forceRefresh = false,
   }) async {
     final currentUserId = _requireCurrentUserId();
     Future<Map<String, dynamic>> fetch() => _post(
@@ -255,15 +285,33 @@ class ApiService {
           },
         );
 
-    return ApiCache.getOrFetch(
-      _cacheKey([
+    final key = _cacheKey([
         "user",
         currentUserId,
         "health-summary",
         profileUserId ?? "active",
-      ]),
+      ]);
+    if (forceRefresh) ApiCache.invalidate(key);
+
+    return ApiCache.getOrFetch(
+      key,
       fetch,
       ttl: const Duration(minutes: 3),
+    );
+  }
+
+  static Future<Map<String, dynamic>> getMissedMedicationReminders({
+    String? profileUserId,
+    int limit = 20,
+  }) async {
+    final currentUserId = _requireCurrentUserId();
+    return _post(
+      "/api/health/missed-medication-reminders",
+      body: {
+        "userId": currentUserId,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        "limit": limit,
+      },
     );
   }
 
@@ -523,6 +571,7 @@ class ApiService {
   static Future<Map<String, dynamic>> markMedicationTaken(
     String medicationId, {
     String? time,
+    String? expectedDate,
     String? profileUserId,
   }) async {
     if (_userId == null) {
@@ -535,6 +584,7 @@ class ApiService {
         "userId": _userId,
         "medicationId": medicationId,
         if (time != null) "time": time,
+        if (expectedDate != null) "expectedDate": expectedDate,
         if (profileUserId != null) "profileUserId": profileUserId,
         if (profileUserId != null) "childProfileId": profileUserId,
       },
@@ -550,6 +600,7 @@ class ApiService {
   static Future<Map<String, dynamic>> markMedicationUntaken(
     String medicationId, {
     String? time,
+    String? expectedDate,
     String? profileUserId,
   }) async {
     if (_userId == null) {
@@ -562,6 +613,7 @@ class ApiService {
         "userId": _userId,
         "medicationId": medicationId,
         if (time != null) "time": time,
+        if (expectedDate != null) "expectedDate": expectedDate,
         if (profileUserId != null) "profileUserId": profileUserId,
         if (profileUserId != null) "childProfileId": profileUserId,
       },
@@ -590,6 +642,45 @@ class ApiService {
         "contentType": contentType,
       },
     );
+  }
+
+  static Future<Map<String, dynamic>> getAiUsageStatus(String feature) async {
+    final currentUserId = _requireCurrentUserId();
+    final path = feature == "food_image"
+        ? "/api/food/ai-usage/status"
+        : "/api/health/ai-usage/status";
+    return _post(
+      path,
+      body: {
+        "userId": currentUserId,
+        "feature": feature,
+      },
+    );
+  }
+
+  static Map<String, dynamic>? aiUsageFromResponse(Map<String, dynamic> response) {
+    final usage = response["aiUsage"];
+    if (usage is Map) {
+      return Map<String, dynamic>.from(usage);
+    }
+    return null;
+  }
+
+  static String? aiUsageLabel(Map<String, dynamic>? usage) {
+    if (usage == null) return null;
+    final used = usage["used"] ?? usage["count"];
+    final limit = usage["limit"];
+    if (used == null || limit == null) return null;
+    return "$used/$limit";
+  }
+
+  static String aiLimitMessage(Map<String, dynamic> response) {
+    final usageLabel = aiUsageLabel(aiUsageFromResponse(response));
+    final base = response["error"]?.toString().trim();
+    final message = base == null || base.isEmpty
+        ? "You have exceeded today's AI scan limit. Please try again tomorrow."
+        : base;
+    return usageLabel == null ? message : "$message\n\nUsage today: $usageLabel";
   }
 
   static Future<Map<String, dynamic>> confirmMedicationScan(
@@ -664,6 +755,28 @@ class ApiService {
 
   static Future<Map<String, dynamic>> deleteUserAccount(String uid) async {
     return _post("/api/user/cancel-verification", body: {"uid": uid});
+  }
+
+  static Future<Map<String, dynamic>> requestAccountDeletion({
+    required String password,
+    required String totpCode,
+    required String idToken,
+  }) async {
+    final currentUserId = _requireCurrentUserId();
+    final response = await _post(
+      "/api/account/delete",
+      body: {
+        "userId": currentUserId,
+        "password": password,
+        "totpCode": totpCode,
+        "confirmationText": "DELETE MY ACCOUNT",
+        "idToken": idToken,
+      },
+    );
+    if (response["success"] == true) {
+      ApiCache.clear();
+    }
+    return response;
   }
 
   static Future<Map<String, dynamic>> createUser({
@@ -1176,10 +1289,12 @@ class ApiService {
     required String imagePath,
     String contentType = "image/jpeg",
   }) async {
+    final currentUserId = _requireCurrentUserId();
     final bytes = await File(imagePath).readAsBytes();
     final response = await _post(
       "/api/food/recognize-image",
       body: {
+        "userId": currentUserId,
         "imageBase64": base64Encode(bytes),
         "contentType": contentType,
       },
@@ -1272,6 +1387,7 @@ class ApiService {
     bool needsManualReview = false,
     Map<String, dynamic>? raw,
     double? waterMl,
+    Map<String, dynamic>? fluidContribution,
     bool userConfirmedAllergyWarning = false,
   }) async {
     final currentUserId = _requireCurrentUserId();
@@ -1300,6 +1416,7 @@ class ApiService {
         "needsManualReview": needsManualReview,
         "raw": raw,
         "waterMl": waterMl,
+        "fluidContribution": fluidContribution,
         "userConfirmedAllergyWarning": userConfirmedAllergyWarning,
       },
     );
@@ -1310,6 +1427,31 @@ class ApiService {
       "food-logs",
       "gamification-summary",
     ]);
+  }
+
+  static Future<Map<String, dynamic>> previewFoodLog({
+    String? profileUserId,
+    required String mealType,
+    required String foodId,
+    required String servingId,
+    required double quantity,
+    String? userNotes,
+  }) async {
+    final currentUserId = _requireCurrentUserId();
+    return _post(
+      "/api/food/preview",
+      body: {
+        "userId": currentUserId,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        if (profileUserId != null) "childProfileId": profileUserId,
+        "mealType": mealType,
+        "foodId": foodId,
+        "servingId": servingId,
+        "quantity": quantity,
+        "loggedAt": DateTime.now().toIso8601String(),
+        "userNotes": userNotes,
+      },
+    );
   }
 
   static Future<Map<String, dynamic>> deleteFoodLog(

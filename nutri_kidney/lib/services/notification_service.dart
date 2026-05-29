@@ -26,6 +26,8 @@ class NotificationService {
   static const String _dismissedPrefix = 'dismissed_reminders_';
   static const String _schedulePayloadPrefix = 'scheduled_reminder_payload_';
   static const String _scheduledHashPrefix = 'scheduled_reminder_hash_';
+  static const String _mealCatchUpCleanupKey =
+      'meal_catch_up_cleanup_schema_3';
   static const String _channelId = 'nutrikidney_exact_reminders';
   static const String _channelName = 'NutriKidney Exact Reminders';
   static const int _mealIdBase = 41000;
@@ -38,7 +40,9 @@ class NotificationService {
   static const int _testScheduledId = 45002;
   static const int _maxMedicationNotifications = 160;
   static const int _maxSingleMedicationNotifications = 8;
-  static const int _notificationProfileBlockSize = 1000;
+  static const int _notificationProfileBlockSize = 10000;
+  static const int _legacyNotificationProfileBlockSize = 1000;
+  static const int _notificationIdSchemaVersion = 2;
   static const int _maxCaregiverProfilesToSchedule = 4;
   static const int _daysToScheduleAhead = 7;
 
@@ -77,6 +81,7 @@ class NotificationService {
     );
 
     await _createAndroidChannel();
+    await _cancelLegacyMealCatchUpRemindersOnce();
     _initialized = true;
     debugPrint('[Notifications] Exact local notification service initialized');
   }
@@ -174,6 +179,60 @@ class NotificationService {
       payload: 'test:${_dateKey(DateTime.now())}:scheduled',
     );
     return true;
+  }
+
+  static Future<Map<String, dynamic>> reminderDiagnostics() async {
+    await initialize();
+
+    bool notificationsEnabled = true;
+    bool exactAlarmsAllowed = true;
+    if (!kIsWeb && Platform.isAndroid) {
+      final android = _localNotifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+      notificationsEnabled =
+          await android?.areNotificationsEnabled() ?? notificationsEnabled;
+      exactAlarmsAllowed =
+          await android?.canScheduleExactNotifications() ?? exactAlarmsAllowed;
+    }
+
+    final pending = await _localNotifications.pendingNotificationRequests();
+    final cachedSettings = await cachedReminderSettings();
+    final breakfastPending = pending.where((request) {
+      final payload = request.payload ?? '';
+      return payload.contains(':meal:breakfast:');
+    }).toList(growable: false);
+
+    return {
+      'userId': ApiService.userId,
+      'selectedProfileId': ApiService.selectedManagedChildProfileId,
+      'timezone': tz.local.name,
+      'notificationsEnabled': notificationsEnabled,
+      'exactAlarmsAllowed': exactAlarmsAllowed,
+      'cachedReminderSettings': cachedSettings,
+      'pendingCount': pending.length,
+      'breakfastPendingCount': breakfastPending.length,
+      'breakfastPending': breakfastPending
+          .map(
+            (request) => {
+              'id': request.id,
+              'title': request.title,
+              'body': request.body,
+              'payload': request.payload,
+            },
+          )
+          .toList(growable: false),
+      'pendingPreview': pending
+          .take(12)
+          .map(
+            (request) => {
+              'id': request.id,
+              'title': request.title,
+              'payload': request.payload,
+            },
+          )
+          .toList(growable: false),
+    };
   }
 
   static Future<void> handleNotificationResponse(
@@ -288,6 +347,27 @@ class NotificationService {
     return refreshReminderNotificationsFromDashboard();
   }
 
+  static Future<void> cancelAllForCurrentUser() async {
+    await initialize();
+    await _localNotifications.cancelAll();
+
+    final userId = ApiService.userId;
+    if (userId == null || userId.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final ownedPrefixes = [
+      '$_settingsPrefix$userId',
+      '$_dismissedPrefix$userId',
+      '$_schedulePayloadPrefix$userId|',
+      '$_scheduledHashPrefix$userId|',
+    ];
+    for (final key in prefs.getKeys().toList(growable: false)) {
+      if (ownedPrefixes.any((prefix) => key.startsWith(prefix))) {
+        await prefs.remove(key);
+      }
+    }
+  }
+
   static Future<void> syncSingleMedicationReminder({
     required Map<String, dynamic> medication,
     Map<String, dynamic>? previousMedication,
@@ -369,6 +449,7 @@ class NotificationService {
         ApiService.userId;
     final payloadPrefix = _profilePayloadPrefix(detectedProfileId, patientName);
     final activeProfileId = detectedProfileId ?? payloadPrefix;
+    await canScheduleExactAlarms();
     final scheduleHash = _reminderHash(
       settings: settings,
       medications: medications,
@@ -382,10 +463,7 @@ class NotificationService {
       medications: medications,
       gamification: gamification,
     );
-    final hasPendingReminders = hasReminderWork
-        ? await _hasPendingScheduledRemindersForProfile(idOffsetBase)
-        : true;
-    if (!forceReschedule && previousHash == scheduleHash && hasPendingReminders) {
+    if (!forceReschedule && !hasReminderWork && previousHash == scheduleHash) {
       await _cacheSchedulePayload(
         user: user,
         medications: medications,
@@ -397,9 +475,9 @@ class NotificationService {
       debugPrint('[Notifications] Reminder schedule unchanged');
       return;
     }
-    if (!forceReschedule && previousHash == scheduleHash && !hasPendingReminders) {
+    if (!forceReschedule && previousHash == scheduleHash) {
       debugPrint(
-        '[Notifications] Reminder hash unchanged but no pending reminders were found; scheduling again',
+        '[Notifications] Reminder hash unchanged; refreshing scheduled alarms',
       );
     }
 
@@ -457,7 +535,7 @@ class NotificationService {
   }
 
   static Future<Map<String, dynamic>> cachedReminderSettings() async {
-    final userId = ApiService.userId;
+    final userId = await _notificationStorageUserId();
     if (userId == null || userId.isEmpty) return {};
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString('$_settingsPrefix$userId');
@@ -471,10 +549,19 @@ class NotificationService {
   }
 
   static Future<void> cacheReminderSettings(Map<String, dynamic> settings) async {
-    final userId = ApiService.userId;
+    final userId = await _notificationStorageUserId();
     if (userId == null || userId.isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('$_settingsPrefix$userId', jsonEncode(settings));
+  }
+
+  static Future<String?> _notificationStorageUserId() async {
+    final activeUserId = ApiService.userId;
+    if (activeUserId != null && activeUserId.isNotEmpty) {
+      return activeUserId;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('userId');
   }
 
   static Future<void> replaceCachedReminderSettings({
@@ -519,28 +606,37 @@ class NotificationService {
   }
 
   static Future<void> _cleanupScheduledRemindersForProfile(int offset) async {
+    final legacyOffset = _legacyOffsetForProfileOffset(offset);
     await _cancelRange(_mealIdBase + offset, 40);
     await _cancelRange(_hydrationIdBase + offset, 40);
     await _cancelRange(
       _medicationIdBase + offset,
       _maxMedicationNotifications,
     );
+    await _cancelRange(
+      _singleMedicationIdBase + offset,
+      _maxMedicationNotifications,
+    );
     await _cancelRange(_streakIdBase + offset, 4);
+
+    if (legacyOffset != offset) {
+      await _cancelRange(_mealIdBase + legacyOffset, 40);
+      await _cancelRange(_hydrationIdBase + legacyOffset, 40);
+      await _cancelRange(
+        _medicationIdBase + legacyOffset,
+        _maxMedicationNotifications,
+      );
+      await _cancelRange(
+        _singleMedicationIdBase + legacyOffset,
+        _maxMedicationNotifications,
+      );
+      await _cancelRange(_streakIdBase + legacyOffset, 4);
+    }
   }
 
-  static Future<bool> _hasPendingScheduledRemindersForProfile(int offset) async {
-    final pending = await _localNotifications.pendingNotificationRequests();
-    return pending.any((request) {
-      final id = request.id;
-      return _idInRange(id, _mealIdBase + offset, 40) ||
-          _idInRange(id, _hydrationIdBase + offset, 40) ||
-          _idInRange(
-            id,
-            _medicationIdBase + offset,
-            _maxMedicationNotifications,
-          ) ||
-          _idInRange(id, _streakIdBase + offset, 4);
-    });
+  static int _legacyOffsetForProfileOffset(int offset) {
+    final profileIndex = offset ~/ _notificationProfileBlockSize;
+    return profileIndex * _legacyNotificationProfileBlockSize;
   }
 
   static bool _idInRange(int id, int startId, int count) {
@@ -574,10 +670,24 @@ class NotificationService {
         _singleMedicationIdBase + idOffsetBase,
         _maxMedicationNotifications,
       );
+      final legacyOffset = _legacyOffsetForProfileOffset(idOffsetBase);
+      final isOldProfileMedicationId = legacyOffset != idOffsetBase &&
+          (_idInRange(
+                request.id,
+                _medicationIdBase + legacyOffset,
+                _maxMedicationNotifications,
+              ) ||
+              _idInRange(
+                request.id,
+                _singleMedicationIdBase + legacyOffset,
+                _maxMedicationNotifications,
+              ));
       if (isMedicationReminder &&
           isProfileMatch &&
           isMedicationMatch &&
-          (isLegacyMedicationId || isSingleMedicationId)) {
+          (isLegacyMedicationId ||
+              isSingleMedicationId ||
+              isOldProfileMedicationId)) {
         await _localNotifications.cancel(request.id);
       }
     }
@@ -608,6 +718,7 @@ class NotificationService {
   }) async {
     final mealSettings = _asStringMap(settings['mealReminders']);
     var idOffset = 0;
+    final now = DateTime.now();
 
     for (var dayOffset = 0; dayOffset < _daysToScheduleAhead; dayOffset++) {
       for (final entry in _mealSchedule.entries) {
@@ -617,12 +728,17 @@ class NotificationService {
         }
 
         final time = entry.value;
-        final scheduled = _nextDateAt(
+        final preferred = _nextDateAt(
           baseDate: today.add(Duration(days: dayOffset)),
           hour: time.hour,
           minute: time.minute,
         );
-        if (!scheduled.isAfter(DateTime.now())) continue;
+        final scheduled = _mealReminderScheduleTime(
+          preferred: preferred,
+          now: now,
+          isToday: dayOffset == 0,
+        );
+        if (scheduled == null) continue;
 
         final payload =
             '$payloadPrefix:meal:${entry.key}:${_dateKey(scheduled)}';
@@ -983,6 +1099,47 @@ class NotificationService {
     return DateTime(baseDate.year, baseDate.month, baseDate.day, hour, minute);
   }
 
+  @visibleForTesting
+  static DateTime? debugMealReminderScheduleTime({
+    required DateTime preferred,
+    required DateTime now,
+    required bool isToday,
+  }) {
+    return _mealReminderScheduleTime(
+      preferred: preferred,
+      now: now,
+      isToday: isToday,
+    );
+  }
+
+  static DateTime? _mealReminderScheduleTime({
+    required DateTime preferred,
+    required DateTime now,
+    required bool isToday,
+  }) {
+    if (preferred.isAfter(now)) return preferred;
+    return null;
+  }
+
+  static Future<void> _cancelLegacyMealCatchUpRemindersOnce() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_mealCatchUpCleanupKey) == true) return;
+
+    for (var profileIndex = 0;
+        profileIndex < _maxCaregiverProfilesToSchedule;
+        profileIndex += 1) {
+      final offset = profileIndex * _notificationProfileBlockSize;
+      await _cancelRange(_mealIdBase + offset, 40);
+      final legacyOffset = _legacyOffsetForProfileOffset(offset);
+      if (legacyOffset != offset) {
+        await _cancelRange(_mealIdBase + legacyOffset, 40);
+      }
+    }
+
+    await prefs.setBool(_mealCatchUpCleanupKey, true);
+    debugPrint('[Notifications] Legacy meal catch-up reminders cleared');
+  }
+
   static Map<String, dynamic> _reminderSettingsFrom(
     Map<String, dynamic> user,
   ) {
@@ -1092,6 +1249,7 @@ class NotificationService {
     }).toList(growable: false);
 
     final normalized = {
+      'notificationIdSchemaVersion': _notificationIdSchemaVersion,
       'activeProfileId': profileUserId,
       'timezone': tz.local.name,
       'date': _dateKey(DateTime.now()),
@@ -1101,6 +1259,7 @@ class NotificationService {
       },
       'medicationReminders': settings['medicationReminders'] == true,
       'medicationSchedules': normalizedMedications,
+      'exactAlarmsAllowed': _exactAlarmsAllowed,
     };
 
     return _fnv1a(jsonEncode(_stableJsonValue(normalized)));
@@ -1150,8 +1309,11 @@ class NotificationService {
   }
 
   static int _stableNotificationOffset(String input) {
-    return int.parse(_fnv1a(input).substring(0, 6), radix: 16)
-        .remainder(_maxMedicationNotifications - _maxSingleMedicationNotifications);
+    final slotCount =
+        _maxMedicationNotifications ~/ _maxSingleMedicationNotifications;
+    final slot = int.parse(_fnv1a(input).substring(0, 6), radix: 16)
+        .remainder(slotCount);
+    return slot * _maxSingleMedicationNotifications;
   }
 
   static List<Map<String, dynamic>> _foodLogsFromIntakeData(
@@ -1198,7 +1360,7 @@ class NotificationService {
   }
 
   static Future<void> _markDismissed(String payload) async {
-    final userId = ApiService.userId;
+    final userId = await _notificationStorageUserId();
     if (userId == null || userId.isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
     final dismissed = await _dismissedPayloads();
@@ -1206,8 +1368,34 @@ class NotificationService {
     await prefs.setStringList('$_dismissedPrefix$userId', dismissed.toList());
   }
 
+  static Future<void> allowMedicationReminderAgain({
+    required String medicationId,
+    String? medicationName,
+    String? scheduledTime,
+  }) async {
+    final userId = await _notificationStorageUserId();
+    if (userId == null || userId.isEmpty) return;
+    final medicationKey = _stableKey(medicationId);
+    final nameKey = medicationName == null || medicationName.trim().isEmpty
+        ? null
+        : _stableKey(medicationName);
+    final timeKey = scheduledTime == null
+        ? null
+        : scheduledTime.replaceAll(RegExp(r'[^0-9]'), '').padLeft(4, '0');
+    final dismissed = await _dismissedPayloads();
+    dismissed.removeWhere((payload) {
+      if (!payload.contains(':medication:')) return false;
+      final matchesMedication = payload.contains(':$medicationKey:') ||
+          (nameKey != null && payload.contains(':$nameKey:'));
+      if (!matchesMedication) return false;
+      return timeKey == null || payload.endsWith(':$timeKey');
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('$_dismissedPrefix$userId', dismissed.toList());
+  }
+
   static Future<Set<String>> _dismissedPayloads() async {
-    final userId = ApiService.userId;
+    final userId = await _notificationStorageUserId();
     if (userId == null || userId.isEmpty) return {};
     final prefs = await SharedPreferences.getInstance();
     return (prefs.getStringList('$_dismissedPrefix$userId') ?? const <String>[])
@@ -1215,7 +1403,7 @@ class NotificationService {
   }
 
   static Future<void> _cleanupExpiredDismissals() async {
-    final userId = ApiService.userId;
+    final userId = await _notificationStorageUserId();
     if (userId == null || userId.isEmpty) return;
     final today = _dateKey(DateTime.now());
     final dismissed = await _dismissedPayloads();
@@ -1313,7 +1501,10 @@ class NotificationService {
         .toString()
         .trim()
         .toLowerCase();
-    return status.isEmpty || status == 'pending';
+    return status != 'inactive' &&
+        status != 'archived' &&
+        status != 'deleted' &&
+        status != 'stopped';
   }
 
   static String? _patientName(Map<String, dynamic> user) {

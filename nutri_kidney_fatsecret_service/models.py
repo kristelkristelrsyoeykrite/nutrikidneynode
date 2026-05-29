@@ -33,6 +33,7 @@ class Nutrition(BaseModel):
     needs_manual_review: bool = Field(default=False, description="True if manual verification recommended")
     missing_nutrients: List[str] = Field(default_factory=list, description="List of missing nutrient fields")
     data_source: str = Field(default="fatsecret", description="Source of data (fatsecret, image_recognition, etc.)")
+    source: str = Field(default="fatsecret", description="Short source identifier for app clients")
 
     class Config:
         """Pydantic config."""
@@ -260,6 +261,7 @@ class MealPreviewResult(BaseModel):
     potassium_reliability_note: str
     safety_flags: List[Dict[str, Any]] = Field(default_factory=list)
     insights: List[Dict[str, Any]] = Field(default_factory=list)
+    fluid_contribution: Dict[str, Any] = Field(default_factory=dict)
     child_context_snapshot: ChildProfileContext
     user_notes: Optional[str] = None
 

@@ -40,6 +40,7 @@ class HealthMetricsMedicationCard extends StatelessWidget {
     required this.onTap,
     this.isPending = false,
     this.isMissed = false,
+    this.missedTimes = const [],
     this.note,
   });
 
@@ -49,11 +50,26 @@ class HealthMetricsMedicationCard extends StatelessWidget {
   final String status;
   final bool isPending;
   final bool isMissed;
+  final List<String> missedTimes;
   final VoidCallback onTap;
   final String? note;
 
+  List<String> get _displayTimes {
+    return time
+        .split(RegExp(r'\s*,\s*'))
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final missedTimeSet = missedTimes
+        .map((value) => value.trim().toLowerCase())
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    final displayTimes = _displayTimes;
+
     return InkWell(
       onTap: onTap,
       child: Container(
@@ -96,13 +112,40 @@ class HealthMetricsMedicationCard extends StatelessWidget {
                       fontSize: 13,
                     ),
                   ),
-                  Text(
-                    time,
-                    style: const TextStyle(
-                      color: Color(0xFFB0BEC5),
-                      fontSize: 12,
+                  if (displayTimes.length <= 1)
+                    Text(
+                      time,
+                      style: TextStyle(
+                        color: isMissed && missedTimeSet.isNotEmpty
+                            ? const Color(0xFFD32F2F)
+                            : const Color(0xFFB0BEC5),
+                        fontSize: 12,
+                        fontWeight: isMissed && missedTimeSet.isNotEmpty
+                            ? FontWeight.w700
+                            : FontWeight.w400,
+                      ),
+                    )
+                  else
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 2,
+                      children: displayTimes.map((displayTime) {
+                        final isMissedTime =
+                            missedTimeSet.contains(displayTime.toLowerCase());
+                        return Text(
+                          displayTime,
+                          style: TextStyle(
+                            color: isMissedTime
+                                ? const Color(0xFFD32F2F)
+                                : const Color(0xFFB0BEC5),
+                            fontSize: 12,
+                            fontWeight: isMissedTime
+                                ? FontWeight.w700
+                                : FontWeight.w400,
+                          ),
+                        );
+                      }).toList(),
                     ),
-                  ),
                   if (note != null && note!.trim().isNotEmpty)
                     Text(
                       note!,

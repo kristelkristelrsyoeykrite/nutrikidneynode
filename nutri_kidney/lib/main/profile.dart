@@ -19,7 +19,14 @@ import '../services/api_service.dart';
 import '../services/notification_service.dart';
 
 class ProfilePage extends StatefulWidget {
-  const ProfilePage({super.key});
+  const ProfilePage({
+    super.key,
+    this.profileUserId,
+    this.caregiverNoChildEmptyState = false,
+  });
+
+  final String? profileUserId;
+  final bool caregiverNoChildEmptyState;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -41,12 +48,24 @@ class _ProfilePageState extends State<ProfilePage> {
   Map<String, dynamic> _viewer = {};
   Map<String, dynamic> _user = {};
   Map<String, dynamic> _medicalProfile = {};
+  Map<String, dynamic> _nutritionTargets = {};
+  Map<String, dynamic> _phase2DecisionSupport = {};
   Map<String, dynamic> _anthropometrics = {};
   String? _profileOwnerId;
   Map<String, dynamic> _caregiverDashboardState = {};
   List<Map<String, dynamic>> _medications = [];
   Set<String> _unlockedAwardIds = {};
   String? _selectedManagedProfileId;
+
+  String? get _activeManagedProfileUserId {
+    if (!_isCaregiverViewer) return null;
+    return _selectedManagedProfileId ??
+        ApiService.selectedManagedChildProfileId;
+  }
+
+  bool get _resolvedCaregiverNoChildEmptyState =>
+      widget.caregiverNoChildEmptyState ||
+      (_isCaregiverViewer && _managedProfiles.isEmpty);
 
   Map<String, dynamic> get _caregiverSettings {
     final settings = _user["caregiverSettings"];
@@ -136,7 +155,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   bool get _canOpenEditProfile {
     if (_isCaregiverViewer) {
-      return _linkedChildAccountActive || _hasDirectCaregiverProfile;
+      return _activeManagedProfileUserId?.isNotEmpty == true;
     }
     if (_isAdolescentRole && _caregiverLinked) return false;
     return true;
@@ -161,7 +180,10 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   void initState() {
     super.initState();
-    _loadProfile();
+    _loadProfile(
+      profileUserId:
+          widget.profileUserId ?? ApiService.selectedManagedChildProfileId,
+    );
   }
 
   Future<void> _loadProfile({String? profileUserId}) async {
@@ -175,6 +197,9 @@ class _ProfilePageState extends State<ProfilePage> {
           _viewer = _asStringMap(response["viewer"]);
           _user = _asStringMap(response["user"]);
           _medicalProfile = _asStringMap(response["medicalProfile"]);
+          _nutritionTargets = _asStringMap(response["nutritionTargets"]);
+          _phase2DecisionSupport =
+              _asStringMap(response["phase2DecisionSupport"]);
           _anthropometrics = _asStringMap(response["anthropometrics"]);
           _profileOwnerId = response["profileOwnerId"]?.toString();
           _caregiverDashboardState = _asStringMap(
@@ -204,6 +229,9 @@ class _ProfilePageState extends State<ProfilePage> {
             } else if (!selectedProfileExists) {
               _selectedManagedProfileId = managedProfiles.first.id;
             }
+            ApiService.setSelectedManagedChildProfileId(
+              _selectedManagedProfileId,
+            );
           }
           _isLoadingProfile = false;
         });
@@ -276,9 +304,36 @@ class _ProfilePageState extends State<ProfilePage> {
     return "";
   }
 
+  String _firstTextValue(List<String> values) {
+    for (final value in values) {
+      if (value.trim().isNotEmpty) return value;
+    }
+    return "";
+  }
+
   String get _childName {
     final name = _textValue(_user, ["childFullName", "child_name", "name"]);
     return name.isEmpty ? "Child Profile" : name;
+  }
+
+  String _conditionDisplayValue(String value) {
+    final normalized = value.toLowerCase().trim().replaceAll('_', ' ');
+    if (normalized == "true" || normalized == "1") return "Yes";
+    if (normalized == "false" || normalized == "0") return "No";
+    if (normalized == "yes") return "Yes";
+    if (normalized == "no") return "No";
+    if (normalized == "not sure") return "Not sure";
+    return value;
+  }
+
+  String get _edemaStatus {
+    final edema = _firstTextValue([
+      _textValue(_medicalProfile, ["hasEdema", "has_edema", "edema"]),
+      _textValue(_nutritionTargets, ["hasEdema", "has_edema", "edema"]),
+      _textValue(_phase2DecisionSupport, ["hasEdema", "has_edema", "edema"]),
+      _textValue(_user, ["hasEdema", "has_edema", "edema"]),
+    ]);
+    return edema.isEmpty ? "Not set" : _conditionDisplayValue(edema);
   }
 
   List<CaregiverManagedProfile> get _managedProfiles {
@@ -423,13 +478,14 @@ class _ProfilePageState extends State<ProfilePage> {
           content: Text(
             _isAdolescentRole && _caregiverLinked
                 ? 'Profile editing is managed by the linked caregiver.'
-                : 'Link an adolescent account first to edit this profile.',
+                : 'Select or add a child profile first to edit this profile.',
           ),
         ),
       );
       return;
     }
 
+    final profileUserId = _activeManagedProfileUserId;
     final updated = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
@@ -438,13 +494,13 @@ class _ProfilePageState extends State<ProfilePage> {
           user: _user,
           medicalProfile: _medicalProfile,
           anthropometrics: _anthropometrics,
-          profileOwnerId: _profileOwnerId,
+          profileOwnerId: profileUserId ?? _profileOwnerId,
         ),
       ),
     );
 
     if (updated == true) {
-      _loadProfile();
+      _loadProfile(profileUserId: profileUserId);
     }
   }
 
@@ -502,7 +558,6 @@ class _ProfilePageState extends State<ProfilePage> {
           Map<String, dynamic>.from(savedSettings),
         );
       }
-      NotificationService.refreshReminderNotificationsFromDashboard();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -890,16 +945,6 @@ class _ProfilePageState extends State<ProfilePage> {
                         isLocked: !_hasAward('fourteen_day_streak'),
                       ),
                       isLocked: !_hasAward('fourteen_day_streak'),
-                    ),
-                    _buildAchievementCard(
-                      title: 'Rainbow Eater',
-                      subtitle: 'Ate 5 different colored foods',
-                      iconWidget: _achievementIcon(
-                        icon: Icons.palette_outlined,
-                        color: const Color(0xFF7E57C2),
-                        isLocked: !_hasAward('rainbow_eater'),
-                      ),
-                      isLocked: !_hasAward('rainbow_eater'),
                     ),
                     _buildAchievementCard(
                       title: 'Hydration Hero',
@@ -1380,39 +1425,6 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
                     ),
-                    InkWell(
-                      onTap: _openAccountManagement,
-                      borderRadius: BorderRadius.circular(12),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.manage_accounts_outlined,
-                              color: Color(0xFF00A864),
-                              size: 14,
-                            ),
-                            SizedBox(width: 4),
-                            Text(
-                              "Account Settings",
-                              style: TextStyle(
-                                color: Color(0xFF00A864),
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
                   ],
                 ),
               ],
@@ -1476,14 +1488,14 @@ class _ProfilePageState extends State<ProfilePage> {
               isLocked: !_hasAward('seven_day_streak'),
             ),
             _buildAchievementCard(
-              title: 'Rainbow Eater',
-              subtitle: 'Ate 5 different colored\nfoods',
+              title: '14 Day Streak',
+              subtitle: 'Logged meals and hydration for 14 days',
               iconWidget: _achievementIcon(
-                        icon: Icons.palette_outlined,
-                        color: const Color(0xFF7E57C2),
-                        isLocked: !_hasAward('rainbow_eater'),
-                      ),
-              isLocked: !_hasAward('rainbow_eater'),
+                icon: Icons.local_fire_department,
+                color: const Color(0xFFE53935),
+                isLocked: !_hasAward('fourteen_day_streak'),
+              ),
+              isLocked: !_hasAward('fourteen_day_streak'),
             ),
             _buildAchievementCard(
               title: 'Hydration Hero',
@@ -1626,21 +1638,34 @@ class _ProfilePageState extends State<ProfilePage> {
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (context) => AnalyticsPage(allowDataExport: _allowDataExport),
+                builder: (context) => FoodLogPage(
+                  profileUserId: _activeManagedProfileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
               ),
             );
           else if (index == 2)
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (context) => const AnalyticsPage(),
+                builder: (context) => AnalyticsPage(
+                  allowDataExport: _allowDataExport,
+                  profileUserId: _activeManagedProfileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
               ),
             );
           else if (index == 3)
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (context) => const HealthMetricsPage(),
+                builder: (context) => HealthMetricsPage(
+                  profileUserId: _activeManagedProfileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
               ),
             );
           else

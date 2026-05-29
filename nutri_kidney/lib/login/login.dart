@@ -83,6 +83,12 @@ Future<void> _loadRememberedLoginState() async {
   Future<bool> _emailExists(String email) async {
     final resp = await ApiService.checkUserExists({"email": email});
     debugPrint('DEBUG check-user email $email -> $resp');
+    if (resp["rateLimited"] == true || resp["statusCode"] == 429) {
+      throw Exception(
+        resp["error"]?.toString() ??
+            'Too many attempts. Please wait a bit before trying again.',
+      );
+    }
     return resp["success"] == true && resp["exists"] == true;
   }
 
@@ -202,8 +208,6 @@ Future<void> _loadRememberedLoginState() async {
         contact: result['email'] as String?,
       );
       await PushNotificationService.syncTokenIfPossible();
-      await NotificationService.ensureScheduledFromCache();
-      unawaited(NotificationService.syncFromBackendAndRescheduleIfChanged());
 
       if (mounted) {
         Navigator.pushReplacement(
@@ -296,8 +300,6 @@ Future<void> _loadRememberedLoginState() async {
         contact: enteredEmail,
       );
       await PushNotificationService.syncTokenIfPossible();
-      await NotificationService.ensureScheduledFromCache();
-      unawaited(NotificationService.syncFromBackendAndRescheduleIfChanged());
 
       if (mounted) {
         Navigator.pushReplacement(
@@ -371,7 +373,10 @@ Future<void> _loadRememberedLoginState() async {
       _showErrorDialog('Reset Failed', errorMessage);
     } catch (e) {
       if (!mounted) return;
-      _showErrorDialog('Reset Failed', e.toString());
+      _showErrorDialog(
+        'Reset Failed',
+        e.toString().replaceFirst(RegExp(r'^Exception:\s*'), ''),
+      );
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

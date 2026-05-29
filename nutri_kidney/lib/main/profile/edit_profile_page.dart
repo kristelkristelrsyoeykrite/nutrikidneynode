@@ -64,9 +64,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
   String? _processedFoodIntake;
   String? _mealPattern;
   String? _physicalActivityLevel;
-  String? _preferredMeasurementSystem;
   String? _fluidRestrictionStatus;
   String? _hasHypertension;
+  String? _hasEdema;
+  String? _isPostTransplant;
+  String? _postTransplantWeeks;
   bool _onDialysis = false;
   final Set<String> _selectedAllergies = {};
 
@@ -140,9 +142,21 @@ class _EditProfilePageState extends State<EditProfilePage> {
     "Moderate (Light active)",
     "High (Very active)",
   ];
-  static const _measurementOptions = ["Grams", "Ounces/Cups", "Mixed"];
   static const _fluidRestrictionOptions = ["yes", "no", "not sure"];
   static const _hypertensionOptions = ["yes", "no", "not_sure"];
+  static const _edemaOptions = ["yes", "no", "not sure"];
+  static const _postTransplantOptions = ["yes", "no", "not sure"];
+  static const _postTransplantWeeksOptions = [
+    "6-8 weeks",
+    "8 weeks onwards",
+  ];
+  static const _kidneyDiseaseTypeOptions = [
+    "CKD DKD",
+    "Congenital Anomaly",
+    "Glomerulonephritis",
+    "Hereditary Nephropathy",
+    "Other",
+  ];
 
   int? _parsedAgeValue([String? raw]) {
     return int.tryParse((raw ?? _ageController.text).trim());
@@ -258,7 +272,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
       text: _read(widget.medicalProfile, ["treatmentFrequency"]),
     );
     _fluidLimitController = TextEditingController(
-      text: _read(widget.medicalProfile, ["fluidLimitMl", "fluid_limit_ml"]),
+      text: _read(widget.medicalProfile, [
+        "fluidLimitMl",
+        "fluid_limit_ml",
+        "dailyFluidLimitMl",
+        "daily_fluid_limit_ml",
+      ]),
     );
     _otherAllergyController = TextEditingController();
     _heightController.addListener(_updateBmi);
@@ -269,7 +288,10 @@ class _EditProfilePageState extends State<EditProfilePage> {
       medical: widget.medicalProfile,
       targets: const {},
     );
-    _onDialysis = _readBool(widget.medicalProfile["onDialysis"]);
+    _onDialysis = _readBool(
+      widget.medicalProfile["onDialysis"] ??
+          widget.medicalProfile["on_dialysis"],
+    );
     _originalNutritionFields = _nutritionAffectingValues();
     _loadLatestProfileForEdit();
   }
@@ -538,16 +560,36 @@ class _EditProfilePageState extends State<EditProfilePage> {
     return aliases[text] ?? value;
   }
 
-  static String _normalizeMeasurementSystem(String value) {
+  static String _normalizeYesNoNotSure(String value) {
     final text = _normalizeOption(value);
     const aliases = {
-      "grams": "Grams",
-      "metric": "Grams",
-      "ounces cups": "Ounces/Cups",
-      "ounces": "Ounces/Cups",
-      "cups": "Ounces/Cups",
-      "imperial": "Ounces/Cups",
-      "mixed": "Mixed",
+      "true": "yes",
+      "y": "yes",
+      "1": "yes",
+      "yes": "yes",
+      "false": "no",
+      "n": "no",
+      "0": "no",
+      "no": "no",
+      "not sure": "not sure",
+      "not_sure": "not sure",
+      "unknown": "not sure",
+      "unsure": "not sure",
+    };
+    return aliases[text] ?? value;
+  }
+
+  static String _normalizeDialysisType(String value) {
+    final text = _normalizeOption(value);
+    const aliases = {
+      "hd": "HD",
+      "hemodialysis": "HD",
+      "haemodialysis": "HD",
+      "hemo dialysis": "HD",
+      "haemo dialysis": "HD",
+      "pd": "PD",
+      "peritoneal dialysis": "PD",
+      "peritoneal": "PD",
     };
     return aliases[text] ?? value;
   }
@@ -562,6 +604,24 @@ class _EditProfilePageState extends State<EditProfilePage> {
     return (value ?? "").toString().trim();
   }
 
+  bool get _requiresPostTransplantWeeks => _isPostTransplant == "yes";
+
+  int? get _sterileDietWeeksValue {
+    if (_postTransplantWeeks == "6-8 weeks") return 8;
+    if (_postTransplantWeeks == "8 weeks onwards") return 9;
+    return null;
+  }
+
+  String? _postTransplantWeeksValue(dynamic value) {
+    if (value == null) return null;
+    final text = value.toString().trim().toLowerCase();
+    if (text == "6-8 weeks") return "6-8 weeks";
+    if (text == "8 weeks onwards") return "8 weeks onwards";
+    final weeks = int.tryParse(text);
+    if (weeks == null) return null;
+    return weeks <= 8 ? "6-8 weeks" : "8 weeks onwards";
+  }
+
   Map<String, String> _nutritionAffectingValues() {
     return {
       "age": _normalizedFieldValue(_ageController.text),
@@ -573,6 +633,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
         _onDialysis ? _dryWeightController.text : "",
       ),
       "ckdStage": _normalizedFieldValue(_ckdStage),
+      "kidneyDiseaseType": _normalizedFieldValue(
+        _kidneyDiseaseTypeController.text,
+      ),
       "onDialysis": _normalizedFieldValue(_onDialysis),
       "dialysisType": _normalizedFieldValue(_onDialysis ? _dialysisType : ""),
       "treatmentFrequency": _normalizedFieldValue(
@@ -580,6 +643,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
       ),
       "physicalActivityLevel": _normalizedFieldValue(_physicalActivityLevel),
       "fluidRestrictionStatus": _normalizedFieldValue(_fluidRestrictionStatus),
+      "hasEdema": _normalizedFieldValue(_hasEdema),
+      "isPostTransplant": _normalizedFieldValue(_isPostTransplant),
+      "postTransplantWeeks": _normalizedFieldValue(
+        _requiresPostTransplantWeeks ? _postTransplantWeeks : "",
+      ),
       "fluidLimit": _normalizedFieldValue(
         _fluidRestrictionStatus == "yes" ? _fluidLimitController.text : "",
       ),
@@ -633,6 +701,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     required Map<String, dynamic> user,
     required Map<String, dynamic> medical,
     required Map<String, dynamic> targets,
+    Map<String, dynamic> phase2DecisionSupport = const {},
   }) {
     _sex = _dropdownValue(
       _sexOptions,
@@ -648,10 +717,19 @@ class _EditProfilePageState extends State<EditProfilePage> {
         _read(targets, ["ckd_stage", "ckdStage"]),
       ]),
     );
-    _dialysisType = _dropdownValue(
+    final nextDialysisType = _dropdownValue(
       _dialysisTypeOptions,
-      _read(medical, ["dialysisType", "dialysis_type"]),
+      _normalizeDialysisType(
+        _firstValue([
+          _read(medical, ["dialysisType", "dialysis_type"]),
+          _read(targets, ["dialysisType", "dialysis_type"]),
+          _read(phase2DecisionSupport, ["dialysisType", "dialysis_type"]),
+        ]),
+      ),
     );
+    if (nextDialysisType != null || _dialysisType == null) {
+      _dialysisType = nextDialysisType;
+    }
     _dietPattern = _dropdownValue(
       _dietPatternOptions,
       _normalizeDietPattern(_read(medical, ["dietPattern", "diet_pattern"])),
@@ -672,20 +750,60 @@ class _EditProfilePageState extends State<EditProfilePage> {
         _read(medical, ["physicalActivityLevel", "physical_activity_level"]),
       ),
     );
-    _preferredMeasurementSystem = _dropdownValue(
-      _measurementOptions,
-      _normalizeMeasurementSystem(
-        _read(user, ["preferredMeasurementSystem", "preferredMeasurement"]),
-      ),
-    );
     _fluidRestrictionStatus = _dropdownValue(
       _fluidRestrictionOptions,
-      _read(medical, ["fluidRestrictionStatus", "fluid_restriction_status"]),
+      _normalizeYesNoNotSure(
+        _firstValue([
+          _read(medical, ["fluidRestrictionStatus", "fluid_restriction_status"]),
+          _read(targets, ["fluidRestrictionStatus", "fluid_restriction_status"]),
+          _read(phase2DecisionSupport, [
+            "fluidRestrictionStatus",
+            "fluid_restriction_status",
+          ]),
+        ]),
+      ),
     );
     _hasHypertension = _dropdownValue(
       _hypertensionOptions,
-      _read(medical, ["hasHypertension", "has_hypertension"]),
+      _normalizeYesNoNotSure(
+        _read(medical, ["hasHypertension", "has_hypertension"]),
+      ),
     );
+    final nextHasEdema = _dropdownValue(
+      _edemaOptions,
+      _normalizeYesNoNotSure(
+        _firstValue([
+          _read(medical, ["hasEdema", "has_edema", "edema"]),
+          _read(targets, ["hasEdema", "has_edema", "edema"]),
+          _read(phase2DecisionSupport, ["hasEdema", "has_edema", "edema"]),
+          _read(user, ["hasEdema", "has_edema", "edema"]),
+        ]),
+      ),
+    );
+    if (nextHasEdema != null || _hasEdema == null) {
+      _hasEdema = nextHasEdema;
+    }
+    _isPostTransplant = _dropdownValue(
+      _postTransplantOptions,
+      _normalizeYesNoNotSure(
+        _read(medical, [
+          "isPostTransplant",
+          "is_post_transplant",
+          "postTransplant",
+          "post_transplant",
+        ]),
+      ),
+    );
+    _postTransplantWeeks = _postTransplantWeeksValue(
+      _firstValue([
+        _read(medical, ["sterileDietWeeks", "sterile_diet_weeks"]),
+        _read(medical, ["weeksPostTransplant", "weeks_post_transplant"]),
+        _read(medical, ["postTransplantWeeks", "post_transplant_weeks"]),
+      ]),
+    );
+    if (_isPostTransplant != "yes") {
+      _postTransplantWeeks = null;
+    }
     _populateAllergies(medical);
   }
 
@@ -701,6 +819,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
         final medical = _asStringMap(response["medicalProfile"]);
         final anthropometrics = _asStringMap(response["anthropometrics"]);
         final targets = _asStringMap(response["nutritionTargets"]);
+        final phase2DecisionSupport =
+            _asStringMap(response["phase2DecisionSupport"]);
 
         _setText(
           _nameController,
@@ -760,12 +880,37 @@ class _EditProfilePageState extends State<EditProfilePage> {
         );
         _setText(
           _fluidLimitController,
-          _read(medical, ["fluidLimitMl", "fluid_limit_ml"]),
+          _firstValue([
+            _read(medical, [
+              "fluidLimitMl",
+              "fluid_limit_ml",
+              "dailyFluidLimitMl",
+              "daily_fluid_limit_ml",
+            ]),
+            _read(targets, [
+              "fluidLimitMl",
+              "fluid_limit_ml",
+              "dailyFluidLimitMl",
+              "daily_fluid_limit_ml",
+            ]),
+            _read(phase2DecisionSupport, [
+              "fluidLimitMl",
+              "fluid_limit_ml",
+              "dailyFluidLimitMl",
+              "daily_fluid_limit_ml",
+            ]),
+          ]),
         );
 
         setState(() {
-          _populateDropdowns(user: user, medical: medical, targets: targets);
-          _onDialysis = _readBool(medical["onDialysis"]);
+          _populateDropdowns(
+            user: user,
+            medical: medical,
+            targets: targets,
+            phase2DecisionSupport: phase2DecisionSupport,
+          );
+          _onDialysis =
+              _readBool(medical["onDialysis"] ?? medical["on_dialysis"]);
           _originalNutritionFields = _nutritionAffectingValues();
           _isLoading = false;
         });
@@ -848,6 +993,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
       return;
     }
 
+    if (_requiresPostTransplantWeeks && _postTransplantWeeks == null) {
+      _showError('Weeks post-transplant is required when post-transplant is yes.');
+      return;
+    }
+
     final shouldRecalculate = _hasNutritionAffectingChanges();
     if (shouldRecalculate) {
       final confirmed = await _confirmNutritionTargetUpdate();
@@ -873,6 +1023,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
         "dryWeight": _onDialysis ? _dryWeightController.text.trim() : null,
         "ckdStage": _ckdStage,
         "kidneyDiseaseType": _kidneyDiseaseTypeController.text.trim(),
+        "ckdType": _kidneyDiseaseTypeController.text.trim(),
+        "ckd_type": _kidneyDiseaseTypeController.text.trim(),
         "dateOfDiagnosis": _diagnosisDateController.text.trim(),
         "onDialysis": _onDialysis,
         "dialysisType": _onDialysis ? _dialysisType : null,
@@ -882,12 +1034,29 @@ class _EditProfilePageState extends State<EditProfilePage> {
         "processedFoodIntake": _processedFoodIntake,
         "mealPattern": _mealPattern,
         "physicalActivityLevel": _physicalActivityLevel,
-        "preferredMeasurementSystem": _preferredMeasurementSystem,
         "fluidRestrictionStatus": _fluidRestrictionStatus,
         "fluidLimitMl": _fluidRestrictionStatus == "yes"
             ? _fluidLimitController.text.trim()
             : null,
+        "fluid_limit_ml": _fluidRestrictionStatus == "yes"
+            ? _fluidLimitController.text.trim()
+            : null,
         "hasHypertension": _hasHypertension,
+        "has_hypertension": _hasHypertension,
+        "hasEdema": _hasEdema,
+        "has_edema": _hasEdema,
+        "isPostTransplant": _isPostTransplant,
+        "is_post_transplant": _isPostTransplant,
+        "requiresSterileDiet": _isPostTransplant == "yes",
+        "requires_sterile_diet": _isPostTransplant == "yes",
+        "sterileDietWeeks":
+            _requiresPostTransplantWeeks ? _sterileDietWeeksValue : null,
+        "sterile_diet_weeks":
+            _requiresPostTransplantWeeks ? _sterileDietWeeksValue : null,
+        "weeksPostTransplant":
+            _requiresPostTransplantWeeks ? _sterileDietWeeksValue : null,
+        "weeks_post_transplant":
+            _requiresPostTransplantWeeks ? _sterileDietWeeksValue : null,
         "allergies": _selectedAllergyPayload(),
         "recalculateNutritionTargets": shouldRecalculate,
       });
@@ -1024,9 +1193,16 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         options: _ckdStageOptions,
                         onChanged: (value) => setState(() => _ckdStage = value),
                       ),
-                      _textField(
-                        _kidneyDiseaseTypeController,
-                        "Kidney disease type",
+                      _dropdownField(
+                        label: "Kidney disease type",
+                        value: _dropdownValue(
+                          _kidneyDiseaseTypeOptions,
+                          _kidneyDiseaseTypeController.text,
+                        ),
+                        options: _kidneyDiseaseTypeOptions,
+                        onChanged: (value) => setState(() {
+                          _kidneyDiseaseTypeController.text = value ?? "";
+                        }),
                       ),
                       _dateField(_diagnosisDateController, "Date of diagnosis"),
                       SwitchListTile(
@@ -1107,14 +1283,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
                       onChanged: (value) =>
                           setState(() => _physicalActivityLevel = value),
                     ),
-                    _dropdownField(
-                      label: "Preferred measurement system",
-                      value: _preferredMeasurementSystem,
-                      options: _measurementOptions,
-                      onChanged: (value) => setState(
-                        () => _preferredMeasurementSystem = value,
-                      ),
-                    ),
                   ],
                 ),
                 _section(
@@ -1156,9 +1324,38 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         onChanged: (value) =>
                             setState(() => _hasHypertension = value),
                       ),
+                      _dropdownField(
+                        label: "Does the child have edema?",
+                        value: _hasEdema,
+                        options: _edemaOptions,
+                        onChanged: (value) =>
+                            setState(() => _hasEdema = value),
+                      ),
+                      _dropdownField(
+                        label: "Is the child on post-transplant?",
+                        value: _isPostTransplant,
+                        options: _postTransplantOptions,
+                        onChanged: (value) => setState(() {
+                          _isPostTransplant = value;
+                          if (value != "yes") {
+                            _postTransplantWeeks = null;
+                          }
+                        }),
+                      ),
+                      _dropdownField(
+                        label: "Weeks post-transplant",
+                        value: _requiresPostTransplantWeeks
+                            ? _postTransplantWeeks
+                            : null,
+                        options: _postTransplantWeeksOptions,
+                        onChanged: _requiresPostTransplantWeeks
+                            ? (value) =>
+                                setState(() => _postTransplantWeeks = value)
+                            : null,
+                      ),
                     ] else
                       const Text(
-                        'Fluid restriction and blood pressure settings are managed with your caregiver.',
+                        'Fluid restriction, edema, and blood pressure settings are managed with your caregiver.',
                         style: TextStyle(
                           color: Color(0xFF78909C),
                           fontSize: 13,
@@ -1317,7 +1514,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     required String label,
     required String? value,
     required List<String> options,
-    required ValueChanged<String?> onChanged,
+    required ValueChanged<String?>? onChanged,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),

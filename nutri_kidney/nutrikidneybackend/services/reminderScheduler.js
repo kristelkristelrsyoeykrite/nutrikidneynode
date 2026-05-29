@@ -297,10 +297,91 @@ function shouldRemindAgain(lastReminderMs, intervalMinutes = 30) {
   return nowMs - lastReminderMs >= intervalMs;
 }
 
+function reminderTargetIdsForUser(userId, user = {}) {
+  const ids = new Set([String(userId || "").trim()]);
+  const linkedChildren = Array.isArray(user.linkedChildren)
+    ? user.linkedChildren
+    : [];
+
+  for (const child of linkedChildren) {
+    [
+      child?.userId,
+      child?.uid,
+      child?.id,
+      child?.childProfileId,
+      child?.profileUserId,
+    ].forEach((value) => {
+      const text = String(value || "").trim();
+      if (text) ids.add(text);
+    });
+  }
+
+  [
+    user.activeDirectChildProfileId,
+    user.childProfileId,
+    user.linkedChildUserId,
+  ].forEach((value) => {
+    const text = String(value || "").trim();
+    if (text) ids.add(text);
+  });
+
+  return Array.from(ids).filter(Boolean);
+}
+
 /**
  * Send FCM message to user's devices
  */
-async function sendReminderToDevices(userId, reminderData) {
+function deviceTokenEntries(profile = {}) {
+  const raw = profile.deviceTokens;
+  if (!raw || typeof raw !== "object") return [];
+  return Object.values(raw)
+    .filter((entry) => entry && typeof entry.token === "string" && entry.token.trim())
+    .map((entry) => ({ ...entry, token: entry.token.trim() }));
+}
+
+function caregiverIdsForProfile(profile = {}) {
+  return [
+    profile.caregiverUserId,
+    profile.caregiverId,
+    profile.parentUserId,
+    profile.caregiverSettings?.caregiverId,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+async function addRecipientDeviceTokens(recipients, recipientUserId, targetUserId) {
+  if (!recipientUserId || recipients.has(recipientUserId)) return;
+
+  const doc = await db.collection("users").doc(recipientUserId).get();
+  if (!doc.exists) return;
+
+  const profile = safeDecryptHealthProfile(doc.data() || {});
+  const tokens = deviceTokenEntries(profile);
+  if (tokens.length === 0) return;
+
+  recipients.set(recipientUserId, {
+    userId: recipientUserId,
+    targetUserId,
+    tokens,
+  });
+}
+
+async function reminderRecipientsForUser(userId, profile = {}, extraRecipientUserIds = []) {
+  const recipients = new Map();
+  await addRecipientDeviceTokens(recipients, userId, userId);
+
+  for (const caregiverId of [
+    ...caregiverIdsForProfile(profile),
+    ...extraRecipientUserIds,
+  ]) {
+    await addRecipientDeviceTokens(recipients, caregiverId, userId);
+  }
+
+  return Array.from(recipients.values());
+}
+
+async function sendReminderToDevices(userId, reminderData, options = {}) {
   try {
     const userDoc = await db.collection("users").doc(userId).get();
     if (!userDoc.exists) {
@@ -309,30 +390,22 @@ async function sendReminderToDevices(userId, reminderData) {
     }
 
     const user = safeDecryptHealthProfile(userDoc.data() || {});
-    const deviceTokens = user.deviceTokens || {};
-
-    const validTokens = [
-      ...new Set(
-        Object.values(deviceTokens)
-          .filter((entry) => entry && entry.token)
-          .map((entry) => entry.token),
-      ),
-    ];
+    const recipients = await reminderRecipientsForUser(
+      userId,
+      user,
+      options.extraRecipientUserIds,
+    );
+    const validTokens = recipients.flatMap((recipient) => recipient.tokens);
 
     if (validTokens.length === 0) {
-      console.log(`No device tokens for user ${userId}`);
+      console.log(`No device tokens for reminder target ${userId}`);
       return;
     }
 
-    const message = {
+    const baseMessage = {
       notification: {
         title: reminderData.title,
         body: reminderData.body,
-      },
-      data: {
-        type: reminderData.type,
-        userId: userId,
-        timestamp: Date.now().toString(),
       },
       android: {
         priority: "high",
@@ -345,12 +418,20 @@ async function sendReminderToDevices(userId, reminderData) {
 
     // Send to all devices
     const results = await Promise.allSettled(
-      validTokens.map((token) =>
-        admin.messaging().send({
-          ...message,
-          token,
-        })
-      )
+      recipients.flatMap((recipient) =>
+        recipient.tokens.map(({ token }) =>
+          admin.messaging().send({
+            ...baseMessage,
+            data: {
+              type: String(reminderData.type || ""),
+              userId: recipient.userId,
+              targetUserId: recipient.targetUserId,
+              timestamp: Date.now().toString(),
+            },
+            token,
+          }),
+        ),
+      ),
     );
 
     const successful = results.filter((r) => r.status === "fulfilled").length;
@@ -369,6 +450,7 @@ async function sendReminderToDevices(userId, reminderData) {
       devicesTargeted: validTokens.length,
       devicesSucceeded: successful,
       devicesFailed: failed,
+      recipientUserIds: recipients.map((recipient) => recipient.userId),
       sentAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -584,78 +666,86 @@ async function checkMissedMedicationReminders() {
       const userId = userDoc.id;
 
       const missedThresholdMs = 5 * 60 * 1000;
-      const medicationsSnapshot = await db
-        .collection("medications")
-        .where("userId", "==", userId)
-        .get();
-
-      if (medicationsSnapshot.empty) continue;
-
       const nowMs = Date.now();
       const today = todayDateKey();
+      const targetUserIds = reminderTargetIdsForUser(userId, user);
 
-      for (const medicationDoc of medicationsSnapshot.docs) {
-        const medicationId = medicationDoc.id;
-        const medication = decryptHealthDocument(medicationDoc.data() || {});
-        const name =
-          String(
-            medication.medication_name ??
-              medication.medicationName ??
-              medication.name ??
-              "Medication",
-          ).trim() || "Medication";
+      for (const targetUserId of targetUserIds) {
+        const medicationsSnapshot = await db
+          .collection("medications")
+          .where("userId", "==", targetUserId)
+          .get();
 
-        for (const clock of medicationScheduleTimes(medication)) {
-          const scheduled = dateForTodayClockTime(clock);
-          const scheduledMs = scheduled.getTime();
-          if (scheduledMs > nowMs) continue;
-          if (nowMs - scheduledMs < missedThresholdMs) continue;
+        if (medicationsSnapshot.empty) continue;
 
-          const intakeLogId = `${userId}_${medicationId}_${today}_${clock.text}`;
-          const intakeLog = await db
-            .collection("medicationIntakeLogs")
-            .doc(intakeLogId)
-            .get();
-          if (intakeLog.exists) continue;
+        for (const medicationDoc of medicationsSnapshot.docs) {
+          const medicationId = medicationDoc.id;
+          const medication = decryptHealthDocument(medicationDoc.data() || {});
+          const name =
+            String(
+              medication.medication_name ??
+                medication.medicationName ??
+                medication.name ??
+                "Medication",
+            ).trim() || "Medication";
 
-          const stateKey = `missed_medication_${medicationId}_${today}_${clock.text}`;
-          const lastMissedSent = await getLastReminderTimestamp(userId, stateKey);
-          if (lastMissedSent !== 0) continue;
+          for (const clock of medicationScheduleTimes(medication)) {
+            const scheduled = dateForTodayClockTime(clock);
+            const scheduledMs = scheduled.getTime();
+            if (scheduledMs > nowMs) continue;
+            if (nowMs - scheduledMs < missedThresholdMs) continue;
 
-          const dueTimestamp = admin.firestore.Timestamp.fromDate(scheduled);
+            const intakeLogId = `${targetUserId}_${medicationId}_${today}_${clock.text}`;
+            const intakeLog = await db
+              .collection("medicationIntakeLogs")
+              .doc(intakeLogId)
+              .get();
+            if (intakeLog.exists) continue;
 
-          const missedNotification = {
-            userId,
-            type: "missed_medication_reminder",
-            title: "Missed Medication Reminder",
-            body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
-            timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            isMissed: true,
-            priority: "high",
-            color: "red",
-            read: false,
-            medicationId,
-            medicationName: name,
-            scheduledTime: clock.text,
-            dueTime: dueTimestamp,
-            day: today,
-          };
+            const stateKey = `missed_medication_${medicationId}_${today}_${clock.text}`;
+            const lastMissedSent = await getLastReminderTimestamp(targetUserId, stateKey);
+            if (lastMissedSent !== 0) continue;
 
-          await db.collection("notifications").add(missedNotification);
-          await db.collection("upcomingReminders").add(missedNotification);
+            const dueTimestamp = admin.firestore.Timestamp.fromDate(scheduled);
 
-          const childName = displayNameFromProfile(user);
-          await sendReminderToDevices(userId, {
-            type: "missed_medication_reminder",
-            title: `Missed medication for ${childName}`,
-            body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
-          });
+            const missedNotification = {
+              userId: targetUserId,
+              type: "missed_medication_reminder",
+              title: "Missed Medication Reminder",
+              body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
+              timestamp: admin.firestore.FieldValue.serverTimestamp(),
+              isMissed: true,
+              priority: "high",
+              color: "red",
+              read: false,
+              medicationId,
+              medicationName: name,
+              scheduledTime: clock.text,
+              dueTime: dueTimestamp,
+              day: today,
+            };
 
-          await updateLastReminderTimestamp(userId, stateKey);
+            await db.collection("notifications").add(missedNotification);
+            await db.collection("upcomingReminders").add(missedNotification);
 
-          console.log(
-            `Sent missed medication reminder to ${userId} for ${medicationId} at ${clock.text}`,
-          );
+            const childName =
+              targetUserId === userId ? displayNameFromProfile(user) : "your child";
+            await sendReminderToDevices(
+              targetUserId,
+              {
+                type: "missed_medication_reminder",
+                title: `Missed medication for ${childName}`,
+                body: `You missed your ${name} reminder at ${clock.text}. Please take your medication if possible.`,
+              },
+              { extraRecipientUserIds: targetUserId === userId ? [] : [userId] },
+            );
+
+            await updateLastReminderTimestamp(targetUserId, stateKey);
+
+            console.log(
+              `Sent missed medication reminder to ${targetUserId} for ${medicationId} at ${clock.text}`,
+            );
+          }
         }
       }
     }

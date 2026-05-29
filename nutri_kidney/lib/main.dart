@@ -42,8 +42,6 @@ class _NutriKidneyAppState extends State<NutriKidneyApp> {
     
     if (hasRememberedSession) {
       await PushNotificationService.syncTokenIfPossible();
-      await NotificationService.ensureScheduledFromCache();
-      unawaited(NotificationService.syncFromBackendAndRescheduleIfChanged());
       // User has a valid remembered session - take them to dashboard
       return const DashboardPage();
     } else {

@@ -95,6 +95,7 @@ class NutritionNormalizer:
             needs_manual_review=needs_review,
             missing_nutrients=missing_nutrients,
             data_source=source,
+            source=source,
         )
         
         return nutrition

@@ -23,6 +23,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 class PushNotificationService {
   static const String _snoozeActionId = 'snooze_5_minutes';
   static const String _dontRemindActionId = 'dont_remind_again';
+  static const String _channelId = 'nutrikidney_reminders';
+  static const String _channelName = 'NutriKidney Reminders';
   static final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   static final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
@@ -80,10 +82,10 @@ class PushNotificationService {
   static Future<void> _initializeLocalNotifications() async {
     debugPrint('[Push] Initializing local notifications');
 
-     final androidInitializationSettings = AndroidInitializationSettings(
+    final androidInitializationSettings = AndroidInitializationSettings(
       '@mipmap/ic_launcher', // Uses app launcher icon as default
     );
-    
+
     final iosInitializationSettings = DarwinInitializationSettings(
       onDidReceiveLocalNotification: (id, title, body, payload) async {
         debugPrint('[Push] iOS received local notification: $title');
@@ -105,10 +107,25 @@ class PushNotificationService {
         onDidReceiveBackgroundNotificationResponse:
             notificationActionBackgroundHandler,
       );
+      await _createAndroidChannel();
       debugPrint('[Push] Local notifications initialized');
     } catch (error) {
       debugPrint('[Push] Failed to initialize local notifications: $error');
     }
+  }
+
+  static Future<void> _createAndroidChannel() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    const channel = AndroidNotificationChannel(
+      _channelId,
+      _channelName,
+      description: 'Push reminders for meals, medications, and hydration',
+      importance: Importance.max,
+    );
+    await _localNotifications
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
   }
 
   static Future<void> _displayForegroundNotification(
@@ -119,7 +136,8 @@ class PushNotificationService {
       return;
     }
 
-    final title = message.notification?.title ?? message.data['title'] ?? 'Notification';
+    final title =
+        message.notification?.title ?? message.data['title'] ?? 'Notification';
     final body = message.notification?.body ?? message.data['body'] ?? '';
     final payload = _payloadForMessage(message);
 
@@ -132,9 +150,10 @@ class PushNotificationService {
         body,
         NotificationDetails(
           android: AndroidNotificationDetails(
-            'nutrikidney_reminders',
-            'NutriKidney Reminders',
-            channelDescription: 'Reminders for meals, medications, and hydration',
+            _channelId,
+            _channelName,
+            channelDescription:
+                'Reminders for meals, medications, and hydration',
             importance: Importance.max,
             priority: Priority.high,
             showWhen: true,

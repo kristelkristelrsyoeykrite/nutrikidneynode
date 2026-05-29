@@ -37,6 +37,7 @@ from models import (
 )
 from response_formatter import ResponseFormatter
 from phosphorus_service import get_phosphorus_guide
+from usda_client import USDAFoodDataClient
 from water_content_identification import USDAWaterContentIdentifier
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,7 @@ class MealLoggingService:
         "carbohydrate",
         "sodium",
         "potassium",
+        "phosphorus",
     ]
 
     OPTIONAL_NUTRIENTS = [
@@ -158,6 +160,7 @@ class MealLoggingService:
         "carbohydrate": ["carbohydrate", "carbohydrates", "carbs"],
         "sodium": ["sodium"],
         "potassium": ["potassium"],
+        "phosphorus": ["phosphorus", "phosphorous"],
         "fiber": ["fiber"],
         "sugar": ["sugar"],
         "calcium": ["calcium"],
@@ -172,6 +175,7 @@ class MealLoggingService:
     def __init__(self, fatsecret_client: Optional[FatSecretClient] = None):
         self.config = get_config()
         self.fatsecret_client = fatsecret_client or FatSecretClient()
+        self.usda_client = USDAFoodDataClient()
         self.image_handler = None
         self.food_matcher = FoodMatcher(
             weak_labels=self.GENERIC_GOOGLE_LABELS,
@@ -183,26 +187,44 @@ class MealLoggingService:
         """Search FatSecret for selectable food choices only."""
         normalized_query = self._normalize_query(query)
 
+        choices = []
+        total_results = 0
+        fatsecret_error = None
         try:
             raw_results = self.fatsecret_client.search_foods(normalized_query, page)
         except Exception as e:
             logger.error("Meal logging food search failed", exc_info=True)
-            raise FatSecretAPIError(
-                "Food search is temporarily unavailable.",
-                details={"reason": str(e.__class__.__name__)},
+            fatsecret_error = e
+        else:
+            choices.extend(
+                self._search_item_to_choice(item)
+                for item in raw_results.get("foods", [])
+                if item.get("food_id") and item.get("food_name")
             )
+            total_results += raw_results.get("total_results", len(choices))
 
-        choices = [
-            self._search_item_to_choice(item)
-            for item in raw_results.get("foods", [])
-            if item.get("food_id") and item.get("food_name")
-        ]
+        try:
+            usda_results = self.usda_client.search_foods(normalized_query, page)
+        except Exception as e:
+            logger.warning("USDA meal logging food search failed: %s", str(e))
+            if not choices and fatsecret_error:
+                raise FatSecretAPIError(
+                    "Food search is temporarily unavailable.",
+                    details={"reason": str(fatsecret_error.__class__.__name__)},
+                )
+        else:
+            choices.extend(
+                self._search_item_to_choice(item)
+                for item in usda_results.get("foods", [])
+                if item.get("food_id") and item.get("food_name")
+            )
+            total_results += usda_results.get("total_results", 0)
 
         result = MealLoggingSearchResult(
             query=query,
             normalized_query=normalized_query,
             choices=choices,
-            total_results=raw_results.get("total_results", len(choices)),
+            total_results=total_results or len(choices),
         )
         return ResponseFormatter.success_response("meal_logging_search", result)
 
@@ -630,6 +652,11 @@ class MealLoggingService:
         if food_id in self._food_details_cache:
             return deepcopy(self._food_details_cache[food_id])
 
+        if USDAFoodDataClient.is_usda_food_id(food_id):
+            details = self.usda_client.get_meal_logging_details(food_id)
+            self._food_details_cache[food_id] = deepcopy(details)
+            return details
+
         try:
             details = self.fatsecret_client.get_food_details_v5(food_id)
         except Exception as e:
@@ -647,7 +674,7 @@ class MealLoggingService:
         if not servings:
             raise NoResultsError("This item cannot be logged right now because no servings were returned.")
 
-        phosphorus = self._tag_phosphorus(details)
+        phosphorus = self._tag_phosphorus(details, servings)
         phosphorus_value = (
             phosphorus.get("phosphorus", {})
             .get("phosphorus", {})
@@ -843,9 +870,41 @@ class MealLoggingService:
 
         return {"safety_flags": flags, "insights": insights}
 
-    def _tag_phosphorus(self, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Call the CSV-backed phosphorus guide service."""
+    def _tag_phosphorus(
+        self,
+        details: Dict[str, Any],
+        servings: Optional[List[MealServing]] = None,
+    ) -> Dict[str, Any]:
+        """Prefer USDA phosphorus values, then fall back to the CSV guide."""
         food_name = str(details.get("food_name") or "")
+        source = str(details.get("source") or details.get("data_source") or "").lower()
+        usda_phosphorus = self._first_serving_phosphorus(servings or [])
+        if source == "usda" and usda_phosphorus is not None:
+            level = self._classify_phosphorus(usda_phosphorus)
+            messages = {
+                "low": "Lower phosphorus choice",
+                "medium": "Moderate phosphorus, watch portions",
+                "high": "High phosphorus",
+            }
+            phosphorus_result = {
+                "query": food_name,
+                "match_type": "usda_fooddata_central",
+                "matched_food": food_name,
+                "phosphorus": {
+                    "value_mg": usda_phosphorus,
+                    "level": level,
+                    "message": messages.get(level, "No phosphorus value found"),
+                    "notes": ["USDA FoodData Central value per 100 g serving"],
+                },
+            }
+            tag = "phosphorus data unavailable, use caution" if level == "unknown" else f"{level} phosphorus"
+            return {
+                "tag": tag,
+                "confidence": "usda_fooddata_central",
+                "note": phosphorus_result["phosphorus"]["message"],
+                "phosphorus": phosphorus_result,
+            }
+
         phosphorus_result = get_phosphorus_guide().analyze(food_name)
         phosphorus = phosphorus_result.get("phosphorus", {})
         level = phosphorus.get("level", "unknown")
@@ -868,6 +927,21 @@ class MealLoggingService:
             "note": note,
             "phosphorus": phosphorus_result,
         }
+
+    @staticmethod
+    def _first_serving_phosphorus(servings: List[MealServing]) -> Optional[float]:
+        for serving in servings:
+            if serving.nutrients.phosphorus is not None:
+                return serving.nutrients.phosphorus
+        return None
+
+    @staticmethod
+    def _classify_phosphorus(phosphorus_mg: float) -> str:
+        if phosphorus_mg <= 100:
+            return "low"
+        if phosphorus_mg <= 199:
+            return "medium"
+        return "high"
 
     def _get_child_context(self, child_profile_id: str) -> ChildProfileContext:
         """Fetch child profile context. Placeholder until connected to app DB."""

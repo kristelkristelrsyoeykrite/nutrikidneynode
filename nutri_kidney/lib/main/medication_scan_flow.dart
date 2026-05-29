@@ -50,7 +50,21 @@ class MedicationScanFlow {
                     color: Color(0xFF00BFA5),
                   ),
                   title: const Text('Scan Prescription'),
-                  subtitle: const Text('Use OCR to extract medication details'),
+                  subtitle: FutureBuilder<Map<String, dynamic>>(
+                    future: ApiService.getAiUsageStatus('medication_ocr'),
+                    builder: (context, snapshot) {
+                      final label = ApiService.aiUsageLabel(
+                        snapshot.hasData
+                            ? ApiService.aiUsageFromResponse(snapshot.data!)
+                            : null,
+                      );
+                      return Text(
+                        label == null
+                            ? 'Use OCR to extract medication details'
+                            : 'Use OCR to extract medication details - used today: $label',
+                      );
+                    },
+                  ),
                   onTap: isScanning
                       ? null
                       : () {
@@ -176,6 +190,10 @@ class MedicationScanFlow {
 
       if (!context.mounted) return;
       if (response["success"] != true) {
+        if (response["rateLimited"] == true) {
+          await _showAiLimitDialog(context, response);
+          return;
+        }
         throw Exception(response["error"] ?? "Prescription scan failed");
       }
 
@@ -201,6 +219,25 @@ class MedicationScanFlow {
     } finally {
       onScanningChanged(false);
     }
+  }
+
+  static Future<void> _showAiLimitDialog(
+    BuildContext context,
+    Map<String, dynamic> response,
+  ) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Daily scan limit reached'),
+        content: Text(ApiService.aiLimitMessage(response)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   static Future<void> _showPrescriptionScanResultSheet({

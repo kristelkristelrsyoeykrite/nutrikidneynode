@@ -18,6 +18,7 @@ from nutrition_normalizer import NutritionNormalizer
 from response_formatter import ResponseFormatter
 from error_handler import NutriKidneyServiceError, ValidationError
 from models import Nutrition
+from usda_client import USDAFoodDataClient
 
 # Configure logging
 logging.basicConfig(
@@ -45,6 +46,7 @@ class NutriKidneyFatSecretService:
         
         try:
             self.fatsecret_client = FatSecretClient()
+            self.usda_client = USDAFoodDataClient()
             # Lazy-init image handler only when image endpoints are called.
             self._image_handler = None
             logger.info("Service initialized successfully")
@@ -75,19 +77,43 @@ class NutriKidneyFatSecretService:
         logger.info(f"Search foods: '{query}' (page {page})")
         
         try:
-            # Call FatSecret API
-            raw_results = self.fatsecret_client.search_foods(query, page)
-            
-            # Extract and normalize foods
-            foods_list = raw_results.get("foods", [])
-            total = raw_results.get("total_results", len(foods_list))
-            
-            # Normalize each result
-            normalized_foods = NutritionNormalizer.normalize_batch(
-                foods_list,
-                source="fatsecret",
-                is_from_image=False,
-            )
+            normalized_foods = []
+            total = 0
+
+            fatsecret_error = None
+            try:
+                raw_results = self.fatsecret_client.search_foods(query, page)
+                foods_list = raw_results.get("foods", [])
+                total += raw_results.get("total_results", len(foods_list))
+                normalized_foods.extend(
+                    NutritionNormalizer.normalize_batch(
+                        foods_list,
+                        source="fatsecret",
+                        is_from_image=False,
+                    )
+                )
+            except NutriKidneyServiceError as e:
+                fatsecret_error = e
+                logger.warning("FatSecret search did not return results: %s", str(e))
+
+            usda_error = None
+            try:
+                usda_results = self.usda_client.search_foods(query, page)
+                usda_foods = usda_results.get("foods", [])
+                total += usda_results.get("total_results", len(usda_foods))
+                normalized_foods.extend(
+                    NutritionNormalizer.normalize_batch(
+                        usda_foods,
+                        source="usda",
+                        is_from_image=False,
+                    )
+                )
+            except NutriKidneyServiceError as e:
+                usda_error = e
+                logger.warning("USDA search did not return results: %s", str(e))
+
+            if not normalized_foods:
+                raise fatsecret_error or usda_error or ValidationError("No foods found")
             
             # Format response
             response = ResponseFormatter.food_search_response(
@@ -130,13 +156,17 @@ class NutriKidneyFatSecretService:
         logger.info(f"Get food details: ID {food_id}")
         
         try:
-            # Call FatSecret API
-            raw_details = self.fatsecret_client.get_food_details(food_id)
+            if USDAFoodDataClient.is_usda_food_id(food_id):
+                raw_details = self.usda_client.get_food_details(food_id)
+                source = "usda"
+            else:
+                raw_details = self.fatsecret_client.get_food_details(food_id)
+                source = "fatsecret"
             
             # Normalize nutrition data
             nutrition = NutritionNormalizer.normalize(
                 raw_details,
-                source="fatsecret",
+                source=source,
                 is_from_image=False,
             )
             

@@ -254,7 +254,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
           Map<String, dynamic>.from(savedSettings),
         );
       }
-      NotificationService.refreshReminderNotificationsFromDashboard();
+      await _syncVisibleReminderSettings();
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -356,38 +356,6 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
                     ),
                   ),
                 ),
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.only(bottom: 16),
-                child: OutlinedButton.icon(
-                  onPressed: _isSaving
-                      ? null
-                      : () async {
-                          final sent =
-                              await NotificationService.showTestNotification();
-                          if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                sent
-                                    ? 'Test sent. One appears now and another should appear in about 10 seconds.'
-                                    : 'Notification permission is off. Allow notifications in Android settings first.',
-                              ),
-                            ),
-                          );
-                        },
-                  icon: const Icon(Icons.notifications_active_outlined),
-                  label: const Text('Send Test Notification'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF00C874),
-                    side: const BorderSide(color: Color(0xFF00C874)),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                ),
-              ),
               _buildSwitchTile(
                 icon: Icons.free_breakfast_outlined,
                 title: 'Breakfast Reminder',

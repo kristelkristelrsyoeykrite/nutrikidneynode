@@ -254,7 +254,13 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             } else if (index == 4) {
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) => const ProfilePage()),
+                MaterialPageRoute(
+                  builder: (context) => ProfilePage(
+                    profileUserId: widget.profileUserId,
+                    caregiverNoChildEmptyState:
+                        _resolvedCaregiverNoChildEmptyState,
+                  ),
+                ),
               );
             } else {
               setState(() => _currentIndex = index);
@@ -375,7 +381,13 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           } else if (index == 4) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const ProfilePage()),
+              MaterialPageRoute(
+                builder: (context) => ProfilePage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
             );
           } else {
             setState(() => _currentIndex = index);
@@ -1754,12 +1766,31 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     return value.isEmpty ? fallback : value;
   }
 
+  String _conditionDisplayValue(String value) {
+    final normalized = value.toLowerCase().trim().replaceAll('_', ' ');
+    if (normalized == 'yes' || normalized == 'true') return 'Yes';
+    if (normalized == 'no' || normalized == 'false') return 'No';
+    if (normalized == 'not sure') return 'Not sure';
+    return value;
+  }
+
+  String _conditionProfileDisplayValue(Map<String, dynamic> source, List<String> keys) {
+    final value = _firstTextValue(source, keys);
+    return value.isEmpty ? 'Not recorded' : _conditionDisplayValue(value);
+  }
+
   List<List<String>> _medicalProfileRows() {
     final name = _firstTextValue(_userProfile, [
       'childFullName',
       'fullName',
       'displayName',
       'name',
+    ]);
+    final postTransplantValue = _conditionProfileDisplayValue(_medicalProfile, [
+      'isPostTransplant',
+      'is_post_transplant',
+      'postTransplant',
+      'post_transplant',
     ]);
     final rows = <List<String>>[
       ['Name', name.isEmpty ? 'Not recorded' : name],
@@ -1800,6 +1831,14 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           'fluid_restriction_status',
         ]),
       ],
+      [
+        'Edema',
+        _conditionProfileDisplayValue(_medicalProfile, [
+          'hasEdema',
+          'has_edema',
+        ]),
+      ],
+      if (postTransplantValue == 'Yes') ['On post-transplant', 'Yes'],
       [
         'Fluid Limit',
         _profileDisplayValue(_medicalProfile, [

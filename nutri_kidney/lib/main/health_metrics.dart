@@ -117,7 +117,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       'Blood Pressure',
       'Weight',
       'Height',
-      'BMI',
       'Heart Rate',
     ];
 
@@ -316,6 +315,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       }
       final response = await ApiService.getHealthSummary(
         profileUserId: widget.profileUserId,
+        forceRefresh: true,
       );
 
       if (!mounted) return;
@@ -501,27 +501,66 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
             .toList()
         : <String>[];
     final nextDoseTime24h = _optionalText(med['nextDoseTime']);
-    final scheduleTimes = med['scheduled_times'] is List
+    final doseWindowsToday = med['doseWindowsToday'] is List
+        ? (med['doseWindowsToday'] as List)
+            .whereType<Map>()
+            .map((window) => Map<String, dynamic>.from(window))
+            .toList()
+        : <Map<String, dynamic>>[];
+    final backendWindowTimes = doseWindowsToday
+        .map((window) => _optionalText(window['expectedTime']))
+        .where((time) => time.isNotEmpty)
+        .toList();
+    final scheduleTimesFromMedication = med['scheduled_times'] is List
         ? (med['scheduled_times'] as List)
             .map((t) => t.toString())
             .where((t) => t.trim().isNotEmpty)
             .toList()
         : <String>[];
+    final scheduleTimes = scheduleTimesFromMedication.isNotEmpty
+        ? scheduleTimesFromMedication
+        : backendWindowTimes;
+    final missedDoseTimes24h = doseWindowsToday
+        .where((window) {
+          final status =
+              window['status']?.toString().trim().toLowerCase() ?? '';
+          return status == 'missed' || status == 'expired_missed';
+        })
+        .map((window) => _optionalText(window['expectedTime']))
+        .where((time) => time.isNotEmpty)
+        .toList();
+    final missedDoseDisplayTimes =
+        missedDoseTimes24h.map(_formatTime12Hour).toList();
 
-    final doseWindow = med['doseWindow'] is Map ? Map<String, dynamic>.from(med['doseWindow']) : null;
+    final doseWindow = med['doseWindow'] is Map
+        ? Map<String, dynamic>.from(med['doseWindow'])
+        : null;
     final windowStatus = doseWindow?['status']?.toString().trim().toLowerCase();
-    final status = windowStatus == 'taken'
-        ? 'Taken'
-        : windowStatus == 'missed'
-            ? 'Missed'
-            : 'Pending';
+    final missedCountToday =
+        int.tryParse(med['missedCountToday']?.toString() ?? '') ?? 0;
+    final scheduledDoseCount =
+        scheduleTimes.isNotEmpty ? scheduleTimes.length : 1;
+    final takenDoseCount = takenTimesToday.length;
+    final hasPartialTaken =
+        takenDoseCount > 0 && takenDoseCount < scheduledDoseCount;
+    final hasMissedDose = windowStatus == 'missed' ||
+        windowStatus == 'expired_missed' ||
+        missedCountToday > 0 ||
+        missedDoseTimes24h.isNotEmpty;
+    final hasTakenDose = windowStatus == 'taken' || takenTimesToday.isNotEmpty;
+    final status = hasTakenDose
+        ? hasPartialTaken
+            ? 'Taken $takenDoseCount/$scheduledDoseCount'
+            : 'Taken'
+        : windowStatus == 'due'
+            ? 'Pending'
+            : hasMissedDose
+                ? 'Missed'
+                : 'Pending';
     final isPending = status.toLowerCase() == 'pending';
     final isMissed = status.toLowerCase() == 'missed';
-    final missedCountToday =
-        int.tryParse(med['missedCountToday']?.toString() ?? '') ??
-            (isMissed ? 1 : 0);
     final shouldShowUpcomingNote =
-        status == 'Taken' &&
+        status.startsWith('Taken') &&
         scheduleTimes.length > 1 &&
         nextDoseTime24h.isNotEmpty;
     final upcomingNote = shouldShowUpcomingNote
@@ -540,10 +579,13 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       ].join(' · '),
       'rawDosage': dosage,
       'frequency': frequency,
-      'time': _displayValue(med['schedule'] ?? med['time'] ?? med['display_times']),
+      'time': scheduleTimes.isNotEmpty
+          ? scheduleTimes.map(_formatTime12Hour).join(', ')
+          : _displayValue(med['schedule'] ?? med['time'] ?? med['display_times']),
       'status': status,
       'isPending': isPending,
       'isMissed': isMissed,
+      'missedTimes': missedDoseDisplayTimes,
       'note': upcomingNote,
       'instructions': _optionalText(med['instructions']),
       'frequency_type': med['frequency_type'],
@@ -553,6 +595,7 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       'takenTimesToday': takenTimesToday,
       'nextDoseTime': nextDoseTime24h,
       'missedCountToday': missedCountToday,
+      'doseWindowsToday': doseWindowsToday,
     };
   }
 
@@ -663,6 +706,29 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
       return takenTimes.map((t) => t.toString().trim()).contains(time.trim());
     }
 
+    Map<String, dynamic>? doseWindowForTime(
+      Map<String, dynamic> medication,
+      String time,
+    ) {
+      final windows = medication['doseWindowsToday'];
+      if (windows is! List) return null;
+      for (final window in windows) {
+        if (window is! Map) continue;
+        final expectedTime = window['expectedTime']?.toString().trim();
+        if (expectedTime == time.trim()) {
+          return Map<String, dynamic>.from(window);
+        }
+      }
+      return null;
+    }
+
+    String doseStatusForTime(Map<String, dynamic> medication, String time) {
+      final window = doseWindowForTime(medication, time);
+      final status = window?['status']?.toString().trim().toLowerCase();
+      if (status != null && status.isNotEmpty) return status;
+      return isMedicationDoseTaken(medication, time) ? 'taken' : 'pending';
+    }
+
     DateTime? _parseBackendTimestamp(dynamic value) {
       if (value == null) return null;
       if (value is DateTime) return value;
@@ -682,7 +748,9 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
 
     bool _canUndoDose(Map<String, dynamic> medication, String time) {
       final records = medication['doseRecordsToday'];
-      if (records is! List) return false;
+      if (records is! List) {
+        return isMedicationDoseTaken(medication, time);
+      }
       Map? match;
       for (final r in records) {
         if (r is Map && r['expectedTime']?.toString().trim() == time.trim()) {
@@ -690,11 +758,9 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
           break;
         }
       }
-      if (match == null) return false;
+      if (match == null) return isMedicationDoseTaken(medication, time);
       if (match['status']?.toString() != 'taken') return false;
-      final takenAt = _parseBackendTimestamp(match['takenAt']);
-      if (takenAt == null) return false;
-      return DateTime.now().difference(takenAt).inMinutes < 2;
+      return true;
     }
 
     showModalBottomSheet(
@@ -734,25 +800,11 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
               ),
               if (collectionType == 'Medication')
                 ListTile(
-                  leading: Icon(
-                    (_medications[index]['takenTimesToday'] is List &&
-                            (_medications[index]['takenTimesToday'] as List)
-                                .isNotEmpty)
-                        ? Icons.undo_outlined
-                        : Icons.check_circle_outline,
-                    color: (_medications[index]['takenTimesToday'] is List &&
-                            (_medications[index]['takenTimesToday'] as List)
-                                .isNotEmpty)
-                        ? Colors.orange
-                        : const Color(0xFF2E7D32),
+                  leading: const Icon(
+                    Icons.checklist_rounded,
+                    color: Color(0xFF2E7D32),
                   ),
-                  title: Text(
-                    (_medications[index]['takenTimesToday'] is List &&
-                            (_medications[index]['takenTimesToday'] as List)
-                                .isNotEmpty)
-                        ? 'Undo dose (if accidental)'
-                        : 'Mark as taken',
-                  ),
+                  title: const Text('Manage doses'),
                   onTap: () async {
                     Navigator.pop(bottomSheetContext);
                     final medication =
@@ -833,23 +885,42 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                     if (selectedTime == null || selectedTime.isEmpty) return;
 
                     try {
-                      final isTaken =
-                          isMedicationDoseTaken(medication, selectedTime);
+                      final selectedWindow =
+                          doseWindowForTime(medication, selectedTime);
+                      final selectedStatus =
+                          doseStatusForTime(medication, selectedTime);
+                      final isTaken = selectedStatus == 'taken';
+                      final expectedDate =
+                          selectedWindow?['expectedDate']?.toString();
+                      final medicationProfileUserId =
+                          widget.profileUserId ??
+                              medication['userId']?.toString() ??
+                              medication['childProfileId']?.toString() ??
+                              medication['uid']?.toString();
                       final response = isTaken
                           ? await ApiService.markMedicationUntaken(
                               medicationId,
                               time: selectedTime,
-                              profileUserId: widget.profileUserId,
+                              expectedDate: expectedDate,
+                              profileUserId: medicationProfileUserId,
                             )
                           : await ApiService.markMedicationTaken(
                               medicationId,
                               time: selectedTime,
-                              profileUserId: widget.profileUserId,
+                              expectedDate: expectedDate,
+                              profileUserId: medicationProfileUserId,
                             );
                       if (response["success"] != true) {
                         throw Exception(
                           response["error"] ??
                               "Failed to update medication status",
+                        );
+                      }
+                      if (isTaken) {
+                        await NotificationService.allowMedicationReminderAgain(
+                          medicationId: medicationId,
+                          medicationName: itemName,
+                          scheduledTime: selectedTime,
                         );
                       }
                       if (!mounted) return;
@@ -1202,7 +1273,6 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
             'Blood Pressure',
             'Weight',
             'Height',
-            'BMI',
             'Heart Rate',
           ]
         : [
@@ -1375,16 +1445,31 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                             }
 
                             // Try to parse value as number for basic validation
-                            final numValue = double.tryParse(measurementValue);
-                            if (numValue == null) {
-                              ScaffoldMessenger.of(pageContext).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Please enter a valid number for the measurement value.',
+                            if (selectedType == 'Blood Pressure') {
+                              final match = RegExp(r'^\s*\d+\s*/\s*\d+\s*$')
+                                  .hasMatch(measurementValue);
+                              if (!match) {
+                                ScaffoldMessenger.of(pageContext).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Enter blood pressure like 120/80.',
+                                    ),
                                   ),
-                                ),
-                              );
-                              return;
+                                );
+                                return;
+                              }
+                            } else {
+                              final numValue = double.tryParse(measurementValue);
+                              if (numValue == null) {
+                                ScaffoldMessenger.of(pageContext).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Please enter a valid number for the measurement value.',
+                                    ),
+                                  ),
+                                );
+                                return;
+                              }
                             }
 
                             final affectsNutritionTargets = [
@@ -2415,6 +2500,11 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
                       isSaving ? () {} : () => _showItemManageSheet(idx, 'Medication'),
                   isPending: med['isPending'] == true,
                   isMissed: med['isMissed'] == true,
+                  missedTimes: med['missedTimes'] is List
+                      ? (med['missedTimes'] as List)
+                          .map((time) => time.toString())
+                          .toList()
+                      : const [],
                   note: med['note']?.toString(),
                 );
               }).toList(),
@@ -2548,7 +2638,13 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
           } else if (index == 4) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const ProfilePage()),
+              MaterialPageRoute(
+                builder: (context) => ProfilePage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
             );
           } else {
             setState(() => _currentIndex = index);
@@ -2621,7 +2717,13 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
           } else if (index == 4) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const ProfilePage()),
+              MaterialPageRoute(
+                builder: (context) => ProfilePage(
+                  profileUserId: widget.profileUserId,
+                  caregiverNoChildEmptyState:
+                      _resolvedCaregiverNoChildEmptyState,
+                ),
+              ),
             );
           }
         },
