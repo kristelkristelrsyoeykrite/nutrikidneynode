@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../create_account/profile_setup_intro.dart';
 import '../main/authenticator_mfa_page.dart';
 import '../create_account/register.dart';
@@ -19,9 +20,14 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
+  static const int _maxFailedLoginAttempts = 5;
+  static const Duration _loginLockoutDuration = Duration(minutes: 5);
+
   bool _isPasswordVisible = false;
   bool _isLoading = false;
   bool _rememberMe = false;
+  DateTime? _loginLockedUntil;
+  Timer? _lockoutTimer;
 
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
@@ -56,6 +62,7 @@ Future<void> _loadRememberedLoginState() async {
 
   @override
   void dispose() {
+    _lockoutTimer?.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
@@ -65,6 +72,85 @@ Future<void> _loadRememberedLoginState() async {
     final email = _emailController.text.trim();
     final hasPassword = _passwordController.text.isNotEmpty;
     return email.isNotEmpty && hasPassword;
+  }
+
+  String _lockoutMessage(Duration remaining) {
+    final minutes = remaining.inMinutes;
+    final seconds = remaining.inSeconds.remainder(60);
+    if (minutes <= 0) {
+      return 'Too many wrong password attempts. Please wait $seconds seconds and try again.';
+    }
+    return 'Too many wrong password attempts. Please wait $minutes min ${seconds}s and try again.';
+  }
+
+  String _loginLockoutKey(String email, String suffix) {
+    return 'login_lockout_${Uri.encodeComponent(email.toLowerCase())}_$suffix';
+  }
+
+  void _scheduleLockoutReset(DateTime lockedUntil) {
+    _lockoutTimer?.cancel();
+    final remaining = lockedUntil.difference(DateTime.now());
+    _lockoutTimer = Timer(
+      remaining.isNegative ? Duration.zero : remaining,
+      () {
+        if (mounted) {
+          setState(() => _loginLockedUntil = null);
+        }
+      },
+    );
+  }
+
+  Future<Duration?> _remainingLoginLockout(String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    final untilMs = prefs.getInt(_loginLockoutKey(email, 'until'));
+    if (untilMs == null) {
+      if (mounted) setState(() => _loginLockedUntil = null);
+      return null;
+    }
+
+    final lockedUntil = DateTime.fromMillisecondsSinceEpoch(untilMs);
+    final remaining = lockedUntil.difference(DateTime.now());
+    if (remaining.isNegative || remaining == Duration.zero) {
+      await prefs.remove(_loginLockoutKey(email, 'count'));
+      await prefs.remove(_loginLockoutKey(email, 'until'));
+      if (mounted) setState(() => _loginLockedUntil = null);
+      return null;
+    }
+
+    if (mounted) {
+      setState(() => _loginLockedUntil = lockedUntil);
+      _scheduleLockoutReset(lockedUntil);
+    }
+    return remaining;
+  }
+
+  Future<Duration?> _recordFailedLoginAttempt(String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    final countKey = _loginLockoutKey(email, 'count');
+    final untilKey = _loginLockoutKey(email, 'until');
+    final failedCount = (prefs.getInt(countKey) ?? 0) + 1;
+
+    if (failedCount >= _maxFailedLoginAttempts) {
+      final lockedUntil = DateTime.now().add(_loginLockoutDuration);
+      await prefs.setInt(countKey, 0);
+      await prefs.setInt(untilKey, lockedUntil.millisecondsSinceEpoch);
+      if (mounted) {
+        setState(() => _loginLockedUntil = lockedUntil);
+        _scheduleLockoutReset(lockedUntil);
+      }
+      return lockedUntil.difference(DateTime.now());
+    }
+
+    await prefs.setInt(countKey, failedCount);
+    await prefs.remove(untilKey);
+    return null;
+  }
+
+  Future<void> _clearFailedLoginAttempts(String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_loginLockoutKey(email, 'count'));
+    await prefs.remove(_loginLockoutKey(email, 'until'));
+    if (mounted) setState(() => _loginLockedUntil = null);
   }
 
   bool _isValidEmail(String input) {
@@ -225,8 +311,9 @@ Future<void> _loadRememberedLoginState() async {
   void _handleLogin() async {
     if (_isLoading) return; // prevent re-entrancy
     setState(() => _isLoading = true);
+    String enteredEmail = '';
     try {
-      String enteredEmail = _emailController.text.trim();
+      enteredEmail = _emailController.text.trim();
       String enteredPassword = _passwordController.text;
 
       // Email/password flow - authenticate via backend
@@ -243,6 +330,15 @@ Future<void> _loadRememberedLoginState() async {
         return;
       }
 
+      final lockoutRemaining = await _remainingLoginLockout(enteredEmail);
+      if (lockoutRemaining != null) {
+        _showErrorDialog(
+          'Too Many Attempts',
+          _lockoutMessage(lockoutRemaining),
+        );
+        return;
+      }
+
       // Call backend login endpoint
       final loginResponse = await ApiService.login(
         email: enteredEmail,
@@ -250,7 +346,18 @@ Future<void> _loadRememberedLoginState() async {
       );
 
       if (loginResponse['success'] != true) {
-        _showErrorDialog('Login Failed', loginResponse['error'] ?? 'Login failed. Please try again.');
+        final newLockoutRemaining = await _recordFailedLoginAttempt(enteredEmail);
+        if (newLockoutRemaining != null) {
+          _showErrorDialog(
+            'Too Many Attempts',
+            _lockoutMessage(newLockoutRemaining),
+          );
+          return;
+        }
+        _showErrorDialog(
+          'Login Failed',
+          loginResponse['error'] ?? 'Login failed. Please try again.',
+        );
         return;
       }
 
@@ -265,6 +372,7 @@ Future<void> _loadRememberedLoginState() async {
         email: enteredEmail,
         password: enteredPassword,
       );
+      await _clearFailedLoginAttempts(enteredEmail);
 
       // Store userId in ApiService
       ApiService.setUserId(uid);
@@ -308,6 +416,16 @@ Future<void> _loadRememberedLoginState() async {
         );
       }
     } catch (e) {
+      if (enteredEmail.isNotEmpty) {
+        final newLockoutRemaining = await _recordFailedLoginAttempt(enteredEmail);
+        if (newLockoutRemaining != null) {
+          _showErrorDialog(
+            'Too Many Attempts',
+            _lockoutMessage(newLockoutRemaining),
+          );
+          return;
+        }
+      }
       _showErrorDialog('Login Failed', e.toString());
     } finally {
       if (mounted) setState(() => _isLoading = false);
