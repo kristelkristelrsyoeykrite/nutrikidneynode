@@ -2811,12 +2811,18 @@ class _FoodLogPageState extends State<FoodLogPage> {
     if (_isLoadingLogs) {
       return Scaffold(
         backgroundColor: Colors.white,
-        body: const SafeArea(
-          child: Center(
-            child: CircularProgressIndicator(color: Color(0xFF00C874)),
+        body: ResponsiveNavigation.wrapBody(
+          context: context,
+          currentIndex: _currentIndex,
+          onDestinationSelected: _handleNavigationTap,
+          child: const SafeArea(
+            child: Center(
+              child: CircularProgressIndicator(color: Color(0xFF00C874)),
+            ),
           ),
         ),
-        bottomNavigationBar: _buildBottomNavigationBar(),
+        bottomNavigationBar:
+            ResponsiveNavigation.isDesktopWeb(context) ? null : _buildBottomNavigationBar(),
       );
     }
 
@@ -2832,7 +2838,11 @@ class _FoodLogPageState extends State<FoodLogPage> {
 
     return Scaffold(
       backgroundColor: Colors.white,
-      body: SafeArea(
+      body: ResponsiveNavigation.wrapBody(
+        context: context,
+        currentIndex: _currentIndex,
+        onDestinationSelected: _handleNavigationTap,
+        child: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20.0),
           child: Column(
@@ -3277,7 +3287,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
         ),
       ),
       // --- Bottom Navigation Bar ---
-      bottomNavigationBar: Container(
+      ),
+      bottomNavigationBar: ResponsiveNavigation.isDesktopWeb(context) ? null : Container(
         decoration: BoxDecoration(
           boxShadow: [
             BoxShadow(
@@ -3289,55 +3300,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
         ),
         child: BottomNavigationBar(
           currentIndex: _currentIndex,
-          onTap: (index) {
-            if (index == 0) {
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(builder: (context) => const DashboardPage()),
-                (route) => false,
-              );
-            } else if (index == 2) {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      AnalyticsPage(
-                        profileUserId: widget.profileUserId,
-                        caregiverNoChildEmptyState:
-                            _resolvedCaregiverNoChildEmptyState,
-                      ),
-                ),
-              );
-            } else if (index == 3) {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      HealthMetricsPage(
-                        profileUserId: widget.profileUserId,
-                        caregiverNoChildEmptyState:
-                            _resolvedCaregiverNoChildEmptyState,
-                      ),
-                ),
-              );
-            } else if (index == 4) {
-              // --- UPDATED LOGIC HERE: Now routes to ProfilePage ---
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => ProfilePage(
-                    profileUserId: widget.profileUserId,
-                    caregiverNoChildEmptyState:
-                        _resolvedCaregiverNoChildEmptyState,
-                  ),
-                ),
-              );
-            } else {
-              setState(() {
-                _currentIndex = index;
-              });
-            }
-          },
+          onTap: _handleNavigationTap,
           type: BottomNavigationBarType.fixed,
           backgroundColor: Colors.white,
           selectedItemColor: const Color(0xFF00C874),
@@ -3380,34 +3343,40 @@ class _FoodLogPageState extends State<FoodLogPage> {
   }) {
     return Scaffold(
       backgroundColor: Colors.white,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  color: Color(0xFF37474F),
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
+      body: ResponsiveNavigation.wrapBody(
+        context: context,
+        currentIndex: _currentIndex,
+        onDestinationSelected: _handleNavigationTap,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Color(0xFF37474F),
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 24),
-              Text(
-                message,
-                style: const TextStyle(
-                  color: Color(0xFF607D8B),
-                  fontSize: 15,
-                  height: 1.5,
+                const SizedBox(height: 24),
+                Text(
+                  message,
+                  style: const TextStyle(
+                    color: Color(0xFF607D8B),
+                    fontSize: 15,
+                    height: 1.5,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
-      bottomNavigationBar: _buildBottomNavigationBar(),
+      bottomNavigationBar:
+          ResponsiveNavigation.isDesktopWeb(context) ? null : _buildBottomNavigationBar(),
     );
   }
 
@@ -3424,52 +3393,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
       ),
       child: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) {
-          if (index == 0) {
-            Navigator.pushAndRemoveUntil(
-              context,
-              MaterialPageRoute(builder: (context) => const DashboardPage()),
-              (route) => false,
-            );
-          } else if (index == 2) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => AnalyticsPage(
-                  profileUserId: widget.profileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          } else if (index == 3) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => HealthMetricsPage(
-                  profileUserId: widget.profileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          } else if (index == 4) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => ProfilePage(
-                  profileUserId: widget.profileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          } else {
-            setState(() {
-              _currentIndex = index;
-            });
-          }
-        },
+        onTap: _handleNavigationTap,
         type: BottomNavigationBarType.fixed,
         backgroundColor: Colors.white,
         selectedItemColor: const Color(0xFF00C874),
@@ -3501,6 +3425,50 @@ class _FoodLogPageState extends State<FoodLogPage> {
         ],
       ),
     );
+  }
+
+  void _handleNavigationTap(int index) {
+    if (index == 0) {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (context) => const DashboardPage()),
+        (route) => false,
+      );
+    } else if (index == 2) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AnalyticsPage(
+            profileUserId: widget.profileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else if (index == 3) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => HealthMetricsPage(
+            profileUserId: widget.profileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else if (index == 4) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ProfilePage(
+            profileUserId: widget.profileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else {
+      setState(() {
+        _currentIndex = index;
+      });
+    }
   }
 
   Future<bool> _shouldShowCaregiverEmptyState() async {

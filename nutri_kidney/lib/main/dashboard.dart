@@ -10,6 +10,7 @@ import 'analytics.dart';
 import 'health_metrics.dart';
 import 'leaderboard_page.dart';
 import 'profile.dart';
+import 'responsive_navigation.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
@@ -1259,48 +1260,55 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBFB),
-      body: SafeArea(
-        child: _isLoadingDashboard
-            ? const Center(
-                child: CircularProgressIndicator(color: Color(0xFF00C874)),
-              )
-            : _isPendingCaregiverLinkFlow
-                ? SingleChildScrollView(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (_dashboardError != null) ...[
-                          _buildDashboardErrorCard(),
-                          const SizedBox(height: 16),
+      body: ResponsiveNavigation.wrapBody(
+        context: context,
+        currentIndex: _currentIndex,
+        onDestinationSelected: _handleNavigationTap,
+        child: SafeArea(
+          child: _isLoadingDashboard
+              ? const Center(
+                  child: CircularProgressIndicator(color: Color(0xFF00C874)),
+                )
+              : _isPendingCaregiverLinkFlow
+                  ? SingleChildScrollView(
+                      padding: const EdgeInsets.all(20.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (_dashboardError != null) ...[
+                            _buildDashboardErrorCard(),
+                            const SizedBox(height: 16),
+                          ],
+                          CaregiverPendingDashboard(
+                            caregiverName: (_viewer["fullName"] ??
+                                    _viewer["name"] ??
+                                    "Caregiver")
+                                .toString(),
+                            roleLabel: _viewerRoleLabel,
+                            onAddChildProfile: () =>
+                                _startChildProfileSetup('5-12'),
+                            onLinkExistingAccount: _generateCaregiverLinkCode,
+                          ),
                         ],
-                        CaregiverPendingDashboard(
-                          caregiverName: (_viewer["fullName"] ??
-                                  _viewer["name"] ??
-                                  "Caregiver")
-                              .toString(),
-                          roleLabel: _viewerRoleLabel,
-                          onAddChildProfile: () =>
-                              _startChildProfileSetup('5-12'),
-                          onLinkExistingAccount: _generateCaregiverLinkCode,
-                        ),
-                      ],
-                    ),
-                  )
-                : _isAdolescentViewer
-                    ? AdolescentDashboardContent(
-                        children: _buildStandardDashboardChildren(),
-                      )
-                    : SingleChildScrollView(
-                        padding: const EdgeInsets.all(20.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: _buildStandardDashboardChildren(),
-                        ),
                       ),
+                    )
+                  : _isAdolescentViewer
+                      ? AdolescentDashboardContent(
+                          children: _buildStandardDashboardChildren(),
+                        )
+                      : SingleChildScrollView(
+                          padding: const EdgeInsets.all(20.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: _buildStandardDashboardChildren(),
+                          ),
+                        ),
+        ),
       ),
       // --- Bottom Navigation Bar ---
-      bottomNavigationBar: Container(
+      bottomNavigationBar: ResponsiveNavigation.isDesktopWeb(context)
+          ? null
+          : Container(
         decoration: BoxDecoration(
           boxShadow: [
             BoxShadow(
@@ -1312,57 +1320,7 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
         child: BottomNavigationBar(
           currentIndex: _currentIndex,
-          onTap: (index) {
-            if (index == 1) {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => FoodLogPage(
-                    profileUserId: _selectedManagedProfileUserId,
-                    caregiverNoChildEmptyState:
-                        _isCaregiverViewer && _managedChildren.isEmpty,
-                  ),
-                ),
-              );
-            } else if (index == 2) {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => AnalyticsPage(
-                    profileUserId: _selectedManagedProfileUserId,
-                    caregiverNoChildEmptyState:
-                        _isCaregiverViewer && _managedChildren.isEmpty,
-                  ),
-                ),
-              );
-            } else if (index == 3) {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => HealthMetricsPage(
-                    profileUserId: _selectedManagedProfileUserId,
-                    caregiverNoChildEmptyState:
-                        _isCaregiverViewer && _managedChildren.isEmpty,
-                  ),
-                ),
-              );
-            } else if (index == 4) {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => ProfilePage(
-                    profileUserId: _selectedManagedProfileUserId,
-                    caregiverNoChildEmptyState:
-                        _isCaregiverViewer && _managedChildren.isEmpty,
-                  ),
-                ),
-              );
-            } else {
-              setState(() {
-                _currentIndex = index;
-              });
-            }
-          },
+          onTap: _handleNavigationTap,
           type: BottomNavigationBarType.fixed,
           backgroundColor: Colors.white,
           selectedItemColor: const Color(0xFF00C874),
@@ -1395,6 +1353,58 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
       ),
     );
+  }
+
+  void _handleNavigationTap(int index) {
+    if (index == 1) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => FoodLogPage(
+            profileUserId: _selectedManagedProfileUserId,
+            caregiverNoChildEmptyState:
+                _isCaregiverViewer && _managedChildren.isEmpty,
+          ),
+        ),
+      );
+    } else if (index == 2) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AnalyticsPage(
+            profileUserId: _selectedManagedProfileUserId,
+            caregiverNoChildEmptyState:
+                _isCaregiverViewer && _managedChildren.isEmpty,
+          ),
+        ),
+      );
+    } else if (index == 3) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => HealthMetricsPage(
+            profileUserId: _selectedManagedProfileUserId,
+            caregiverNoChildEmptyState:
+                _isCaregiverViewer && _managedChildren.isEmpty,
+          ),
+        ),
+      );
+    } else if (index == 4) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ProfilePage(
+            profileUserId: _selectedManagedProfileUserId,
+            caregiverNoChildEmptyState:
+                _isCaregiverViewer && _managedChildren.isEmpty,
+          ),
+        ),
+      );
+    } else {
+      setState(() {
+        _currentIndex = index;
+      });
+    }
   }
 
   List<Widget> _buildStandardDashboardChildren() {

@@ -10,6 +10,7 @@ import 'analytics.dart';
 import 'dashboard.dart';
 import 'health_metrics.dart';
 import 'profile.dart'; // Ensure Profile is imported
+import 'responsive_navigation.dart';
 import '../services/api_service.dart';
 
 part 'food_log/food_item.dart';

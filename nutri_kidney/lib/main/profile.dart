@@ -7,6 +7,7 @@ import 'food_log.dart';
 import 'analytics.dart';
 import 'health_metrics.dart';
 import 'manage_children_page.dart';
+import 'responsive_navigation.dart';
 import 'profile/account_management_page.dart';
 import 'profile/edit_profile_page.dart';
 import 'profile/help_page.dart';
@@ -1023,7 +1024,11 @@ class _ProfilePageState extends State<ProfilePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      body: SafeArea(
+      body: ResponsiveNavigation.wrapBody(
+        context: context,
+        currentIndex: _currentIndex,
+        onDestinationSelected: _handleNavigationTap,
+        child: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20.0),
           child: Column(
@@ -1193,7 +1198,9 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
         ),
       ),
-      bottomNavigationBar: _buildBottomNavBar(),
+      ),
+      bottomNavigationBar:
+          ResponsiveNavigation.isDesktopWeb(context) ? null : _buildBottomNavBar(),
     );
   }
 
@@ -1628,49 +1635,7 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
       child: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) {
-          if (index == 0)
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const DashboardPage()),
-            );
-          else if (index == 1)
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => FoodLogPage(
-                  profileUserId: _activeManagedProfileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          else if (index == 2)
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => AnalyticsPage(
-                  allowDataExport: _allowDataExport,
-                  profileUserId: _activeManagedProfileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          else if (index == 3)
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => HealthMetricsPage(
-                  profileUserId: _activeManagedProfileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          else
-            setState(() => _currentIndex = index);
-        },
+        onTap: _handleNavigationTap,
         type: BottomNavigationBarType.fixed,
         backgroundColor: Colors.white,
         selectedItemColor: const Color(0xFF00C874),
@@ -1704,6 +1669,48 @@ class _ProfilePageState extends State<ProfilePage> {
         ],
       ),
     );
+  }
+
+  void _handleNavigationTap(int index) {
+    if (index == 0) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const DashboardPage()),
+      );
+    } else if (index == 1) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => FoodLogPage(
+            profileUserId: _activeManagedProfileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else if (index == 2) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AnalyticsPage(
+            allowDataExport: _allowDataExport,
+            profileUserId: _activeManagedProfileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else if (index == 3) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => HealthMetricsPage(
+            profileUserId: _activeManagedProfileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else {
+      setState(() => _currentIndex = index);
+    }
   }
 
   Future<void> _showExportDataSettingsDialog() async {

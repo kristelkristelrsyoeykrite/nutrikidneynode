@@ -9,6 +9,7 @@ import 'dashboard.dart';
 import 'food_log.dart';
 import 'analytics.dart';
 import 'profile.dart'; // Added Profile import
+import 'responsive_navigation.dart';
 
 class HealthMetricsPage extends StatefulWidget {
   const HealthMetricsPage({
@@ -2336,7 +2337,11 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
 
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBFB),
-      body: SafeArea(
+      body: ResponsiveNavigation.wrapBody(
+        context: context,
+        currentIndex: _currentIndex,
+        onDestinationSelected: _handleNavigationTap,
+        child: SafeArea(
         child: Stack(
           children: [
             _isLoadingHealth
@@ -2603,53 +2608,12 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
           ],
         ),
       ),
-      bottomNavigationBar: HealthMetricsBottomNavBar(
+      ),
+      bottomNavigationBar: ResponsiveNavigation.isDesktopWeb(context)
+          ? null
+          : HealthMetricsBottomNavBar(
         currentIndex: _currentIndex,
-        onTap: (index) {
-          if (index == 0) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const DashboardPage()),
-            );
-          } else if (index == 1) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) =>
-                    FoodLogPage(
-                      profileUserId: widget.profileUserId,
-                      caregiverNoChildEmptyState:
-                          _resolvedCaregiverNoChildEmptyState,
-                    ),
-              ),
-            );
-          } else if (index == 2) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) =>
-                    AnalyticsPage(
-                      profileUserId: widget.profileUserId,
-                      caregiverNoChildEmptyState:
-                          _resolvedCaregiverNoChildEmptyState,
-                    ),
-              ),
-            );
-          } else if (index == 4) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => ProfilePage(
-                  profileUserId: widget.profileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          } else {
-            setState(() => _currentIndex = index);
-          }
-        },
+        onTap: _handleNavigationTap,
       ),
     );
   }
@@ -2657,78 +2621,86 @@ class _HealthMetricsPageState extends State<HealthMetricsPage> {
   Widget _buildCaregiverNoChildScaffold() {
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBFB),
-      body: const SafeArea(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Health Metrics',
-                style: TextStyle(
-                  color: Color(0xFF37474F),
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
+      body: ResponsiveNavigation.wrapBody(
+        context: context,
+        currentIndex: _currentIndex,
+        onDestinationSelected: _handleNavigationTap,
+        child: const SafeArea(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Health Metrics',
+                  style: TextStyle(
+                    color: Color(0xFF37474F),
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              SizedBox(height: 24),
-              Text(
-                'Add or link a child profile from the dashboard before viewing health metrics.',
-                style: TextStyle(
-                  color: Color(0xFF607D8B),
-                  fontSize: 15,
-                  height: 1.5,
+                SizedBox(height: 24),
+                Text(
+                  'Add or link a child profile from the dashboard before viewing health metrics.',
+                  style: TextStyle(
+                    color: Color(0xFF607D8B),
+                    fontSize: 15,
+                    height: 1.5,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
-      bottomNavigationBar: HealthMetricsBottomNavBar(
-        currentIndex: _currentIndex,
-        onTap: (index) {
-          if (index == 0) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const DashboardPage()),
-            );
-          } else if (index == 1) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => FoodLogPage(
-                  profileUserId: widget.profileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          } else if (index == 2) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => AnalyticsPage(
-                  profileUserId: widget.profileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          } else if (index == 4) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => ProfilePage(
-                  profileUserId: widget.profileUserId,
-                  caregiverNoChildEmptyState:
-                      _resolvedCaregiverNoChildEmptyState,
-                ),
-              ),
-            );
-          }
-        },
-      ),
+      bottomNavigationBar: ResponsiveNavigation.isDesktopWeb(context)
+          ? null
+          : HealthMetricsBottomNavBar(
+              currentIndex: _currentIndex,
+              onTap: _handleNavigationTap,
+            ),
     );
+  }
+
+  void _handleNavigationTap(int index) {
+    if (index == 0) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const DashboardPage()),
+      );
+    } else if (index == 1) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => FoodLogPage(
+            profileUserId: widget.profileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else if (index == 2) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AnalyticsPage(
+            profileUserId: widget.profileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else if (index == 4) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ProfilePage(
+            profileUserId: widget.profileUserId,
+            caregiverNoChildEmptyState: _resolvedCaregiverNoChildEmptyState,
+          ),
+        ),
+      );
+    } else {
+      setState(() => _currentIndex = index);
+    }
   }
 
   Future<bool> _shouldShowCaregiverEmptyState() async {
