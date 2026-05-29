@@ -1,6 +1,10 @@
 import 'dart:async';
 import 'dart:html' as html;
+import 'dart:math' as math;
 import 'dart:typed_data';
+
+const int _maxImageDimension = 1280;
+const double _jpegQuality = 0.78;
 
 class BrowserPickedImage {
   const BrowserPickedImage({
@@ -47,6 +51,67 @@ Future<BrowserPickedImage?> pickBrowserImage() async {
   if (files == null || files.isEmpty) return null;
 
   final file = files.first;
+  final compressedBytes = await _resizeImageFile(file);
+
+  return BrowserPickedImage(
+    bytes: compressedBytes,
+    name: _jpegName(file.name),
+    mimeType: 'image/jpeg',
+  );
+}
+
+Future<Uint8List> _resizeImageFile(html.File file) async {
+  final objectUrl = html.Url.createObjectUrl(file);
+  final image = html.ImageElement(src: objectUrl);
+  final imageLoaded = Completer<void>();
+  late final StreamSubscription<html.Event> loadSubscription;
+  late final StreamSubscription<html.Event> errorSubscription;
+
+  loadSubscription = image.onLoad.listen((_) {
+    if (!imageLoaded.isCompleted) imageLoaded.complete();
+  });
+  errorSubscription = image.onError.listen((_) {
+    if (!imageLoaded.isCompleted) {
+      imageLoaded.completeError(Exception('Unable to load selected image.'));
+    }
+  });
+
+  try {
+    await imageLoaded.future.timeout(
+      const Duration(seconds: 20),
+      onTimeout: () {
+        throw Exception('Selected image took too long to load.');
+      },
+    );
+  } finally {
+    await loadSubscription.cancel();
+    await errorSubscription.cancel();
+    html.Url.revokeObjectUrl(objectUrl);
+  }
+
+  final sourceWidth = image.naturalWidth;
+  final sourceHeight = image.naturalHeight;
+  if (sourceWidth <= 0 || sourceHeight <= 0) {
+    return _readBlobAsBytes(file);
+  }
+
+  final scale = math.min(
+    1.0,
+    _maxImageDimension / math.max(sourceWidth, sourceHeight),
+  );
+  final targetWidth = math.max(1, (sourceWidth * scale).round());
+  final targetHeight = math.max(1, (sourceHeight * scale).round());
+
+  final canvas = html.CanvasElement(width: targetWidth, height: targetHeight);
+  final context = canvas.context2D;
+  context.fillStyle = 'white';
+  context.fillRect(0, 0, targetWidth, targetHeight);
+  context.drawImageScaled(image, 0, 0, targetWidth, targetHeight);
+
+  return _bytesFromDataUrl(canvas.toDataUrl('image/jpeg', _jpegQuality));
+}
+
+Future<Uint8List> _readBlobAsBytes(html.Blob blob) async {
   final reader = html.FileReader();
   final loadCompleter = Completer<void>();
   late final StreamSubscription<html.ProgressEvent> loadSubscription;
@@ -61,7 +126,7 @@ Future<BrowserPickedImage?> pickBrowserImage() async {
     }
   });
 
-  reader.readAsArrayBuffer(file);
+  reader.readAsArrayBuffer(blob);
   await loadCompleter.future;
   await loadSubscription.cancel();
   await errorSubscription.cancel();
@@ -77,16 +142,20 @@ Future<BrowserPickedImage?> pickBrowserImage() async {
     throw Exception('Selected image could not be read by the browser.');
   }
 
-  return BrowserPickedImage(
-    bytes: bytes,
-    name: file.name,
-    mimeType: file.type.isNotEmpty ? file.type : _mimeTypeFromName(file.name),
-  );
+  return bytes;
 }
 
-String _mimeTypeFromName(String name) {
-  final lower = name.toLowerCase();
-  if (lower.endsWith('.png')) return 'image/png';
-  if (lower.endsWith('.webp')) return 'image/webp';
-  return 'image/jpeg';
+Uint8List _bytesFromDataUrl(String dataUrl) {
+  final commaIndex = dataUrl.indexOf(',');
+  if (commaIndex == -1) {
+    throw Exception('Selected image could not be compressed.');
+  }
+  final base64Data = dataUrl.substring(commaIndex + 1);
+  return Uint8List.fromList(html.window.atob(base64Data).codeUnits);
+}
+
+String _jpegName(String name) {
+  final dotIndex = name.lastIndexOf('.');
+  final baseName = dotIndex > 0 ? name.substring(0, dotIndex) : name;
+  return '$baseName.jpg';
 }
