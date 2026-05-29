@@ -822,8 +822,9 @@ class _HealthProfile2PageState extends State<HealthProfile2Page> {
     });
 
     try {
+      final imageBytes = await pickedImage.readAsBytes();
       final response = await ApiService.extractPrescription(
-        imagePath: pickedImage.path,
+        imageBytes: imageBytes,
         contentType: _contentTypeForImage(pickedImage.path),
       );
 

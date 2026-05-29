@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -90,7 +89,7 @@ class NotificationService {
     await initialize();
 
     bool localGranted = true;
-    if (!kIsWeb && Platform.isAndroid) {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       final android = _localNotifications
           .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>();
@@ -98,7 +97,9 @@ class NotificationService {
           await android?.requestNotificationsPermission() ?? localGranted;
       _exactAlarmsAllowed =
           await android?.canScheduleExactNotifications() ?? true;
-    } else if (!kIsWeb && (Platform.isIOS || Platform.isMacOS)) {
+    } else if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.macOS)) {
       final ios = _localNotifications
           .resolvePlatformSpecificImplementation<
               IOSFlutterLocalNotificationsPlugin>();
@@ -115,7 +116,7 @@ class NotificationService {
 
   static Future<bool> canScheduleExactAlarms() async {
     await initialize();
-    if (kIsWeb || !Platform.isAndroid) return true;
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return true;
     final android = _localNotifications
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
@@ -126,7 +127,7 @@ class NotificationService {
 
   static Future<bool> openExactAlarmSettings() async {
     await initialize();
-    if (kIsWeb || !Platform.isAndroid) return true;
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return true;
     final android = _localNotifications
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
@@ -186,7 +187,7 @@ class NotificationService {
 
     bool notificationsEnabled = true;
     bool exactAlarmsAllowed = true;
-    if (!kIsWeb && Platform.isAndroid) {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       final android = _localNotifications
           .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>();
@@ -592,7 +593,7 @@ class NotificationService {
   }
 
   static Future<void> _createAndroidChannel() async {
-    if (kIsWeb || !Platform.isAndroid) return;
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     const channel = AndroidNotificationChannel(
       _channelId,
       _channelName,

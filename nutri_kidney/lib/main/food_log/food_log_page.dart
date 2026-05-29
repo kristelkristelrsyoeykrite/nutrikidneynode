@@ -1336,8 +1336,9 @@ class _FoodLogPageState extends State<FoodLogPage> {
     );
 
     try {
+      final imageBytes = await pickedImage.readAsBytes();
       final response = await ApiService.recognizeFoodImage(
-        imagePath: pickedImage.path,
+        imageBytes: imageBytes,
         contentType: _contentTypeForImage(pickedImage.path),
       );
       if (!mounted) return;

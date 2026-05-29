@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -627,18 +627,17 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> extractPrescription({
-    required String imagePath,
+    required Uint8List imageBytes,
     String contentType = "image/jpeg",
   }) async {
     if (_userId == null) {
       throw Exception("UserId not set. Please log in again.");
     }
-    final bytes = await File(imagePath).readAsBytes();
     return _post(
       "/api/health/medications/scan",
       body: {
         "userId": _userId,
-        "imageBase64": base64Encode(bytes),
+        "imageBase64": base64Encode(imageBytes),
         "contentType": contentType,
       },
     );
@@ -1286,16 +1285,15 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> recognizeFoodImage({
-    required String imagePath,
+    required Uint8List imageBytes,
     String contentType = "image/jpeg",
   }) async {
     final currentUserId = _requireCurrentUserId();
-    final bytes = await File(imagePath).readAsBytes();
     final response = await _post(
       "/api/food/recognize-image",
       body: {
         "userId": currentUserId,
-        "imageBase64": base64Encode(bytes),
+        "imageBase64": base64Encode(imageBytes),
         "contentType": contentType,
       },
     );
