@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
@@ -14,9 +15,11 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  await PushNotificationService.initialize();
-  await NotificationService.initialize();
-  await NotificationService.canScheduleExactAlarms();
+  if (!kIsWeb) {
+    await PushNotificationService.initialize();
+    await NotificationService.initialize();
+    await NotificationService.canScheduleExactAlarms();
+  }
   runApp(const NutriKidneyApp());
 }
 
@@ -41,7 +44,9 @@ class _NutriKidneyAppState extends State<NutriKidneyApp> {
     final hasRememberedSession = await AuthService.hasRememberedSession();
     
     if (hasRememberedSession) {
-      await PushNotificationService.syncTokenIfPossible();
+      if (!kIsWeb) {
+        await PushNotificationService.syncTokenIfPossible();
+      }
       // User has a valid remembered session - take them to dashboard
       return const DashboardPage();
     } else {

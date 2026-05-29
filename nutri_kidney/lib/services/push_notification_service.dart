@@ -32,6 +32,11 @@ class PushNotificationService {
 
   static Future<void> initialize() async {
     if (_initialized) return;
+    if (kIsWeb) {
+      _initialized = true;
+      debugPrint('[Push] Skipping push notification service on web');
+      return;
+    }
 
     debugPrint('[Push] Initializing push notification service');
 
@@ -213,6 +218,7 @@ class PushNotificationService {
   }
 
   static Future<bool> requestPermissionsIfNeeded() async {
+    if (kIsWeb) return false;
     await initialize();
     debugPrint('[Push] Re-checking notification permission');
     final settings = await _messaging.requestPermission(
@@ -232,6 +238,7 @@ class PushNotificationService {
   }
 
   static Future<void> registerCurrentDeviceToken({String? token}) async {
+    if (kIsWeb) return;
     await initialize();
     final currentToken = token ?? await _messaging.getToken();
     debugPrint('[Push] registerCurrentDeviceToken token=${_tokenPreview(currentToken)}');
@@ -252,6 +259,7 @@ class PushNotificationService {
   }
 
   static Future<void> unregisterCurrentDeviceToken() async {
+    if (kIsWeb) return;
     await initialize();
     final token = await _messaging.getToken();
     debugPrint('[Push] unregisterCurrentDeviceToken token=${_tokenPreview(token)}');
@@ -269,6 +277,7 @@ class PushNotificationService {
   }
 
   static Future<void> syncTokenIfPossible() async {
+    if (kIsWeb) return;
     final userId = ApiService.userId;
     debugPrint('[Push] syncTokenIfPossible userId=$userId');
     if (userId == null || userId.isEmpty) {
@@ -279,6 +288,12 @@ class PushNotificationService {
   }
 
   static Future<Map<String, dynamic>> sendTestPushNotification() async {
+    if (kIsWeb) {
+      return {
+        'success': false,
+        'message': 'Push notifications are not available on web.',
+      };
+    }
     debugPrint('[Push] Sending test push notification');
     await registerCurrentDeviceToken();
     final response = await ApiService.sendTestPushNotification();
