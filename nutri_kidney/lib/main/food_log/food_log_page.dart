@@ -1296,18 +1296,40 @@ class _FoodLogPageState extends State<FoodLogPage> {
 
     if (source == null) return;
 
-    final pickedImage = await _pickImageSafely(source);
-    if (pickedImage == null) return;
-
     late final Uint8List imageBytes;
-    try {
-      imageBytes = await pickedImage.readAsBytes();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to read selected image: $e')),
-      );
-      return;
+    late final String contentType;
+
+    if (kIsWeb && source == ImageSource.gallery) {
+      BrowserPickedImage? pickedImage;
+      try {
+        pickedImage = await pickBrowserImage();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Unable to choose image: $e')),
+        );
+        return;
+      }
+
+      if (pickedImage == null) return;
+      imageBytes = pickedImage.bytes;
+      contentType = pickedImage.mimeType.isNotEmpty
+          ? pickedImage.mimeType
+          : _contentTypeForImage(pickedImage.name);
+    } else {
+      final pickedImage = await _pickImageSafely(source);
+      if (pickedImage == null) return;
+
+      try {
+        imageBytes = await pickedImage.readAsBytes();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Unable to read selected image: $e')),
+        );
+        return;
+      }
+      contentType = _contentTypeForImage(pickedImage.path);
     }
 
     if (!mounted) return;
@@ -1349,7 +1371,7 @@ class _FoodLogPageState extends State<FoodLogPage> {
     try {
       final response = await ApiService.recognizeFoodImage(
         imageBytes: imageBytes,
-        contentType: _contentTypeForImage(pickedImage.path),
+        contentType: contentType,
       );
       if (!mounted) return;
       _applyFoodImageAiUsage(response);
