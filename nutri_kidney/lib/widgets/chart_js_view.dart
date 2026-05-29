@@ -153,7 +153,7 @@ class _NativeChartPainter extends CustomPainter {
     if (allValues.isEmpty) return;
 
     final maxValue = math.max(1.0, allValues.reduce(math.max));
-    final chartRect = Rect.fromLTWH(30, 8, size.width - 36, size.height - 34);
+    final chartRect = Rect.fromLTWH(30, 8, size.width - 36, size.height - 42);
     final gridPaint = Paint()
       ..color = const Color(0xFFE6ECEF)
       ..strokeWidth = 1;
@@ -190,6 +190,7 @@ class _NativeChartPainter extends CustomPainter {
         _paintLine(canvas, chartRect, dataset, maxValue);
       }
     }
+    _paintXAxisLabels(canvas, size, chartRect);
   }
 
   void _paintBars(
@@ -313,6 +314,39 @@ class _NativeChartPainter extends CustomPainter {
     }
   }
 
+  void _paintXAxisLabels(Canvas canvas, Size size, Rect rect) {
+    final labels = _labels;
+    if (labels.isEmpty) return;
+
+    final maxLabels = labels.length <= 7 ? labels.length : 6;
+    final step = labels.length <= maxLabels
+        ? 1
+        : (labels.length / maxLabels).ceil();
+    final pointCount = math.max(1, labels.length - 1);
+    final textStyle = TextStyle(
+      color: const Color(0xFF90A4AE),
+      fontSize: labels.length <= 7 ? 10 : 9,
+      fontWeight: FontWeight.w500,
+    );
+
+    for (var i = 0; i < labels.length; i += step) {
+      final text = labels[i];
+      if (text.isEmpty) continue;
+
+      final x = rect.left + rect.width * i / pointCount;
+      final painter = TextPainter(
+        text: TextSpan(text: text, style: textStyle),
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '.',
+      )..layout(maxWidth: math.min(72, rect.width / math.min(labels.length, 7)));
+
+      final dx = (x - painter.width / 2).clamp(0.0, size.width - painter.width);
+      painter.paint(canvas, Offset(dx, rect.bottom + 10));
+    }
+  }
+
   List<Map<String, dynamic>> get _datasets {
     final raw = data['datasets'];
     if (raw is! List) return const [];
@@ -320,6 +354,12 @@ class _NativeChartPainter extends CustomPainter {
         .whereType<Map>()
         .map((dataset) => Map<String, dynamic>.from(dataset))
         .toList(growable: false);
+  }
+
+  List<String> get _labels {
+    final raw = data['labels'];
+    if (raw is! List) return const [];
+    return raw.map((label) => label?.toString() ?? '').toList(growable: false);
   }
 
   List<double> _numbers(dynamic raw) {

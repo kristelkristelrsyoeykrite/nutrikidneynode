@@ -1512,7 +1512,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   }
 
   List<String> _dailyPointLabels({required bool useDateLabels}) {
-    final format = DateFormat(useDateLabels ? 'MMM d' : 'E');
+    final format = DateFormat(useDateLabels ? 'MMM d' : 'EEEE');
     return _dailyPoints.map((point) => format.format(point.date)).toList();
   }
 

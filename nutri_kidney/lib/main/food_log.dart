@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';

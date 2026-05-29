@@ -1299,6 +1299,17 @@ class _FoodLogPageState extends State<FoodLogPage> {
     final pickedImage = await _pickImageSafely(source);
     if (pickedImage == null) return;
 
+    late final Uint8List imageBytes;
+    try {
+      imageBytes = await pickedImage.readAsBytes();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to read selected image: $e')),
+      );
+      return;
+    }
+
     if (!mounted) return;
     bool processingDialogOpen = true;
     showDialog(
@@ -1336,7 +1347,6 @@ class _FoodLogPageState extends State<FoodLogPage> {
     );
 
     try {
-      final imageBytes = await pickedImage.readAsBytes();
       final response = await ApiService.recognizeFoodImage(
         imageBytes: imageBytes,
         contentType: _contentTypeForImage(pickedImage.path),
