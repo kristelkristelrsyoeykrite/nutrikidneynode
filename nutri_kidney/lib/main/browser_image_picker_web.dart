@@ -17,7 +17,9 @@ class BrowserPickedImage {
 Future<BrowserPickedImage?> pickBrowserImage() async {
   final input = html.FileUploadInputElement()
     ..accept = 'image/png,image/jpeg,image/jpg,image/webp'
-    ..multiple = false;
+    ..multiple = false
+    ..style.display = 'none';
+  html.document.body?.append(input);
 
   final completer = Completer<List<html.File>?>();
   late final StreamSubscription<html.Event> subscription;
@@ -28,15 +30,19 @@ Future<BrowserPickedImage?> pickBrowserImage() async {
     subscription.cancel();
   });
 
-  input.click();
-
-  final files = await completer.future.timeout(
-    const Duration(minutes: 2),
-    onTimeout: () {
-      subscription.cancel();
-      return null;
-    },
-  );
+  List<html.File>? files;
+  try {
+    input.click();
+    files = await completer.future.timeout(
+      const Duration(minutes: 2),
+      onTimeout: () {
+        subscription.cancel();
+        return null;
+      },
+    );
+  } finally {
+    input.remove();
+  }
 
   if (files == null || files.isEmpty) return null;
 

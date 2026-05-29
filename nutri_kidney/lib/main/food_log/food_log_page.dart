@@ -1253,56 +1253,80 @@ class _FoodLogPageState extends State<FoodLogPage> {
   }
 
   Future<void> _showImageInputOptions() async {
-    final source = await showDialog<ImageSource>(
-      context: context,
-      builder: (dialogContext) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Food Image',
-                style: TextStyle(
-                  color: Color(0xFF37474F),
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
+    ImageSource? source;
+    BrowserPickedImage? browserPickedImage;
+
+    if (kIsWeb && ResponsiveNavigation.isDesktopWeb(context)) {
+      try {
+        browserPickedImage = await pickBrowserImage();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Unable to choose image: $e')),
+        );
+        return;
+      }
+      if (browserPickedImage == null) return;
+      source = ImageSource.gallery;
+    } else {
+      source = await showDialog<ImageSource>(
+        context: context,
+        builder: (dialogContext) => Dialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Food Image',
+                  style: TextStyle(
+                    color: Color(0xFF37474F),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              ListTile(
-                leading: const Icon(
-                  Icons.camera_alt_outlined,
-                  color: Color(0xFF00BFA5),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: const Icon(
+                    Icons.camera_alt_outlined,
+                    color: Color(0xFF00BFA5),
+                  ),
+                  title: const Text('Take Photo'),
+                  onTap: () =>
+                      Navigator.pop(dialogContext, ImageSource.camera),
                 ),
-                title: const Text('Take Photo'),
-                onTap: () => Navigator.pop(dialogContext, ImageSource.camera),
-              ),
-              ListTile(
-                leading: const Icon(
-                  Icons.upload_file_outlined,
-                  color: Color(0xFF00BFA5),
+                ListTile(
+                  leading: const Icon(
+                    Icons.upload_file_outlined,
+                    color: Color(0xFF00BFA5),
+                  ),
+                  title: const Text('Upload File'),
+                  onTap: () =>
+                      Navigator.pop(dialogContext, ImageSource.gallery),
                 ),
-                title: const Text('Upload File'),
-                onTap: () => Navigator.pop(dialogContext, ImageSource.gallery),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
-      ),
-    );
+      );
+    }
 
     if (source == null) return;
 
     late final Uint8List imageBytes;
     late final String contentType;
 
-    if (kIsWeb && source == ImageSource.gallery) {
-      BrowserPickedImage? pickedImage;
+    if (browserPickedImage != null) {
+      imageBytes = browserPickedImage.bytes;
+      contentType = browserPickedImage.mimeType.isNotEmpty
+          ? browserPickedImage.mimeType
+          : _contentTypeForImage(browserPickedImage.name);
+    } else if (kIsWeb && source == ImageSource.gallery) {
       try {
-        pickedImage = await pickBrowserImage();
+        browserPickedImage = await pickBrowserImage();
       } catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1311,11 +1335,11 @@ class _FoodLogPageState extends State<FoodLogPage> {
         return;
       }
 
-      if (pickedImage == null) return;
-      imageBytes = pickedImage.bytes;
-      contentType = pickedImage.mimeType.isNotEmpty
-          ? pickedImage.mimeType
-          : _contentTypeForImage(pickedImage.name);
+      if (browserPickedImage == null) return;
+      imageBytes = browserPickedImage.bytes;
+      contentType = browserPickedImage.mimeType.isNotEmpty
+          ? browserPickedImage.mimeType
+          : _contentTypeForImage(browserPickedImage.name);
     } else {
       final pickedImage = await _pickImageSafely(source);
       if (pickedImage == null) return;
