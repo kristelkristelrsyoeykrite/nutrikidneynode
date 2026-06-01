@@ -71,6 +71,32 @@ function registerProfileRoutes(router, deps) {
     return normalized;
   }
 
+  function removeUndefinedFirestoreValues(value) {
+    if (value === undefined) return undefined;
+    if (Array.isArray(value)) {
+      return value.map((item) => {
+        const cleanedItem = removeUndefinedFirestoreValues(item);
+        return cleanedItem === undefined ? null : cleanedItem;
+      });
+    }
+    if (
+      value &&
+      typeof value === "object" &&
+      (Object.getPrototypeOf(value) === Object.prototype ||
+        Object.getPrototypeOf(value) === null)
+    ) {
+      const cleaned = {};
+      for (const [key, item] of Object.entries(value)) {
+        const cleanedItem = removeUndefinedFirestoreValues(item);
+        if (cleanedItem !== undefined) {
+          cleaned[key] = cleanedItem;
+        }
+      }
+      return cleaned;
+    }
+    return value;
+  }
+
   function sanitizeCaregiverSettings(value, existing = {}) {
     const source = value && typeof value === "object" ? value : {};
     const wantsCaregiverLink =
@@ -617,6 +643,7 @@ function registerProfileRoutes(router, deps) {
       const appetite = step3?.appetite ?? step3?.appetiteStatus ?? step2?.appetite;
       const bmiStatus = step1?.bmi_status ?? step1?.bmiStatus;
       const muacStatus = step1?.muac_status ?? step1?.muacStatus;
+      const ckdStage = step1?.ckdStage ?? step1?.ckd_stage;
       const ckdType =
         step1?.ckd_type ??
         step1?.ckdType ??
@@ -733,7 +760,10 @@ function registerProfileRoutes(router, deps) {
       if (step1?.kidneyType) {
         medicalProfilePayload.kidneyDiseaseType = step1.kidneyType;
       }
-      if (step1?.ckdStage) medicalProfilePayload.ckdStage = step1.ckdStage;
+      if (ckdStage) {
+        medicalProfilePayload.ckdStage = ckdStage;
+        medicalProfilePayload.ckd_stage = ckdStage;
+      }
       if (step1?.diagnosisDate) {
         medicalProfilePayload.dateOfDiagnosis = step1.diagnosisDate;
       }
@@ -961,14 +991,14 @@ function registerProfileRoutes(router, deps) {
         console.log("Lab Result created:", labResultDoc.id);
       }
 
-      const baselineTargets = generateProfileTargets({
+      const baselineTargets = removeUndefinedFirestoreValues(generateProfileTargets({
         child_name: step1?.name,
         age_years: ageYears,
         sex,
         height_cm: heightCm,
         weight_kg: weightKg,
         bmi,
-        ckd_stage: step1?.ckdStage,
+        ckd_stage: ckdStage,
         ckd_type: ckdType,
         kidneyDiseaseType: step1?.kidneyDiseaseType ?? step1?.kidneyType,
         protein_category: proteinCategory,
@@ -988,7 +1018,7 @@ function registerProfileRoutes(router, deps) {
         sterile_diet_weeks: sterileDietWeeks,
         is_post_surgery: isPostSurgery,
         has_calcium_phosphorus_imbalance: hasCalciumPhosphorusImbalance,
-      });
+      }));
 
       const nutritionTargetDoc = await db.collection("nutritionTargets").add({
         userId: profileUserId,
@@ -1000,13 +1030,13 @@ function registerProfileRoutes(router, deps) {
 
       console.log("Baseline nutrition targets created:", nutritionTargetDoc.id);
 
-      const phase2DecisionSupport = generatePhase2DecisionSupport(
+      const phase2DecisionSupport = removeUndefinedFirestoreValues(generatePhase2DecisionSupport(
         {
           age_years: ageYears,
           sex,
           weight_kg: weightKg,
           bmi,
-          ckd_stage: step1?.ckdStage,
+          ckd_stage: ckdStage,
           ckd_type: ckdType,
           protein_category: proteinCategory,
           has_diabetes: hasDiabetes,
@@ -1052,7 +1082,7 @@ function registerProfileRoutes(router, deps) {
           creatinine: step4?.creatinine,
           result_date: step4?.resultDate,
         },
-      );
+      ));
 
       const phase2DecisionSupportDoc = await db
         .collection("phase2DecisionSupport")
@@ -1087,7 +1117,7 @@ function registerProfileRoutes(router, deps) {
           type: "direct",
           childAgeGroup:
             stagedChildAgeGroup || existingUser.childAgeGroup || "5-12",
-          ckdStage: step1?.ckdStage || null,
+          ckdStage: ckdStage || null,
           age: ageYears ?? null,
           profileComplete: true,
         };
