@@ -168,7 +168,7 @@ function normalizeRecipe(recipe = {}) {
 
 async function searchRecipes(query, page = 0, maxCalories = null) {
   const response = await callPythonService("/api/v1/recipes/search", {
-    method: "POST",
+    method: "GET",
     query: { query, page, ...(maxCalories && { max_calories: maxCalories }) },
   });
   const result = unwrapResult(response);
