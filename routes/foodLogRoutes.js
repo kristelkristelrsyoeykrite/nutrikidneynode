@@ -748,6 +748,92 @@ function scoreMealCandidate(food, mealType, profile, restrictions) {
   return score;
 }
 
+function fallbackMealCandidate(mealType, restrictions) {
+  const fallbackByMeal = {
+    Breakfast: {
+      name: "Apple oatmeal",
+      calories: 260,
+      protein: 6,
+      carbohydrate: 48,
+      fat: 5,
+      sodium: 90,
+      potassium: 170,
+      phosphorus: 90,
+    },
+    "AM Snack": {
+      name: "Apple slices",
+      calories: 95,
+      protein: 0.5,
+      carbohydrate: 25,
+      fat: 0.3,
+      sodium: 2,
+      potassium: 195,
+      phosphorus: 20,
+    },
+    Lunch: {
+      name: "Chicken rice with cabbage",
+      calories: 430,
+      protein: 24,
+      carbohydrate: 58,
+      fat: 10,
+      sodium: 280,
+      potassium: 360,
+      phosphorus: 210,
+    },
+    "PM Snack": {
+      name: "Grapes and crackers",
+      calories: 150,
+      protein: 2,
+      carbohydrate: 30,
+      fat: 3,
+      sodium: 120,
+      potassium: 150,
+      phosphorus: 45,
+    },
+    Dinner: {
+      name: "Fish rice with cauliflower",
+      calories: 390,
+      protein: 25,
+      carbohydrate: 50,
+      fat: 9,
+      sodium: 260,
+      potassium: 380,
+      phosphorus: 230,
+    },
+  };
+  const selected = fallbackByMeal[mealType] || fallbackByMeal.Breakfast;
+  return {
+    mealType,
+    foodId: null,
+    name: selected.name,
+    portion: "1 serving",
+    servingDescription: "1 serving",
+    quantity: 1,
+    ...selected,
+    score: containsAny(selected.name, restrictions.avoid) ? 55 : 75,
+    source: "ckd_meal_plan_fallback",
+    raw: {
+      generatedBy: "ckd_meal_plan_fallback",
+      mealType,
+    },
+  };
+}
+
+async function searchMealPlanFoods(query, mealType) {
+  try {
+    return await fatSecretBridge.searchFoods(query, 0);
+  } catch (error) {
+    console.error("MEAL_PLAN_SEARCH_FALLBACK:", {
+      mealType,
+      query,
+      error: error.message,
+      statusCode: error.statusCode,
+      details: error.data,
+    });
+    return { foods: [] };
+  }
+}
+
 async function generateMealPlan(body = {}) {
   const userId = body.userId || body.uid;
   const requestedProfileId = body.childProfileId || body.profileUserId || userId;
@@ -788,7 +874,7 @@ async function generateMealPlan(body = {}) {
 
   const meals = [];
   for (const meal of mealQueries) {
-    const result = await fatSecretBridge.searchFoods(meal.query, 0);
+    const result = await searchMealPlanFoods(meal.query, meal.mealType);
     const ranked = (result.foods || [])
       .map((food) => ({
         ...food,
@@ -798,7 +884,7 @@ async function generateMealPlan(body = {}) {
       }))
       .filter((food) => food.score >= 45)
       .sort((a, b) => b.score - a.score);
-    const selected = ranked[0] || (result.foods || [])[0];
+    const selected = ranked[0] || (result.foods || [])[0] || fallbackMealCandidate(meal.mealType, restrictions);
     if (selected) {
       meals.push({
         mealType: meal.mealType,
