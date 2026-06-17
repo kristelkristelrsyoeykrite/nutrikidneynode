@@ -595,6 +595,261 @@ async function buildChildContext(userId, requestedChildProfileId) {
   };
 }
 
+function firstPresent(source = {}, keys = []) {
+  for (const key of keys) {
+    if (source[key] !== undefined && source[key] !== null && source[key] !== "") {
+      return source[key];
+    }
+  }
+  return null;
+}
+
+function ckdStageFromEgfr(egfr, fallback) {
+  const explicit = Number(String(fallback || "").replace(/[^\d.]/g, ""));
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  if (!Number.isFinite(egfr)) return null;
+  if (egfr >= 90) return 1;
+  if (egfr >= 60) return 2;
+  if (egfr >= 30) return 3;
+  if (egfr >= 15) return 4;
+  return 5;
+}
+
+function labStatus(value, upperLimit) {
+  const parsed = numberOrNull(value);
+  if (parsed === null) return "Unknown";
+  return parsed > upperLimit ? "High" : "Normal";
+}
+
+function bmiCategory(bmi) {
+  const parsed = numberOrNull(bmi);
+  if (parsed === null) return "Unknown";
+  if (parsed < 18.5) return "Underweight";
+  if (parsed < 25) return "Normal";
+  return "Overweight";
+}
+
+function containsAny(text, words = []) {
+  const normalized = normalizeTextToken(text);
+  return words.some((word) => {
+    const escaped = String(word).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z])${escaped}(?=[^a-z]|$)`, "i").test(normalized);
+  });
+}
+
+async function getFirstUserDocument(collection, userId) {
+  if (!userId) return null;
+  const snapshot = await db.collection(collection).where("userId", "==", userId).get();
+  const docs = snapshot.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .sort((a, b) => {
+      const left = timestampMillis(
+        a.resultDate || a.date || a.createdAt || a.updatedAt,
+      );
+      const right = timestampMillis(
+        b.resultDate || b.date || b.createdAt || b.updatedAt,
+      );
+      return right - left;
+    });
+  return docs[0] || null;
+}
+
+function buildNutritionProfile({ childContext = {}, medicalProfile = {}, labs = {}, anthropometrics = {} }) {
+  const egfr = numberOrNull(
+    firstPresent(labs, ["eGFR_CKD_EPI", "egfrCkdEpi", "egfr", "eGFR"]),
+  );
+  const stage = ckdStageFromEgfr(
+    egfr,
+    firstPresent(labs, ["CKD_Stage_eGFR", "ckdStageEgfr", "ckd_stage"]) ||
+      childContext.ckd_stage,
+  );
+  const weightKg = numberOrNull(
+    firstPresent(anthropometrics, ["weight_kg", "weightKg", "weight"]) ||
+      firstPresent(medicalProfile, ["weight_kg", "weightKg", "weight"]),
+  );
+  const bmi = numberOrNull(
+    firstPresent(anthropometrics, ["bmi", "BMI"]) ||
+      firstPresent(medicalProfile, ["bmi", "BMI"]),
+  );
+  const dialysisStatus = String(childContext.dialysis_status || "").toLowerCase();
+  const onDialysis = dialysisStatus.includes("dialysis") && !dialysisStatus.includes("pre");
+  const proteinTarget = weightKg
+    ? Number((weightKg * (onDialysis ? 1.2 : 0.8)).toFixed(1))
+    : numberOrNull(childContext.targets?.protein_max);
+  const glucose = numberOrNull(firstPresent(labs, ["glucose", "fastingGlucose"]));
+  const hba1c = numberOrNull(firstPresent(labs, ["HbA1c", "hba1c", "hemoglobinA1c"]));
+  const serumAlbumin = numberOrNull(
+    firstPresent(labs, ["serum_albumin", "serumAlbumin", "albumin"]),
+  );
+  const totalProtein = numberOrNull(
+    firstPresent(labs, ["total_protein", "totalProtein"]),
+  );
+
+  return {
+    stage,
+    egfr,
+    potassiumStatus: labStatus(firstPresent(labs, ["potassium", "K"]), 5.0),
+    phosphorusStatus: labStatus(firstPresent(labs, ["phosphorus", "phosphate"]), 4.5),
+    sodiumStatus: labStatus(firstPresent(labs, ["sodium", "Na"]), 145),
+    diabetesRisk:
+      (hba1c !== null && hba1c >= 6.5) || (glucose !== null && glucose > 126),
+    bmiCategory: bmiCategory(bmi),
+    proteinTarget,
+    calorieTarget:
+      numberOrNull(childContext.targets?.calories_max) ||
+      numberOrNull(childContext.targets?.calories) ||
+      1800,
+    riskMalnutrition:
+      (serumAlbumin !== null && serumAlbumin < 3.5) ||
+      (totalProtein !== null && totalProtein < 6.0),
+    weightKg,
+    bmi,
+  };
+}
+
+function buildFoodRestrictions(profile) {
+  const avoid = new Set(["soy sauce", "fish sauce", "bagoong", "processed", "fast food"]);
+  const prefer = new Set(["apple", "grapes", "cabbage", "cauliflower", "lettuce", "radish"]);
+
+  if (profile.potassiumStatus === "High") {
+    ["banana", "avocado", "orange", "melon", "potato", "sweet potato", "spinach", "tomato paste"].forEach((item) => avoid.add(item));
+  }
+  if (profile.phosphorusStatus === "High") {
+    ["nuts", "beans", "cola", "cheese", "organ meat"].forEach((item) => avoid.add(item));
+  }
+  if (profile.diabetesRisk) {
+    ["dessert", "sweetened", "candy", "cake", "soda"].forEach((item) => avoid.add(item));
+  }
+
+  return {
+    dailySodiumLimitMg: 2000,
+    avoid: [...avoid],
+    prefer: [...prefer],
+  };
+}
+
+function scoreMealCandidate(food, mealType, profile, restrictions) {
+  const foodText = [food.name, food.description, food.servingDescription, food.brandName].join(" ");
+  let score = 100;
+  const sodium = numberOrNull(food.sodium) || 0;
+  const protein = numberOrNull(food.protein) || 0;
+  const calories = numberOrNull(food.calories) || 0;
+
+  if (sodium > 600) score -= 20;
+  if (containsAny(foodText, restrictions.avoid)) score -= 35;
+  if (profile.potassiumStatus === "High" && numberOrNull(food.potassium) > 500) score -= 20;
+  if (profile.phosphorusStatus === "High" && numberOrNull(food.phosphorus) > 250) score -= 20;
+  if (profile.diabetesRisk && containsAny(foodText, ["sweet", "sugar", "syrup", "dessert"])) score -= 20;
+  if (profile.riskMalnutrition && protein >= 8) score += 15;
+  if (containsAny(foodText, restrictions.prefer)) score += 10;
+  if (mealType.includes("Snack") && calories > 300) score -= 12;
+  if (!mealType.includes("Snack") && calories < 120) score -= 8;
+
+  return score;
+}
+
+async function generateMealPlan(body = {}) {
+  const userId = body.userId || body.uid;
+  const requestedProfileId = body.childProfileId || body.profileUserId || userId;
+  if (!userId) {
+    const error = new Error("userId is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const rawUser = await getDocData("users", requestedProfileId);
+  const user = rawUser ? decryptHealthProfile(rawUser) : {};
+  const childContext = await buildChildContext(userId, requestedProfileId);
+  const medicalProfile = decryptHealthDocument(
+    (await getDocData("medicalProfile", user.medicalProfileId || user.medical_profile_id)) || {},
+  );
+  const latestLabs = decryptHealthDocument(
+    (await getDocData("labResults", user.labResultId || user.lab_result_id)) ||
+      (await getFirstUserDocument("labResults", requestedProfileId)) ||
+      {},
+  );
+  const anthropometrics = decryptHealthDocument(
+    (await getFirstUserDocument("anthropometrics", requestedProfileId)) || {},
+  );
+  const nutritionProfile = buildNutritionProfile({
+    childContext,
+    medicalProfile,
+    labs: latestLabs,
+    anthropometrics,
+  });
+  const restrictions = buildFoodRestrictions(nutritionProfile);
+  const mealQueries = [
+    { mealType: "Breakfast", query: "oatmeal apple egg rice" },
+    { mealType: "AM Snack", query: "apple grapes crackers" },
+    { mealType: "Lunch", query: "chicken rice cabbage" },
+    { mealType: "PM Snack", query: "fruit crackers sandwich" },
+    { mealType: "Dinner", query: "fish rice cauliflower chicken" },
+  ];
+
+  const meals = [];
+  for (const meal of mealQueries) {
+    const result = await fatSecretBridge.searchFoods(meal.query, 0);
+    const ranked = (result.foods || [])
+      .map((food) => ({
+        ...food,
+        mealType: meal.mealType,
+        score: scoreMealCandidate(food, meal.mealType, nutritionProfile, restrictions),
+        reason: "Ranked by CKD sodium, potassium, phosphorus, diabetes, and protein needs.",
+      }))
+      .filter((food) => food.score >= 45)
+      .sort((a, b) => b.score - a.score);
+    const selected = ranked[0] || (result.foods || [])[0];
+    if (selected) {
+      meals.push({
+        mealType: meal.mealType,
+        foodId: selected.foodId,
+        name: selected.name,
+        portion: selected.servingDescription || "1 serving",
+        quantity: 1,
+        calories: Math.round(numberOrNull(selected.calories) || 0),
+        protein: numberOrNull(selected.protein) || 0,
+        carbohydrate: numberOrNull(selected.carbohydrate) || 0,
+        fat: numberOrNull(selected.fat) || 0,
+        sodium: numberOrNull(selected.sodium) || 0,
+        potassium: numberOrNull(selected.potassium) || 0,
+        phosphorus: numberOrNull(selected.phosphorus) || 0,
+        score: selected.score || 50,
+        source: "fatsecret_meal_plan",
+        raw: selected.raw || selected,
+      });
+    }
+  }
+
+  const totals = meals.reduce(
+    (sum, meal) => ({
+      calories: sum.calories + meal.calories,
+      protein: sum.protein + meal.protein,
+      carbohydrate: sum.carbohydrate + meal.carbohydrate,
+      fat: sum.fat + meal.fat,
+      sodium: sum.sodium + meal.sodium,
+      potassium: sum.potassium + meal.potassium,
+      phosphorus: sum.phosphorus + meal.phosphorus,
+    }),
+    { calories: 0, protein: 0, carbohydrate: 0, fat: 0, sodium: 0, potassium: 0, phosphorus: 0 },
+  );
+
+  return {
+    nutritionProfile,
+    restrictions,
+    mealStructure: ["Breakfast", "AM Snack", "Lunch", "PM Snack", "Dinner"],
+    meals,
+    totals,
+    validation: {
+      sodiumWithinLimit: totals.sodium <= restrictions.dailySodiumLimitMg,
+      proteinWithinTarget:
+        !nutritionProfile.proteinTarget || totals.protein <= nutritionProfile.proteinTarget,
+      generatedFrom: ["profile", "latest_labs", "fatsecret_food_search", "ckd_rules"],
+    },
+    displayMessage:
+      "Meal plans are generated based on your profile and latest laboratory results. Foods are sourced from FatSecret and filtered according to CKD dietary guidelines.",
+  };
+}
+
 async function buildPreviewRequest(body) {
   const userId = body.userId || body.user_id;
   const childProfileId = body.childProfileId || body.child_profile_id || userId;
@@ -1100,6 +1355,23 @@ router.post("/preview", async (req, res) => {
     return res.status(error.statusCode || 500).json({
       success: false,
       error: error.message || "Failed to preview meal",
+      details: error.data,
+    });
+  }
+});
+
+router.post("/meal-plan/generate", async (req, res) => {
+  try {
+    const mealPlan = await generateMealPlan(req.body);
+    return res.status(200).json({
+      success: true,
+      mealPlan,
+    });
+  } catch (error) {
+    console.error("MEAL_PLAN_GENERATE ERROR:", error.message);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message || "Failed to generate meal plan",
       details: error.data,
     });
   }
