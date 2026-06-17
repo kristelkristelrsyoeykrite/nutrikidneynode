@@ -398,51 +398,85 @@ function scoreMealCandidate(food, mealType, profile, restrictions) {
   return score;
 }
 
-function fallbackMealCandidate(mealType, restrictions, seed = 0) {
-  const fallbackByMeal = {
+function mealTemplateBank(profile) {
+  const bank = {
     Breakfast: [
-      { name: "Apple oatmeal", calories: 260, protein: 6, carbohydrate: 48, fat: 5, sodium: 90, potassium: 170, phosphorus: 90 },
-      { name: "Rice porridge with chicken", calories: 290, protein: 14, carbohydrate: 46, fat: 5, sodium: 180, potassium: 220, phosphorus: 150 },
-      { name: "Egg white toast with grapes", calories: 245, protein: 12, carbohydrate: 38, fat: 4, sodium: 210, potassium: 190, phosphorus: 95 },
+      { name: "Apple oatmeal", components: ["oatmeal", "apple"], target: 300 },
+      { name: "Rice porridge with chicken", components: ["rice porridge", "chicken"], target: 300 },
+      { name: "Egg white toast with grapes", components: ["egg white", "toast", "grapes"], target: 280 },
+      { name: "Cream of wheat with berries", components: ["cream of wheat", "berries"], target: 280 },
     ],
     "AM Snack": [
-      { name: "Apple slices", calories: 95, protein: 0.5, carbohydrate: 25, fat: 0.3, sodium: 2, potassium: 195, phosphorus: 20 },
-      { name: "Grapes", calories: 104, protein: 1, carbohydrate: 27, fat: 0.2, sodium: 3, potassium: 288, phosphorus: 30 },
-      { name: "Unsalted crackers", calories: 120, protein: 2, carbohydrate: 22, fat: 3, sodium: 70, potassium: 45, phosphorus: 35 },
+      { name: "Apple slices", components: ["apple"], target: 150 },
+      { name: "Grapes", components: ["grapes"], target: 150 },
+      { name: "Unsalted crackers", components: ["unsalted crackers"], target: 150 },
+      { name: "Cucumber with rice crackers", components: ["cucumber", "rice crackers"], target: 150 },
     ],
     Lunch: [
-      { name: "Chicken rice with cabbage", calories: 430, protein: 24, carbohydrate: 58, fat: 10, sodium: 280, potassium: 360, phosphorus: 210 },
-      { name: "Turkey lettuce rice bowl", calories: 405, protein: 23, carbohydrate: 52, fat: 9, sodium: 300, potassium: 330, phosphorus: 190 },
-      { name: "Pasta with chicken and cauliflower", calories: 420, protein: 22, carbohydrate: 60, fat: 8, sodium: 260, potassium: 310, phosphorus: 200 },
+      { name: "Chicken rice with cabbage", components: ["chicken breast", "white rice", "cabbage"], target: 420 },
+      { name: "Turkey lettuce rice bowl", components: ["turkey", "white rice", "lettuce"], target: 410 },
+      { name: "Pasta with chicken and cauliflower", components: ["pasta", "chicken breast", "cauliflower"], target: 430 },
+      { name: "Fish rice with cabbage", components: ["fish", "white rice", "cabbage"], target: 420 },
     ],
     "PM Snack": [
-      { name: "Grapes and crackers", calories: 150, protein: 2, carbohydrate: 30, fat: 3, sodium: 120, potassium: 150, phosphorus: 45 },
-      { name: "Apple with unsalted toast", calories: 165, protein: 3, carbohydrate: 34, fat: 2, sodium: 95, potassium: 170, phosphorus: 55 },
-      { name: "Cucumber sticks with rice crackers", calories: 135, protein: 2, carbohydrate: 26, fat: 3, sodium: 90, potassium: 130, phosphorus: 40 },
+      { name: "Grapes and crackers", components: ["grapes", "unsalted crackers"], target: 150 },
+      { name: "Apple with unsalted toast", components: ["apple", "toast"], target: 160 },
+      { name: "Cucumber sticks with rice crackers", components: ["cucumber", "rice crackers"], target: 140 },
+      { name: "Pear slices", components: ["pear"], target: 140 },
     ],
     Dinner: [
-      { name: "Fish rice with cauliflower", calories: 390, protein: 25, carbohydrate: 50, fat: 9, sodium: 260, potassium: 380, phosphorus: 230 },
-      { name: "Chicken pasta with cabbage", calories: 410, protein: 24, carbohydrate: 55, fat: 9, sodium: 280, potassium: 340, phosphorus: 205 },
-      { name: "Turkey rice with green beans", calories: 395, protein: 25, carbohydrate: 51, fat: 8, sodium: 290, potassium: 360, phosphorus: 210 },
+      { name: "Fish rice with cauliflower", components: ["fish", "white rice", "cauliflower"], target: 410 },
+      { name: "Chicken pasta with cabbage", components: ["chicken breast", "pasta", "cabbage"], target: 430 },
+      { name: "Turkey rice with green beans", components: ["turkey", "white rice", "green beans"], target: 410 },
+      { name: "Chicken rice with lettuce", components: ["chicken breast", "white rice", "lettuce"], target: 410 },
     ],
   };
-  const options = fallbackByMeal[mealType] || fallbackByMeal.Breakfast;
-  const selected = seededPick(options, seed) || options[0];
+
+  if (profile.phosphorusStatus === "High") {
+    Object.values(bank).forEach((templates) => {
+      templates.forEach((template) => {
+        template.guideRules = [...(template.guideRules || []), "lower_phosphorus"];
+      });
+    });
+  }
+  if (profile.potassiumStatus === "High") {
+    Object.values(bank).forEach((templates) => {
+      templates.forEach((template) => {
+        template.guideRules = [...(template.guideRules || []), "lower_potassium"];
+      });
+    });
+  }
+  return bank;
+}
+
+function safeMealTemplates(mealType, profile, restrictions) {
+  const templates = mealTemplateBank(profile)[mealType] || [];
+  const safe = templates.filter((template) => {
+    const text = [template.name, ...(template.components || [])].join(" ");
+    return !containsAny(text, restrictions.avoid);
+  });
+  return safe.length ? safe : templates;
+}
+
+function plannedMealFor(mealType, profile, restrictions, seed, mealIndex) {
+  const templates = safeMealTemplates(mealType, profile, restrictions);
+  const selected = seededPick(templates, seed, mealIndex * 7) || templates[0];
   return {
     mealType,
-    foodId: null,
-    name: selected.name,
-    portion: "1 serving",
-    servingDescription: "1 serving",
-    quantity: 1,
     ...selected,
-    score: containsAny(selected.name, restrictions.avoid) ? 55 : 75,
-    source: "ckd_meal_plan_fallback",
-    raw: {
-      generatedBy: "ckd_meal_plan_fallback",
-      mealType,
-    },
+    source: "ckd_guide_rule_template",
   };
+}
+
+function usefulNutrition(food = {}) {
+  const values = [
+    numberOrNull(food.calories),
+    numberOrNull(food.protein),
+    numberOrNull(food.sodium),
+    numberOrNull(food.potassium),
+    numberOrNull(food.phosphorus),
+  ];
+  return values.filter((value) => value !== null && value > 0).length >= 3;
 }
 
 async function searchMealPlanRecipes(query, mealType, calorieTarget = null, page = 0) {
@@ -470,14 +504,24 @@ async function searchMealPlanRecipes(query, mealType, calorieTarget = null, page
   }
 }
 
+async function searchMealPlanFoods(query, mealType, page = 0) {
+  try {
+    return await fatSecretBridge.searchFoods(query, page);
+  } catch (error) {
+    console.error("MEAL_PLAN_FOOD_SEARCH_ERROR:", {
+      mealType,
+      query,
+      error: error.message,
+      statusCode: error.statusCode,
+      details: error.data,
+    });
+    return { foods: [] };
+  }
+}
+
 async function enrichCandidate(item) {
   if (!item?.recipeId) return item;
-  const hasUsefulNutrients =
-    numberOrNull(item.calories) > 0 &&
-    (numberOrNull(item.sodium) > 0 ||
-      numberOrNull(item.potassium) > 0 ||
-      numberOrNull(item.phosphorus) > 0);
-  if (hasUsefulNutrients) return item;
+  if (usefulNutrition(item)) return item;
 
   try {
     const details = await fatSecretBridge.getRecipeDetails(item.recipeId);
@@ -498,106 +542,193 @@ async function enrichCandidate(item) {
   }
 }
 
-function mealQueryBank(profile) {
-  const guideTags = buildGuideTags(profile).join(" ");
-  return [
-    {
-      mealType: "Breakfast",
-      target: 300,
-      queries: [
-        `oatmeal apple ${guideTags}`,
-        `rice porridge chicken ${guideTags}`,
-        `egg white toast grapes ${guideTags}`,
-        `cream of wheat berries ${guideTags}`,
-      ],
-    },
-    {
-      mealType: "AM Snack",
-      target: 150,
-      queries: [
-        `apple snack ${guideTags}`,
-        `grapes snack ${guideTags}`,
-        `unsalted crackers snack ${guideTags}`,
-        `cucumber rice crackers ${guideTags}`,
-      ],
-    },
-    {
-      mealType: "Lunch",
-      target: 400,
-      queries: [
-        `grilled chicken rice cabbage ${guideTags}`,
-        `turkey rice lettuce ${guideTags}`,
-        `chicken pasta cauliflower ${guideTags}`,
-        `fish rice cabbage ${guideTags}`,
-      ],
-    },
-    {
-      mealType: "PM Snack",
-      target: 150,
-      queries: [
-        `fresh fruit crackers ${guideTags}`,
-        `apple toast ${guideTags}`,
-        `grapes crackers ${guideTags}`,
-        `cucumber snack ${guideTags}`,
-      ],
-    },
-    {
-      mealType: "Dinner",
-      target: 450,
-      queries: [
-        `fish rice cauliflower ${guideTags}`,
-        `chicken rice green beans ${guideTags}`,
-        `turkey rice vegetables ${guideTags}`,
-        `pasta chicken cabbage ${guideTags}`,
-      ],
-    },
-  ];
+async function resolveFoodDetails(food) {
+  if (!food?.foodId) return food;
+  if (usefulNutrition(food)) return food;
+  try {
+    const details = await fatSecretBridge.getFoodDetails(food.foodId);
+    return {
+      ...food,
+      ...(details.food || {}),
+      raw: {
+        ...(food.raw || {}),
+        foodDetails: details.raw || details.food,
+      },
+    };
+  } catch (error) {
+    console.error("MEAL_PLAN_FOOD_DETAILS_ERROR:", {
+      foodId: food.foodId,
+      error: error.message,
+    });
+    return food;
+  }
 }
 
-async function candidatesForMeal(meal, nutritionProfile, restrictions, seed, mealIndex) {
-  const start = seed + mealIndex * 17;
-  const primary = seededPick(meal.queries, start) || meal.queries[0];
-  const secondary = seededPick(meal.queries, start, 1) || primary;
-  const pages = [start % 2, (start + 1) % 2];
-  const searchRequests = [
-    searchMealPlanRecipes(primary, meal.mealType, meal.target, pages[0]),
-    secondary !== primary
-      ? searchMealPlanRecipes(secondary, meal.mealType, meal.target, pages[1])
-      : null,
-  ].filter(Boolean);
-  const results = await Promise.all(searchRequests);
-  const rawCandidates = results.flatMap((result) =>
-    (result.recipes || result.foods || []).map((item) => ({
-      ...item,
-      mealType: meal.mealType,
-      sourceType: result.recipes ? "recipe" : "food",
-      queryUsed: result.query,
-    })),
+function nutrientTotals(items = []) {
+  return items.reduce(
+    (sum, item) => ({
+      calories: sum.calories + (numberOrNull(item.calories) || 0),
+      protein: sum.protein + (numberOrNull(item.protein) || 0),
+      carbohydrate: sum.carbohydrate + (numberOrNull(item.carbohydrate) || 0),
+      fat: sum.fat + (numberOrNull(item.fat) || 0),
+      sodium: sum.sodium + (numberOrNull(item.sodium) || 0),
+      potassium: sum.potassium + (numberOrNull(item.potassium) || 0),
+      phosphorus: sum.phosphorus + (numberOrNull(item.phosphorus) || 0),
+    }),
+    { calories: 0, protein: 0, carbohydrate: 0, fat: 0, sodium: 0, potassium: 0, phosphorus: 0 },
   );
+}
+
+function bestScoredCandidate(candidates, mealType, nutritionProfile, restrictions) {
   const uniqueCandidates = [];
   const seen = new Set();
-  for (const candidate of rawCandidates) {
+  for (const candidate of candidates) {
     const key = normalizeTextToken(candidate.recipeId || candidate.foodId || candidate.name);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     uniqueCandidates.push(candidate);
   }
-  const enriched = await Promise.all(uniqueCandidates.slice(0, 8).map(enrichCandidate));
-  return enriched
+  return uniqueCandidates
     .map((item) => ({
       ...item,
-      score: scoreMealCandidate(item, meal.mealType, nutritionProfile, restrictions),
-      reason: "Ranked by CKD guide rules, profile targets, labs, and FatSecret nutrient content.",
+      score: scoreMealCandidate(item, mealType, nutritionProfile, restrictions),
     }))
-    .filter((item) => item.score >= 45)
-    .sort((a, b) => b.score - a.score);
+    .filter((item) => usefulNutrition(item) && item.score >= 45)
+    .sort((a, b) => b.score - a.score)[0] || null;
 }
 
-function selectDailyCandidate(candidates, seed, mealIndex) {
-  if (!candidates.length) return null;
-  const bestScore = candidates[0].score;
-  const topSafe = candidates.filter((candidate) => candidate.score >= bestScore - 12).slice(0, 4);
-  return seededPick(topSafe, seed, mealIndex) || candidates[0];
+async function resolveWholeMealNutrition(plannedMeal, nutritionProfile, restrictions, seed) {
+  const guideTags = buildGuideTags(nutritionProfile).join(" ");
+  const queries = [
+    plannedMeal.name,
+    `${plannedMeal.name} ${guideTags}`,
+    (plannedMeal.components || []).join(" "),
+  ];
+  const searches = await Promise.all(
+    queries.map(async (query, index) => {
+      const [recipes, foods] = await Promise.all([
+        searchMealPlanRecipes(query, plannedMeal.mealType, plannedMeal.target, (seed + index) % 2),
+        searchMealPlanFoods(query, plannedMeal.mealType, (seed + index) % 2),
+      ]);
+      return [
+        ...(recipes.recipes || []).map((item) => ({
+          ...item,
+          sourceType: "recipe",
+          queryUsed: query,
+        })),
+        ...(foods.foods || []).map((item) => ({
+          ...item,
+          sourceType: "food",
+          queryUsed: query,
+        })),
+      ];
+    }),
+  );
+  const enriched = await Promise.all(
+    searches.flat().slice(0, 10).map(async (candidate) => {
+      if (candidate.recipeId) return enrichCandidate(candidate);
+      return resolveFoodDetails(candidate);
+    }),
+  );
+  return bestScoredCandidate(
+    enriched,
+    plannedMeal.mealType,
+    nutritionProfile,
+    restrictions,
+  );
+}
+
+async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrictions) {
+  const componentFoods = [];
+  for (const component of plannedMeal.components || []) {
+    const result = await searchMealPlanFoods(component, plannedMeal.mealType, 0);
+    const detailed = await Promise.all(
+      (result.foods || []).slice(0, 4).map(resolveFoodDetails),
+    );
+    const selected = bestScoredCandidate(
+      detailed,
+      plannedMeal.mealType,
+      nutritionProfile,
+      restrictions,
+    );
+    if (selected) componentFoods.push({ ...selected, component });
+  }
+  if (!componentFoods.length) return null;
+  const totals = nutrientTotals(componentFoods);
+  return {
+    foodId: componentFoods.map((food) => food.foodId).filter(Boolean).join(","),
+    name: plannedMeal.name,
+    portion: "1 planned serving",
+    servingDescription: "1 planned serving",
+    ...totals,
+    score: scoreMealCandidate(
+      { ...totals, name: plannedMeal.name },
+      plannedMeal.mealType,
+      nutritionProfile,
+      restrictions,
+    ),
+    source: "fatsecret_component_meal_plan",
+    reason:
+      "Meal idea selected by CKD guide rules; nutrition resolved by searching FatSecret one food at a time.",
+    raw: {
+      plannedMeal,
+      componentFoods,
+    },
+  };
+}
+
+async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, seed) {
+  const wholeMeal = await resolveWholeMealNutrition(
+    plannedMeal,
+    nutritionProfile,
+    restrictions,
+    seed,
+  );
+  if (wholeMeal) {
+    return {
+      ...wholeMeal,
+      name: plannedMeal.name,
+      source:
+        wholeMeal.sourceType === "food"
+          ? "fatsecret_food_meal_plan"
+          : "fatsecret_recipe_meal_plan",
+      reason:
+        "Meal idea selected by CKD guide rules; nutrition resolved from FatSecret whole-meal search.",
+      raw: {
+        ...(wholeMeal.raw || {}),
+        plannedMeal,
+      },
+    };
+  }
+
+  const components = await resolveComponentNutrition(
+    plannedMeal,
+    nutritionProfile,
+    restrictions,
+  );
+  if (components) return components;
+
+  return {
+    foodId: null,
+    name: plannedMeal.name,
+    portion: "1 planned serving",
+    servingDescription: "1 planned serving",
+    calories: 0,
+    protein: 0,
+    carbohydrate: 0,
+    fat: 0,
+    sodium: 0,
+    potassium: 0,
+    phosphorus: 0,
+    score: 0,
+    source: "unresolved_guide_meal_plan",
+    needsManualReview: true,
+    reason:
+      "Meal idea selected by CKD guide rules, but FatSecret did not return whole-meal or component nutrition.",
+    raw: {
+      plannedMeal,
+    },
+  };
 }
 
 async function generateMealPlan(body = {}) {
@@ -635,24 +766,27 @@ async function generateMealPlan(body = {}) {
   nutritionProfile.potassiumLimitMg = numberOrNull(childContext.targets?.potassium);
   nutritionProfile.phosphorusLimitMg = numberOrNull(childContext.targets?.phosphorus);
   const restrictions = buildFoodRestrictions(nutritionProfile);
-  const mealQueries = mealQueryBank(nutritionProfile);
+  const mealTypes = ["Breakfast", "AM Snack", "Lunch", "PM Snack", "Dinner"];
 
   const meals = [];
-  for (const [mealIndex, meal] of mealQueries.entries()) {
-    const candidates = await candidatesForMeal(
-      meal,
+  for (const [mealIndex, mealType] of mealTypes.entries()) {
+    const plannedMeal = plannedMealFor(
+      mealType,
       nutritionProfile,
       restrictions,
       seed,
       mealIndex,
     );
-    const selected =
-      selectDailyCandidate(candidates, seed, mealIndex) ||
-      fallbackMealCandidate(meal.mealType, restrictions, seed + mealIndex);
+    const selected = await resolvePlannedMeal(
+      plannedMeal,
+      nutritionProfile,
+      restrictions,
+      seed + mealIndex,
+    );
 
     if (selected) {
       meals.push({
-        mealType: meal.mealType,
+        mealType,
         foodId: selected.foodId || selected.recipeId,
         name: selected.name,
         portion: selected.servingDescription || selected.servingSize || "1 serving",
@@ -664,14 +798,12 @@ async function generateMealPlan(body = {}) {
         sodium: numberOrNull(selected.sodium) || 0,
         potassium: numberOrNull(selected.potassium) || 0,
         phosphorus: numberOrNull(selected.phosphorus) || 0,
-        score: selected.score || 50,
+        score: selected.score ?? 50,
         selectionReason:
           selected.reason ||
-          "Fallback selected from CKD-friendly meals because FatSecret did not return a usable candidate.",
-        source:
-          selected.sourceType === "food"
-            ? "fatsecret_food_meal_plan"
-            : selected.source || "fatsecret_recipe_meal_plan",
+          "Meal selected by CKD guide rules and resolved with FatSecret nutrition data.",
+        source: selected.source || "fatsecret_meal_plan",
+        needsManualReview: selected.needsManualReview === true,
         raw: selected.raw || selected,
       });
     }
@@ -705,13 +837,15 @@ async function generateMealPlan(body = {}) {
         "profile",
         "latest_labs",
         "nutrition_targets",
-        "fatsecret_recipe_search",
+        "guide_rule_meal_templates",
+        "fatsecret_nutrition_resolution",
+        "fatsecret_component_fallback",
         "ckd_guide_rules",
         "daily_seeded_selection",
       ],
     },
     displayMessage:
-      "Meal plans are generated from profile, latest labs, CKD guide rules, and FatSecret nutrient data. The search and final pick rotate by date so meals can change each day.",
+      "Meal ideas are selected from CKD guide rules, then nutrition is resolved from FatSecret. If a whole meal is not found, the service searches each food in the meal one by one.",
   };
 }
 
