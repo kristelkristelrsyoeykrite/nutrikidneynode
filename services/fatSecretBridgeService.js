@@ -133,6 +133,66 @@ async function getFoodDetails(foodId) {
   };
 }
 
+function normalizeRecipe(recipe = {}) {
+  // Extract recipe_id, ensuring it's a string
+  const recipeId = String(recipe.recipe_id || recipe.recipeId || recipe.id || "");
+  
+  return {
+    recipeId,
+    name: recipe.recipe_name || recipe.name || recipe.title || "Unknown recipe",
+    description: recipe.recipe_description || recipe.description || "",
+    servingSize: recipe.serving_size || recipe.servingSize || "1 serving",
+    servings: toNumber(recipe.servings || recipe.number_of_servings),
+    imageUrl: recipe.recipe_image || recipe.image_url || recipe.imageUrl || "",
+    prepTime: toNumber(recipe.prep_time),
+    cookTime: toNumber(recipe.cook_time),
+    totalTime: toNumber(recipe.total_time),
+    recipeTypes: recipe.recipe_types || recipe.recipeTypes || [],
+    ingredients: recipe.ingredients || [],
+    calories: Math.round(toNumber(recipe.calories)),
+    protein: toNumber(recipe.protein),
+    carbohydrate: toNumber(recipe.carbohydrate ?? recipe.carbs),
+    fat: toNumber(recipe.fat),
+    sodium: toNumber(recipe.sodium),
+    potassium: toNumber(recipe.potassium),
+    phosphorus: toNumber(recipe.phosphorus),
+    fiber: toNumber(recipe.fiber),
+    sugar: toNumber(recipe.sugar),
+    source: recipe.source || "fatsecret_recipe",
+    needsManualReview: Boolean(
+      recipe.needs_manual_review ?? recipe.needsManualReview ?? true
+    ),
+    raw: recipe,
+  };
+}
+
+async function searchRecipes(query, page = 0, maxCalories = null) {
+  const response = await callPythonService("/api/v1/recipes/search", {
+    method: "POST",
+    query: { query, page, ...(maxCalories && { max_calories: maxCalories }) },
+  });
+  const result = unwrapResult(response);
+  const recipes = Array.isArray(result.recipes) ? result.recipes : [];
+
+  return {
+    query,
+    page,
+    totalResults: result.total_results || result.totalResults || recipes.length,
+    recipes: recipes.map(normalizeRecipe),
+    raw: response,
+  };
+}
+
+async function getRecipeDetails(recipeId) {
+  const response = await callPythonService(`/api/v1/recipes/${recipeId}`);
+  const result = unwrapResult(response);
+  const recipe = result.recipe || result;
+  return {
+    recipe: normalizeRecipe(recipe),
+    raw: response,
+  };
+}
+
 async function mealLoggingSearch(query, page = 0) {
   const response = await callPythonService("/meal-logging/search", {
     method: "POST",
@@ -166,9 +226,12 @@ module.exports = {
   healthCheck,
   searchFoods,
   getFoodDetails,
+  searchRecipes,
+  getRecipeDetails,
   mealLoggingSearch,
   mealLoggingFoodDetails,
   mealLoggingPreview,
   mealLoggingRecognizeImage,
   normalizeFood,
+  normalizeRecipe,
 };

@@ -819,18 +819,31 @@ function fallbackMealCandidate(mealType, restrictions) {
   };
 }
 
-async function searchMealPlanFoods(query, mealType) {
+async function searchMealPlanRecipes(query, mealType, calorieTarget = null) {
   try {
-    return await fatSecretBridge.searchFoods(query, 0);
+    // Use recipe search for meal planning instead of individual foods
+    // Recipes provide better nutrient data per serving
+    const result = await fatSecretBridge.searchRecipes(
+      query,
+      0,
+      calorieTarget ? Math.round(calorieTarget * 1.1) : null // Allow 10% flexibility
+    );
+    return result;
   } catch (error) {
-    console.error("MEAL_PLAN_SEARCH_FALLBACK:", {
+    console.error("MEAL_PLAN_RECIPE_SEARCH_ERROR:", {
       mealType,
       query,
       error: error.message,
       statusCode: error.statusCode,
       details: error.data,
     });
-    return { foods: [] };
+    // Fallback: try food search if recipe search fails
+    try {
+      return await fatSecretBridge.searchFoods(query, 0);
+    } catch (fallbackError) {
+      console.error("MEAL_PLAN_RECIPE_FALLBACK_ERROR:", fallbackError.message);
+      return { recipes: [], foods: [] };
+    }
   }
 }
 
@@ -864,33 +877,43 @@ async function generateMealPlan(body = {}) {
     anthropometrics,
   });
   const restrictions = buildFoodRestrictions(nutritionProfile);
+  
+  // Recipe queries for meal planning (better results than individual foods)
   const mealQueries = [
-    { mealType: "Breakfast", query: "oatmeal apple egg rice" },
-    { mealType: "AM Snack", query: "apple grapes crackers" },
-    { mealType: "Lunch", query: "chicken rice cabbage" },
-    { mealType: "PM Snack", query: "fruit crackers sandwich" },
-    { mealType: "Dinner", query: "fish rice cauliflower chicken" },
+    { mealType: "Breakfast", query: "oatmeal with berries and low sodium", target: 300 },
+    { mealType: "AM Snack", query: "apple or grapes with low sodium", target: 150 },
+    { mealType: "Lunch", query: "grilled chicken with rice and vegetables low sodium", target: 400 },
+    { mealType: "PM Snack", query: "fresh fruit or crackers low sodium", target: 150 },
+    { mealType: "Dinner", query: "fish with rice and low sodium vegetables", target: 450 },
   ];
 
   const meals = [];
   for (const meal of mealQueries) {
-    const result = await searchMealPlanFoods(meal.query, meal.mealType);
-    const ranked = (result.foods || [])
-      .map((food) => ({
-        ...food,
+    // Search for recipes (primary) or foods (fallback)
+    const result = await searchMealPlanRecipes(meal.query, meal.mealType, meal.target);
+    
+    // Handle both recipe and food results
+    const candidates = (result.recipes || result.foods || [])
+      .map((item) => ({
+        ...item,
         mealType: meal.mealType,
-        score: scoreMealCandidate(food, meal.mealType, nutritionProfile, restrictions),
+        score: scoreMealCandidate(item, meal.mealType, nutritionProfile, restrictions),
         reason: "Ranked by CKD sodium, potassium, phosphorus, diabetes, and protein needs.",
       }))
-      .filter((food) => food.score >= 45)
+      .filter((item) => item.score >= 45)
       .sort((a, b) => b.score - a.score);
-    const selected = ranked[0] || (result.foods || [])[0] || fallbackMealCandidate(meal.mealType, restrictions);
+    
+    const selected = candidates[0] || 
+      (result.recipes && result.recipes[0]) || 
+      (result.foods && result.foods[0]) || 
+      fallbackMealCandidate(meal.mealType, restrictions);
+    
     if (selected) {
       meals.push({
         mealType: meal.mealType,
-        foodId: selected.foodId,
+        foodId: selected.foodId || selected.recipeId,
         name: selected.name,
-        portion: selected.servingDescription || "1 serving",
+        portion: selected.servingDescription || selected.servingSize || "1 serving",
         quantity: 1,
         calories: Math.round(numberOrNull(selected.calories) || 0),
         protein: numberOrNull(selected.protein) || 0,
@@ -900,7 +923,7 @@ async function generateMealPlan(body = {}) {
         potassium: numberOrNull(selected.potassium) || 0,
         phosphorus: numberOrNull(selected.phosphorus) || 0,
         score: selected.score || 50,
-        source: "fatsecret_meal_plan",
+        source: result.recipes ? "fatsecret_recipe_meal_plan" : "fatsecret_food_meal_plan",
         raw: selected.raw || selected,
       });
     }
@@ -929,10 +952,10 @@ async function generateMealPlan(body = {}) {
       sodiumWithinLimit: totals.sodium <= restrictions.dailySodiumLimitMg,
       proteinWithinTarget:
         !nutritionProfile.proteinTarget || totals.protein <= nutritionProfile.proteinTarget,
-      generatedFrom: ["profile", "latest_labs", "fatsecret_food_search", "ckd_rules"],
+      generatedFrom: ["profile", "latest_labs", "fatsecret_recipe_search", "ckd_rules"],
     },
     displayMessage:
-      "Meal plans are generated based on your profile and latest laboratory results. Foods are sourced from FatSecret and filtered according to CKD dietary guidelines.",
+      "Meal plans are generated based on your profile and latest laboratory results. Recipes are sourced from FatSecret and filtered according to CKD dietary guidelines.",
   };
 }
 
