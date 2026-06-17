@@ -1254,7 +1254,41 @@ function componentBreakdownFromFoods(componentFoods = []) {
     nutrients: roundNutrients(food),
     source: food.source || "fatsecret",
     needsManualReview: food.needsManualReview === true,
+    suggestions: food.suggestions || [],
   }));
+}
+
+function componentFoodText(food = {}) {
+  return [
+    food.name,
+    food.description,
+    food.servingDescription,
+    food.servingSize,
+    food.brandName,
+  ].join(" ");
+}
+
+function firstIngredientPresentFood(candidates = [], component = "") {
+  const withIngredient = candidates.filter((food) =>
+    containsAny(componentFoodText(food), [component]),
+  );
+  return withIngredient[0] || candidates[0] || null;
+}
+
+function componentSuggestions(candidates = [], selected = {}, component = "") {
+  const selectedKey = normalizeTextToken(selected.foodId || selected.name);
+  return candidates
+    .filter((food) => containsAny(componentFoodText(food), [component]))
+    .filter((food) => normalizeTextToken(food.foodId || food.name) !== selectedKey)
+    .slice(0, 4)
+    .map((food) => ({
+      foodId: food.foodId,
+      name: food.name,
+      portion: food.servingDescription || food.servingSize || "1 serving",
+      nutrients: roundNutrients(food),
+      source: food.source || "fatsecret",
+      needsManualReview: food.needsManualReview === true,
+    }));
 }
 
 async function resolveWholeMealNutrition(plannedMeal, nutritionProfile, restrictions, seed, ingredientRules) {
@@ -1312,15 +1346,17 @@ async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrict
   for (const component of plannedMeal.components || []) {
     const result = await searchMealPlanFoods(component, plannedMeal.mealType, 0);
     const detailed = await Promise.all(
-      (result.foods || []).slice(0, 4).map(resolveFoodDetails),
+      (result.foods || []).slice(0, 8).map(resolveFoodDetails),
     );
-    const selected = bestScoredCandidate(
-      detailed,
-      plannedMeal.mealType,
-      nutritionProfile,
-      restrictions,
-    );
+    const selected = firstIngredientPresentFood(detailed, component);
     if (selected) componentFoods.push({ ...selected, component });
+    if (selected) {
+      componentFoods[componentFoods.length - 1].suggestions = componentSuggestions(
+        detailed,
+        selected,
+        component,
+      );
+    }
   }
   if (!componentFoods.length) return null;
   const totals = nutrientTotals(componentFoods);
@@ -1428,7 +1464,7 @@ async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, s
     componentBreakdown: [],
     matchConfidence: "unresolved",
     reason:
-      "Meal idea selected by CKD guide rules, but FatSecret did not return whole-meal or component nutrition.",
+      "Meal idea selected by CKD guide rules. No matching FatSecret recipe or component nutrition was found yet, so it remains in the plan as a guide for manual review.",
     raw: {
       plannedMeal,
     },
