@@ -434,16 +434,24 @@ function validateRecipeCandidate(recipe = {}, rules = {}, restrictions = {}) {
 function normalizeCachedRecipe(recipe = {}, query = "") {
   const ingredients = extractRecipeIngredients(recipe);
   return cleanObject({
-    recipeId: recipe.recipeId || recipe.recipe_id || recipe.id,
-    name: recipe.name || recipe.recipe_name || recipe.title,
+    recipeId: recipe.recipeId || recipe.recipe_id || recipe.food_id || recipe.id,
+    name: 
+      recipe.name || 
+      recipe.recipe_name || 
+      recipe.food_name ||  // Python service uses food_name
+      recipe.title,
     description: recipe.description || recipe.recipe_description,
-    servingSize: recipe.servingSize || recipe.serving_size || "1 serving",
+    servingSize: 
+      recipe.servingSize || 
+      recipe.serving_size || 
+      recipe.serving_description ||  // Python service uses serving_description
+      "1 serving",
     servings: recipe.servings,
     imageUrl: recipe.imageUrl || recipe.recipe_image || recipe.image_url,
     ingredients,
     calories: numberOrNull(recipe.calories),
     protein: numberOrNull(recipe.protein),
-    carbohydrate: numberOrNull(recipe.carbohydrate),
+    carbohydrate: numberOrNull(recipe.carbohydrate ?? recipe.carbohydrates),
     fat: numberOrNull(recipe.fat),
     sodium: numberOrNull(recipe.sodium),
     potassium: numberOrNull(recipe.potassium),
