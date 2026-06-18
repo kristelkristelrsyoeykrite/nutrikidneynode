@@ -45,6 +45,16 @@ async function callPythonService(path, options = {}) {
     }
   }
 
+  console.log("PYTHON_SERVICE_RESPONSE:", {
+    path,
+    method,
+    status: response.status,
+    ok: response.ok,
+    dataKeys: Object.keys(data),
+    hasResult: "result" in data,
+    resultType: typeof data.result,
+  });
+
   if (!response.ok) {
     const detail = data?.detail;
     const error = new Error(
@@ -65,6 +75,13 @@ async function callPythonService(path, options = {}) {
 }
 
 function unwrapResult(response) {
+  console.log("UNWRAP_RESULT_INPUT:", {
+    hasResponse: !!response,
+    responseKeys: response ? Object.keys(response) : [],
+    hasResult: response && "result" in response,
+    resultValue: response?.result,
+  });
+  
   if (response && typeof response === "object" && "result" in response) {
     return response.result || {};
   }
