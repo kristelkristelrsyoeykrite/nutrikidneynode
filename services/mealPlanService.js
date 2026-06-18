@@ -2099,7 +2099,13 @@ async function generateMealPlan(body = {}) {
 
       if (selected) {
         const nutrients = roundNutrients(selected.nutrientPreview || selected);
-        meals.push({
+        console.log("MEAL_PLAN_MEAL_CONSTRUCTION:", {
+          name: selected.name,
+          hasNutrientPreview: !!selected.nutrientPreview,
+          extractedNutrients: nutrients,
+          selectedSource: selected.source
+        });
+        const mealObject = {
           date: currentDate,
           mealType,
           foodId: selected.foodId || selected.recipeId,
@@ -2124,7 +2130,20 @@ async function generateMealPlan(body = {}) {
           source: selected.source || "fatsecret_meal_plan",
           needsManualReview: selected.needsManualReview === true,
           raw: selected.raw || selected,
+        };
+        
+        console.log("MEAL_PLAN_MEAL_ADDED:", {
+          name: selected.name,
+          mealType,
+          source: selected.source,
+          componentsCount: (selected.componentBreakdown || []).length,
+          calories: nutrients.calories,
+          protein: nutrients.protein,
+          sodium: nutrients.sodium,
+          objectKeys: Object.keys(mealObject)
         });
+        
+        meals.push(mealObject);
       }
     }
 
