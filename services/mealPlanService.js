@@ -1739,6 +1739,13 @@ async function resolveIngredientBasedMeal(
 ) {
   if (!mealTemplate) return null;
 
+  console.log("RESOLVE_INGREDIENT_MEAL_START:", { 
+    protein: mealTemplate.protein,
+    carb: mealTemplate.carb,
+    vegetable: mealTemplate.vegetable,
+    mealType: mealTemplate.mealType
+  });
+
   const ingredients = {
     protein: mealTemplate.protein,
     carb: mealTemplate.carb || mealTemplate.grain,
@@ -1763,26 +1770,53 @@ async function resolveIngredientBasedMeal(
     try {
       // Get random variant from cache/FatSecret
       const variant = await ingredientExpansionService.pickRandomVariant(ingredient);
+      if (!variant) {
+        console.warn("INGREDIENT_NO_VARIANT:", { ingredient, role });
+        continue;
+      }
       selectedFoods[role] = variant;
+      console.log("INGREDIENT_VARIANT_SELECTED:", { role, ingredient, variant });
 
       // Search FatSecret for this specific variant
       const result = await searchMealPlanFoods(variant, mealTemplate.mealType, 0);
-      if (result.foods && result.foods.length > 0) {
-        const food = result.foods[0];
-        const detailed = await resolveFoodDetails(food);
-        foodDetails.push({
-          ...detailed,
-          role,
-          baseIngredient: ingredient,
-          selectedVariant: variant,
-        });
+      if (!result || !result.foods || result.foods.length === 0) {
+        console.warn("FATSECRET_NO_FOODS_FOUND:", { variant, role });
+        continue;
       }
+      
+      const food = result.foods[0];
+      console.log("FATSECRET_FOOD_FOUND:", { role, variant, foodId: food.foodId, foodName: food.food_name });
+      
+      const detailed = await resolveFoodDetails(food);
+      if (!detailed) {
+        console.warn("FOOD_DETAILS_FAILED:", { role, variant, foodId: food.foodId });
+        continue;
+      }
+      
+      console.log("FOOD_DETAILS_RESOLVED:", { 
+        role, 
+        variant, 
+        calories: detailed.calories,
+        protein: detailed.protein,
+        carbs: detailed.carbohydrate,
+        sodium: detailed.sodium
+      });
+      
+      foodDetails.push({
+        ...detailed,
+        role,
+        baseIngredient: ingredient,
+        selectedVariant: variant,
+      });
     } catch (error) {
-      console.error("INGREDIENT_EXPANSION_ERROR:", { ingredient, error: error.message });
+      console.error("INGREDIENT_EXPANSION_ERROR:", { ingredient, role, error: error.message, stack: error.stack });
     }
   }
 
-  if (foodDetails.length === 0) return null;
+  if (foodDetails.length === 0) {
+    console.warn("INGREDIENT_MEAL_NO_FOODS:", { mealType: mealTemplate.mealType, ingredients });
+    return null;
+  }
 
   // Validate ingredients against CKD rules
   const validation = {
@@ -1799,17 +1833,29 @@ async function resolveIngredientBasedMeal(
   });
 
   // Reject if any blocked ingredients
-  if (validation.blocked.length > 0) return null;
+  if (validation.blocked.length > 0) {
+    console.warn("INGREDIENT_MEAL_BLOCKED:", { mealType: mealTemplate.mealType, blocked: validation.blocked });
+    return null;
+  }
 
   // Combine nutrition from all foods
   const totals = nutrientTotals(foodDetails);
+  console.log("INGREDIENT_MEAL_TOTALS:", { 
+    mealType: mealTemplate.mealType,
+    components: foodDetails.length,
+    calories: totals.calories,
+    protein: totals.protein,
+    sodium: totals.sodium,
+    potassium: totals.potassium,
+    phosphorus: totals.phosphorus
+  });
 
   // Build meal name from actual selected variants
   const mealName = Object.values(selectedFoods)
     .filter(Boolean)
     .join(" with ");
 
-  return {
+  const result = {
     foodId: foodDetails.map((f) => f.foodId).filter(Boolean).join(","),
     name: mealName,
     portion: "1 serving",
@@ -1840,6 +1886,14 @@ async function resolveIngredientBasedMeal(
       validation,
     },
   };
+
+  console.log("INGREDIENT_MEAL_COMPLETE:", { 
+    mealType: mealTemplate.mealType,
+    name: result.name,
+    score: result.score
+  });
+
+  return result;
 }
 
 async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrictions) {
