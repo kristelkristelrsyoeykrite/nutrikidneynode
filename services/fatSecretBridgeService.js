@@ -114,11 +114,43 @@ async function searchFoods(query, page = 0) {
   const result = unwrapResult(response);
   const foods = Array.isArray(result.foods) ? result.foods : [];
 
+  console.log("FATSECRET_BRIDGE_SEARCH:", {
+    query,
+    page,
+    totalResults: result.total_results || result.totalResults || foods.length,
+    numResults: foods.length,
+    firstFoodRaw: foods[0] ? {
+      food_id: foods[0].food_id,
+      food_name: foods[0].food_name,
+      calories: foods[0].calories,
+      protein: foods[0].protein,
+      sodium: foods[0].sodium,
+      potassium: foods[0].potassium,
+      phosphorus: foods[0].phosphorus,
+    } : null,
+  });
+
+  const normalized = foods.map(normalizeFood);
+  
+  console.log("FATSECRET_BRIDGE_SEARCH_NORMALIZED:", {
+    query,
+    numNormalized: normalized.length,
+    firstNormalized: normalized[0] ? {
+      foodId: normalized[0].foodId,
+      name: normalized[0].name,
+      calories: normalized[0].calories,
+      protein: normalized[0].protein,
+      sodium: normalized[0].sodium,
+      potassium: normalized[0].potassium,
+      phosphorus: normalized[0].phosphorus,
+    } : null,
+  });
+
   return {
     query,
     page,
     totalResults: result.total_results || result.totalResults || foods.length,
-    foods: foods.map(normalizeFood),
+    foods: normalized,
     raw: response,
   };
 }
@@ -127,8 +159,35 @@ async function getFoodDetails(foodId) {
   const response = await callPythonService(`/api/v1/foods/${foodId}`);
   const result = unwrapResult(response);
   const food = result.food || result.nutrition || result;
+  
+  console.log("FATSECRET_BRIDGE_GET_DETAILS:", {
+    foodId,
+    responseKeys: Object.keys(response),
+    resultKeys: Object.keys(result),
+    resultFoodKeys: food ? Object.keys(food) : [],
+    rawFoodNutrients: food ? {
+      calories: food.calories,
+      protein: food.protein,
+      sodium: food.sodium,
+      potassium: food.potassium,
+      phosphorus: food.phosphorus,
+    } : null,
+  });
+  
+  const normalized = normalizeFood(food);
+  console.log("FATSECRET_BRIDGE_NORMALIZED:", {
+    foodId,
+    normalizedNutrients: {
+      calories: normalized.calories,
+      protein: normalized.protein,
+      sodium: normalized.sodium,
+      potassium: normalized.potassium,
+      phosphorus: normalized.phosphorus,
+    }
+  });
+  
   return {
-    food: normalizeFood(food),
+    food: normalized,
     raw: response,
   };
 }
