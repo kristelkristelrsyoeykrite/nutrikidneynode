@@ -1046,7 +1046,43 @@ app.post("/api/user/profile-status", async (req, res) => {
       });
     }
 
-    const userDoc = await db.collection("users").doc(resolvedUid).get();
+    let userDoc = await db.collection("users").doc(resolvedUid).get();
+    if (!userDoc.exists && email) {
+      try {
+        const emailUser = await auth.getUserByEmail(email);
+        if (emailUser.uid && emailUser.uid !== resolvedUid) {
+          const emailUserDoc = await db.collection("users").doc(emailUser.uid).get();
+          if (emailUserDoc.exists) {
+            resolvedUid = emailUser.uid;
+            userDoc = emailUserDoc;
+          }
+        }
+      } catch (e) {
+        if (e.code !== "auth/user-not-found") {
+          throw e;
+        }
+      }
+    }
+    if (!userDoc.exists && phoneNumber) {
+      const normalizedPhone = normalizePhoneNumberOrThrow(
+        phoneNumber,
+        "phone number",
+      );
+      try {
+        const phoneUser = await auth.getUserByPhoneNumber(normalizedPhone);
+        if (phoneUser.uid && phoneUser.uid !== resolvedUid) {
+          const phoneUserDoc = await db.collection("users").doc(phoneUser.uid).get();
+          if (phoneUserDoc.exists) {
+            resolvedUid = phoneUser.uid;
+            userDoc = phoneUserDoc;
+          }
+        }
+      } catch (e) {
+        if (e.code !== "auth/user-not-found") {
+          throw e;
+        }
+      }
+    }
     const profile = userDoc.exists
       ? decryptHealthProfile(userDoc.data() || {})
       : {};

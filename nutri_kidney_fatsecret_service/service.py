@@ -115,9 +115,32 @@ class NutriKidneyFatSecretService:
             if not normalized_foods:
                 raise fatsecret_error or usda_error or ValidationError("No foods found")
             
+            # Enrich top results with full details if missing CKD-critical nutrients
+            # This ensures calories, protein, sodium, potassium, phosphorus are populated
+            enriched_foods = []
+            for idx, food in enumerate(normalized_foods):
+                # Only enrich first few results to avoid excessive API calls
+                if idx < 3 and food.missing_nutrients:
+                    try:
+                        if food.food_id:
+                            detailed = self.get_food_details(food.food_id)
+                            # Use the detailed result (which is already formatted as a response)
+                            if detailed and "result" in detailed:
+                                enriched_foods.append(detailed["result"])
+                                logger.info(f"Enriched food #{idx}: {food.food_name} with full details")
+                            else:
+                                enriched_foods.append(food)
+                        else:
+                            enriched_foods.append(food)
+                    except Exception as e:
+                        logger.warning(f"Failed to enrich food: {str(e)}, using original")
+                        enriched_foods.append(food)
+                else:
+                    enriched_foods.append(food)
+            
             # Format response
             response = ResponseFormatter.food_search_response(
-                foods=normalized_foods,
+                foods=enriched_foods,
                 query=query,
                 total_results=total,
             )
@@ -245,6 +268,112 @@ class NutriKidneyFatSecretService:
             raise
         except Exception as e:
             logger.error(f"Image recognition failed: {str(e)}")
+            raise
+
+    def search_recipes(
+        self,
+        query: str,
+        page: int = 0,
+        max_calories: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Search for recipes by text query using FatSecret recipes.search.v3.
+        
+        Algorithm:
+        1. Validate query input
+        2. Call FatSecret API for recipe search
+        3. Normalize results
+        4. Format response for app
+        
+        Best for: Meal planning, generating balanced meals
+        
+        Args:
+            query: Recipe search query (e.g., "chicken with rice")
+            page: Page number for pagination (0-indexed)
+            max_calories: Optional max calories filter
+            
+        Returns:
+            Formatted response with recipe results
+            
+        Raises:
+            Various NutriKidneyServiceError subclasses
+        """
+        logger.info(f"Search recipes: '{query}' (page {page}, max_calories={max_calories})")
+        
+        try:
+            raw_results = self.fatsecret_client.search_recipes(query, page, max_calories)
+            recipes_list = raw_results.get("recipes", [])
+            
+            # Normalize recipe results to Nutrition objects
+            # (recipes contain per-serving nutrition data)
+            normalized_recipes = NutritionNormalizer.normalize_batch(
+                recipes_list,
+                source="fatsecret_recipe",
+                is_from_image=False,
+            )
+            
+            # Format response
+            response = ResponseFormatter.recipe_search_response(
+                recipes=normalized_recipes,
+                query=query,
+                total_results=raw_results.get("total_results", len(normalized_recipes)),
+            )
+            
+            logger.info(f"Recipe search complete: {len(normalized_recipes)} results")
+            return response
+            
+        except NutriKidneyServiceError:
+            raise
+        except Exception as e:
+            logger.error(f"Recipe search failed: {str(e)}")
+            raise
+
+    def get_recipe_details(self, recipe_id: str) -> Dict[str, Any]:
+        """
+        Get detailed information for a specific recipe.
+        
+        Algorithm:
+        1. Validate recipe ID
+        2. Fetch recipe details from FatSecret
+        3. Normalize nutrition data (per serving)
+        4. Extract ingredients
+        5. Format response
+        
+        Args:
+            recipe_id: FatSecret recipe ID (usually numeric string)
+            
+        Returns:
+            Formatted response with complete recipe data and ingredients
+            
+        Raises:
+            ValidationError: If recipe_id is invalid
+            FatSecretAPIError: If API request fails
+        """
+        logger.info(f"Get recipe details: ID {recipe_id}")
+        
+        try:
+            raw_details = self.fatsecret_client.get_recipe_details(recipe_id)
+            
+            # Normalize nutrition data
+            nutrition = NutritionNormalizer.normalize(
+                raw_details,
+                source="fatsecret_recipe",
+                is_from_image=False,
+            )
+            
+            # Extract ingredients if available
+            ingredients = raw_details.get("ingredients", [])
+            
+            # Format response
+            response = ResponseFormatter.recipe_detail_response(nutrition, ingredients)
+            
+            logger.info(f"Recipe details retrieved: {nutrition.food_name}")
+            return response
+            
+        except NutriKidneyServiceError:
+            raise
+        except Exception as e:
+            logger.error(f"Get recipe details failed: {str(e)}")
             raise
 
     def get_nutrition_summary(self, nutrition: Nutrition) -> Dict[str, Any]:

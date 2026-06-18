@@ -18,19 +18,47 @@ class Config:
     # FatSecret API Credentials
     FATSECRET_CONSUMER_KEY = os.getenv("FATSECRET_CONSUMER_KEY")
     FATSECRET_CONSUMER_SECRET = os.getenv("FATSECRET_CONSUMER_SECRET")
+    FATSECRET_CLIENT_ID = os.getenv(
+        "FATSECRET_CLIENT_ID",
+        FATSECRET_CONSUMER_KEY,
+    )
+    FATSECRET_CLIENT_SECRET = os.getenv(
+        "FATSECRET_CLIENT_SECRET",
+        FATSECRET_CONSUMER_SECRET,
+    )
+    FATSECRET_IMAGE_RECOGNITION_SCOPE = os.getenv(
+        "FATSECRET_IMAGE_RECOGNITION_SCOPE",
+        "image-recognition",
+    )
 
     # API URLs
     FATSECRET_API_BASE_URL = os.getenv(
         "FATSECRET_API_BASE_URL",
         "https://platform.fatsecret.com/rest/server.api"
     )
-    FATSECRET_IMAGE_UPLOAD_URL = os.getenv(
+    _configured_image_upload_url = os.getenv(
         "FATSECRET_IMAGE_UPLOAD_URL",
-        "https://platform.fatsecret.com/rest/food.imagerecognition"
+        "https://platform.fatsecret.com/rest/image-recognition/v2"
     )
+    FATSECRET_IMAGE_UPLOAD_URL = (
+        "https://platform.fatsecret.com/rest/image-recognition/v2"
+        if "food.imagerecognition" in _configured_image_upload_url
+        else _configured_image_upload_url
+    )
+    FATSECRET_OAUTH2_TOKEN_URL = os.getenv(
+        "FATSECRET_OAUTH2_TOKEN_URL",
+        "https://oauth.fatsecret.com/connect/token"
+    )
+    FATSECRET_RECIPE_SEARCH_URL = os.getenv(
+        "FATSECRET_RECIPE_SEARCH_URL",
+        "https://platform.fatsecret.com/rest/recipes/search/v3"
+    )
+    FATSECRET_PLATFORM_SCOPE = os.getenv("FATSECRET_PLATFORM_SCOPE", "basic")
 
     # Request Configuration
     REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 10))
+    FATSECRET_IMAGE_TIMEOUT = int(os.getenv("FATSECRET_IMAGE_TIMEOUT", 45))
+    FATSECRET_IMAGE_RETRIES = int(os.getenv("FATSECRET_IMAGE_RETRIES", 1))
     MAX_IMAGE_SIZE_MB = int(os.getenv("MAX_IMAGE_SIZE_MB", 5))
     MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024
 

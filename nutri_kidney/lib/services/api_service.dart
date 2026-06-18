@@ -1452,6 +1452,28 @@ class ApiService {
     );
   }
 
+  static Future<Map<String, dynamic>> generateMealPlan({
+    String? profileUserId,
+    String? date,
+    int days = 7,
+  }) async {
+    final currentUserId = _requireCurrentUserId();
+    final response = await _post(
+      "/api/food/meal-plan/generate",
+      body: {
+        "userId": currentUserId,
+        if (date != null) "date": date,
+        "days": days,
+        if (profileUserId != null) "profileUserId": profileUserId,
+        if (profileUserId != null) "childProfileId": profileUserId,
+      },
+    );
+    if (response["success"] == false) {
+      throw Exception(response["error"] ?? "Meal plan generation failed.");
+    }
+    return response;
+  }
+
   static Future<Map<String, dynamic>> deleteFoodLog(
     String foodLogId, {
     String? profileUserId,

@@ -12,7 +12,9 @@ Algorithm:
 """
 import os
 import io
+import base64
 import logging
+import time
 from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
 import requests
 from error_handler import (
@@ -61,6 +63,8 @@ class ImageRecognitionHandler:
         """
         self.config = get_config()
         self.client = fatsecret_client
+        self._fatsecret_access_token: Optional[str] = None
+        self._fatsecret_token_expires_at = 0.0
 
     def recognize_food_from_image(
         self,
@@ -198,19 +202,28 @@ class ImageRecognitionHandler:
         image_bytes = self._image_to_bytes(image_processed)
 
         fatsecret_error = None
+        fatsecret_candidates = []
         try:
             fatsecret_results = self._send_to_fatsecret_recognition(
                 image_bytes,
                 content_type,
             )
-            candidates = self._normalize_fatsecret_candidates(fatsecret_results)
-            if candidates:
+            fatsecret_candidates = self._normalize_fatsecret_candidates(
+                fatsecret_results
+            )
+            if fatsecret_candidates:
+                logger.info(
+                    "Using %s FatSecret image candidates; Google Vision fallback skipped",
+                    len(fatsecret_candidates),
+                )
                 return {
                     "source": "fatsecret",
-                    "candidates": candidates,
+                    "candidates": fatsecret_candidates,
+                    "fatsecret_candidates": fatsecret_candidates,
+                    "google_candidates": [],
                     "warnings": warnings,
                 }
-            warnings.append("FatSecret did not return any image matches.")
+            warnings.append("FatSecret did not return any usable image matches.")
         except Exception as e:
             fatsecret_error = e
             logger.warning("FatSecret image recognition failed; falling back to Google Vision: %s", str(e))
@@ -229,6 +242,8 @@ class ImageRecognitionHandler:
         return {
             "source": "google_vision",
             "candidates": google_candidates,
+            "fatsecret_candidates": [],
+            "google_candidates": google_candidates,
             "warnings": warnings,
         }
 
@@ -313,13 +328,20 @@ class ImageRecognitionHandler:
             if not isinstance(item, dict):
                 continue
 
+            nested_food = item.get("food")
+            food_data = nested_food if isinstance(nested_food, dict) else item
             food_name = (
-                item.get("food_name")
-                or item.get("name")
-                or item.get("description")
-                or item.get("label")
+                food_data.get("food_name")
+                or food_data.get("food_entry_name")
+                or food_data.get("food_label")
+                or food_data.get("food_description")
+                or food_data.get("name")
+                or food_data.get("description")
+                or food_data.get("label")
+                or food_data.get("suggestion")
+                or food_data.get("title")
             )
-            food_id = item.get("food_id") or item.get("foodId")
+            food_id = food_data.get("food_id") or food_data.get("foodId")
             confidence = item.get("confidence") or item.get("score")
             if confidence is None:
                 confidence = max(0.1, 1.0 - (index * 0.1))
@@ -332,6 +354,7 @@ class ImageRecognitionHandler:
                     "food_id": str(food_id) if food_id else None,
                     "food_name": str(food_name or "Food").strip(),
                     "confidence": float(confidence),
+                    "source": "fatsecret_image_recognition",
                     "raw": item,
                 }
             )
@@ -339,14 +362,37 @@ class ImageRecognitionHandler:
         return normalized
 
     def _detect_with_google_vision(self, image_bytes: bytes) -> List[Dict[str, Any]]:
-        """Use Google Vision label detection as a fallback when FatSecret fails."""
+        """Use several Google Vision signals to build food search candidates."""
         vision_mod, client = self._google_vision_client()
         if client is None:
             return []
 
         try:
             image = vision_mod.Image(content=image_bytes)
-            response = client.label_detection(image=image)
+            features = [
+                vision_mod.Feature(
+                    type_=vision_mod.Feature.Type.LABEL_DETECTION,
+                    max_results=12,
+                ),
+                vision_mod.Feature(
+                    type_=vision_mod.Feature.Type.OBJECT_LOCALIZATION,
+                    max_results=10,
+                ),
+                vision_mod.Feature(
+                    type_=vision_mod.Feature.Type.WEB_DETECTION,
+                    max_results=10,
+                ),
+                vision_mod.Feature(
+                    type_=vision_mod.Feature.Type.TEXT_DETECTION,
+                    max_results=10,
+                ),
+            ]
+            response = client.annotate_image(
+                {
+                    "image": image,
+                    "features": features,
+                }
+            )
         except Exception as e:
             logger.error("Google Vision request failed: %s", str(e))
             return []
@@ -355,22 +401,90 @@ class ImageRecognitionHandler:
             logger.error("Google Vision response error: %s", response.error.message)
             return []
 
-        label_annotations = getattr(response, "label_annotations", []) or []
-        candidates = []
-        for label in label_annotations[:8]:
-            description = str(getattr(label, "description", "") or "").strip()
-            score = float(getattr(label, "score", 0.0) or 0.0)
-            if not description or score < 0.55:
-                continue
-            candidates.append(
-                {
-                    "food_name": description,
-                    "confidence": score,
-                    "source": "google_vision",
-                }
-            )
+        candidates_by_name: Dict[str, Dict[str, Any]] = {}
 
-        logger.info("Google Vision produced %s fallback labels", len(candidates))
+        def add_candidate(description: str, score: float, signal: str) -> None:
+            description = " ".join(str(description or "").strip().split())
+            normalized = description.lower()
+            if not description or len(description) < 2:
+                return
+
+            existing = candidates_by_name.get(normalized)
+            candidate = {
+                "food_name": description,
+                "confidence": round(max(0.0, min(1.0, float(score))), 4),
+                "source": "google_vision",
+                "vision_signal": signal,
+            }
+            if existing is None or candidate["confidence"] > existing["confidence"]:
+                candidates_by_name[normalized] = candidate
+
+        for label in (getattr(response, "label_annotations", []) or [])[:12]:
+            score = float(getattr(label, "score", 0.0) or 0.0)
+            if score >= 0.55:
+                add_candidate(getattr(label, "description", ""), score, "label")
+
+        for detected_object in (
+            getattr(response, "localized_object_annotations", []) or []
+        )[:10]:
+            score = float(getattr(detected_object, "score", 0.0) or 0.0)
+            if score >= 0.50:
+                add_candidate(
+                    getattr(detected_object, "name", ""),
+                    score,
+                    "object",
+                )
+
+        web_detection = getattr(response, "web_detection", None)
+        for entity in (getattr(web_detection, "web_entities", []) or [])[:10]:
+            score = float(getattr(entity, "score", 0.0) or 0.0)
+            if score >= 0.45:
+                add_candidate(
+                    getattr(entity, "description", ""),
+                    score,
+                    "web",
+                )
+
+        # Text can identify packaged foods or menu labels. Keep only short lines so
+        # receipts and long scene text do not become food search queries.
+        text_annotations = getattr(response, "text_annotations", []) or []
+        full_text = (
+            str(getattr(text_annotations[0], "description", "") or "")
+            if text_annotations
+            else ""
+        )
+        text_noise_tokens = {
+            "amount",
+            "change",
+            "date",
+            "official receipt",
+            "receipt",
+            "subtotal",
+            "tax",
+            "total",
+        }
+        for line in full_text.splitlines()[:8]:
+            words = line.split()
+            normalized_line = " ".join(line.lower().split())
+            if (
+                1 <= len(words) <= 5
+                and any(char.isalpha() for char in line)
+                and normalized_line not in text_noise_tokens
+            ):
+                add_candidate(line, 0.60, "text")
+
+        signal_bonus = {"web": 0.12, "text": 0.05, "label": 0.04, "object": 0.0}
+        candidates = sorted(
+            candidates_by_name.values(),
+            key=lambda item: float(item.get("confidence") or 0.0)
+            + signal_bonus.get(str(item.get("vision_signal")), 0.0),
+            reverse=True,
+        )[:20]
+
+        logger.info(
+            "Google Vision produced %s fused fallback candidates",
+            len(candidates),
+        )
         return candidates
 
     def _google_vision_client(self):
@@ -407,13 +521,8 @@ class ImageRecognitionHandler:
         image_bytes: bytes,
         content_type: str,
     ) -> List[Dict[str, Any]]:
-        """
-        Send image to FatSecret image recognition endpoint.
-        
-        Note: This uses direct REST API calls since the fatsecret library
-        may not support image recognition. FatSecret's exact image recognition
-        endpoint may vary - check their current API documentation.
-        
+        """Send an image to FatSecret's OAuth2 image-recognition v2 endpoint.
+
         Args:
             image_bytes: Image data in bytes
             content_type: MIME type
@@ -424,35 +533,271 @@ class ImageRecognitionHandler:
         Raises:
             FatSecretAPIError: If request fails
         """
-        # Note: FatSecret's image recognition endpoint and parameters
-        # may differ. This is a template - adjust based on actual API.
-        
         url = self.config.FATSECRET_IMAGE_UPLOAD_URL
-        
+
         try:
-            files = {"image": (("image.jpg", image_bytes, content_type))}
-            
-            # Add OAuth headers if needed
-            # This depends on FatSecret's specific image endpoint requirements
+            access_token = self._get_fatsecret_image_access_token()
+            payload = {
+                "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+                "include_food_data": True,
+                "region": "US",
+                "language": "en",
+            }
+            response = None
+            attempts = max(1, self.config.FATSECRET_IMAGE_RETRIES + 1)
+            for attempt in range(attempts):
+                try:
+                    response = requests.post(
+                        url,
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        },
+                        timeout=self.config.FATSECRET_IMAGE_TIMEOUT,
+                    )
+                    break
+                except requests.exceptions.Timeout:
+                    if attempt + 1 >= attempts:
+                        raise
+                    logger.warning(
+                        "FatSecret image recognition timed out after %ss; "
+                        "retrying once",
+                        self.config.FATSECRET_IMAGE_TIMEOUT,
+                    )
+
+            if response is None:
+                raise FatSecretAPIError(
+                    "FatSecret image recognition did not return a response."
+                )
+            response.raise_for_status()
+
+            data = response.json()
+            fatsecret_error = self._fatsecret_api_error(data)
+            if fatsecret_error:
+                code, message = fatsecret_error
+                logger.warning(
+                    "FatSecret image recognition API error %s: %s",
+                    code,
+                    message,
+                )
+                raise FatSecretAPIError(
+                    f"FatSecret image recognition API error {code}: {message}",
+                    details={
+                        "fatsecret_error": {
+                            "code": code,
+                            "message": message,
+                        }
+                    },
+                )
+
+            logger.info("Image sent to FatSecret successfully")
+
+            results = self._extract_fatsecret_recognition_results(data)
+            if not results:
+                logger.warning(
+                    "FatSecret returned no parseable foods. Response schema: %s",
+                    self._fatsecret_response_schema(data),
+                )
+            return results
+
+        except requests.exceptions.RequestException as e:
+            logger.error("FatSecret image recognition request failed: %s", str(e))
+            raise FatSecretAPIError(
+                f"FatSecret image recognition request failed: {str(e)}"
+            )
+        except (TypeError, ValueError) as e:
+            logger.error("FatSecret image recognition returned invalid JSON: %s", str(e))
+            raise FatSecretAPIError(
+                f"FatSecret image recognition returned invalid data: {str(e)}"
+            )
+
+    @staticmethod
+    def _fatsecret_api_error(data: Any) -> Optional[Tuple[str, str]]:
+        """Extract FatSecret errors returned inside an HTTP 200 JSON response."""
+        if not isinstance(data, dict):
+            return None
+
+        error = data.get("error")
+        if not isinstance(error, dict):
+            return None
+
+        code = str(error.get("code") or "unknown").strip()
+        message = str(error.get("message") or "Unknown FatSecret error").strip()
+        return code, message
+
+    def _get_fatsecret_image_access_token(self) -> str:
+        """Get and briefly cache an OAuth2 token with image-recognition scope."""
+        now = time.time()
+        if (
+            self._fatsecret_access_token
+            and now < self._fatsecret_token_expires_at
+        ):
+            return self._fatsecret_access_token
+
+        try:
             response = requests.post(
-                url,
-                files=files,
+                self.config.FATSECRET_OAUTH2_TOKEN_URL,
+                auth=(
+                    self.config.FATSECRET_CLIENT_ID,
+                    self.config.FATSECRET_CLIENT_SECRET,
+                ),
+                data={
+                    "grant_type": "client_credentials",
+                    "scope": self.config.FATSECRET_IMAGE_RECOGNITION_SCOPE,
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
                 timeout=self.config.REQUEST_TIMEOUT,
             )
-            response.raise_for_status()
-            
-            data = response.json()
-            logger.info("Image sent to FatSecret successfully")
-            
-            # Extract detected foods from response
-            # Format depends on FatSecret's actual API response
-            detected = data.get("detected_foods", data.get("foods", []))
-            
-            if not isinstance(detected, list):
-                detected = [detected] if detected else []
-            
-            return detected
-            
-        except Exception as e:
-            logger.error(f"Image recognition failed: {str(e)}")
-            raise FatSecretAPIError(f"Image recognition failed: {str(e)}")
+            if not response.ok:
+                error_message = self._fatsecret_oauth_error_message(response)
+                raise FatSecretAPIError(
+                    "Could not authenticate FatSecret image recognition: "
+                    f"{error_message}"
+                )
+            token_data = response.json()
+        except FatSecretAPIError:
+            raise
+        except requests.exceptions.RequestException as e:
+            raise FatSecretAPIError(
+                f"Could not authenticate FatSecret image recognition: {str(e)}"
+            )
+        except (TypeError, ValueError) as e:
+            raise FatSecretAPIError(
+                f"FatSecret OAuth2 returned invalid data: {str(e)}"
+            )
+
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise FatSecretAPIError(
+                "FatSecret OAuth2 response did not include an access token."
+            )
+
+        try:
+            expires_in = max(60, int(token_data.get("expires_in", 3600)))
+        except (TypeError, ValueError):
+            expires_in = 3600
+
+        self._fatsecret_access_token = str(access_token)
+        self._fatsecret_token_expires_at = now + max(30, expires_in - 60)
+        return self._fatsecret_access_token
+
+    @staticmethod
+    def _fatsecret_oauth_error_message(response: requests.Response) -> str:
+        """Return useful OAuth error details without exposing credentials."""
+        status = f"HTTP {response.status_code}"
+        try:
+            error_data = response.json()
+        except (TypeError, ValueError):
+            error_data = None
+
+        if isinstance(error_data, dict):
+            error = str(error_data.get("error") or "").strip()
+            description = str(
+                error_data.get("error_description")
+                or error_data.get("message")
+                or ""
+            ).strip()
+            details = ": ".join(part for part in (error, description) if part)
+            if details:
+                return f"{status} ({details})"
+
+        return status
+
+    @staticmethod
+    def _extract_fatsecret_recognition_results(
+        data: Any,
+    ) -> List[Dict[str, Any]]:
+        """Find food candidates across FatSecret's nested response containers."""
+        results = []
+        seen = set()
+        name_keys = {
+            "food_name",
+            "food_entry_name",
+            "food_label",
+            "food_description",
+            "name",
+            "description",
+            "label",
+            "suggestion",
+            "title",
+        }
+        id_keys = {"food_id", "foodId"}
+
+        def visit(value: Any) -> None:
+            if isinstance(value, list):
+                for child in value:
+                    visit(child)
+                return
+            if not isinstance(value, dict):
+                return
+
+            nested_food = value.get("food")
+            candidate = nested_food if isinstance(nested_food, dict) else value
+            has_name = any(candidate.get(key) for key in name_keys)
+            has_id = any(candidate.get(key) for key in id_keys)
+            if has_name or has_id:
+                identity = (
+                    str(candidate.get("food_id") or candidate.get("foodId") or ""),
+                    str(
+                        candidate.get("food_name")
+                        or candidate.get("food_entry_name")
+                        or candidate.get("food_label")
+                        or candidate.get("food_description")
+                        or candidate.get("name")
+                        or candidate.get("description")
+                        or candidate.get("label")
+                        or candidate.get("suggestion")
+                        or candidate.get("title")
+                        or ""
+                    ).lower(),
+                )
+                if identity not in seen:
+                    seen.add(identity)
+                    results.append(value)
+                return
+
+            for child in value.values():
+                visit(child)
+
+        visit(data)
+        logger.info(
+            "FatSecret image response contained %s usable candidate records",
+            len(results),
+        )
+        return results
+
+    @staticmethod
+    def _fatsecret_response_schema(data: Any) -> str:
+        """Summarize response paths without logging nutrition values or secrets."""
+        paths = []
+
+        def visit(value: Any, path: str, depth: int) -> None:
+            if len(paths) >= 80 or depth > 6:
+                return
+            if isinstance(value, dict):
+                keys = sorted(str(key) for key in value.keys())
+                paths.append(f"{path or '$'}:object({','.join(keys[:20])})")
+                for key, child in value.items():
+                    normalized_key = str(key).lower()
+                    if normalized_key in {
+                        "access_token",
+                        "client_id",
+                        "client_secret",
+                        "image",
+                        "image_b64",
+                    }:
+                        continue
+                    visit(child, f"{path}.{key}" if path else f"$.{key}", depth + 1)
+            elif isinstance(value, list):
+                paths.append(f"{path}:array[{len(value)}]")
+                if value:
+                    visit(value[0], f"{path}[0]", depth + 1)
+            else:
+                paths.append(f"{path}:{type(value).__name__}")
+
+        visit(data, "", 0)
+        return " | ".join(paths)

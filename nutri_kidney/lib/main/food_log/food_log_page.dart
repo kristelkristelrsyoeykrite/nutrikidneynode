@@ -1,6 +1,19 @@
 part of '../food_log.dart';
 
 class FoodLogPage extends StatefulWidget {
+  static Future<void> addMealPlanToFoodLog(
+    BuildContext context, {
+    required Map<String, dynamic> mealPlan,
+    required String? profileUserId,
+    required String selectedDate,
+    required Map<String, List<FoodItem>> loggedMeals,
+    required void Function() onStateChanged,
+    required bool Function(String, FoodItem, {String? exceptId}) hasDuplicateLogForMeal,
+    required Future<Map<String, dynamic>?> Function(Map<String, dynamic> request) submitFoodLogWithAllergyCheck,
+    required _FoodLogPageState pageState,
+  }) async {
+    await pageState._addMealPlanToFoodLog(mealPlan);
+  }
   const FoodLogPage({
     super.key,
     this.profileUserId,
@@ -37,9 +50,11 @@ class _FoodLogPageState extends State<FoodLogPage> {
   Map<String, dynamic>? _imageReviewFluidContribution;
   Map<String, dynamic>? _foodImageAiUsage;
   Map<String, dynamic> _nutritionTargets = {};
+  Map<String, dynamic>? _generatedMealPlan;
   bool _isLoadingImageReviewFluid = false;
   String? _imageReviewFluidContributionKey;
   bool _isSavingImageReview = false;
+  bool _isGeneratingMealPlan = false;
   String? _quickAddLoadingName;
   Timer? _searchDebounce;
   final TextEditingController _imageReviewQuantityController =
@@ -855,6 +870,1214 @@ class _FoodLogPageState extends State<FoodLogPage> {
           ) ==
           key;
     });
+  }
+
+  String _foodLogMealTypeForPlan(String mealType) {
+    final normalized = mealType.trim().toLowerCase();
+    if (normalized.contains('snack')) return 'Snacks';
+    if (normalized.contains('breakfast')) return 'Breakfast';
+    if (normalized.contains('lunch')) return 'Lunch';
+    if (normalized.contains('dinner')) return 'Dinner';
+    return mealType.trim().isEmpty ? 'Breakfast' : mealType.trim();
+  }
+
+  bool _hasDuplicateLogForMeal(
+    String mealType,
+    FoodItem food, {
+    String? exceptId,
+  }) {
+    final key = _logKeyFor(
+      mealType: mealType,
+      name: food.name,
+      portion: food.portion,
+      date: _selectedDate,
+    );
+    return (_loggedMeals[mealType] ?? []).any((existing) {
+      if (exceptId != null && existing.id == exceptId) return false;
+      return _logKeyFor(
+            mealType: mealType,
+            name: existing.name,
+            portion: existing.portion,
+            date: _selectedDate,
+          ) ==
+          key;
+    });
+  }
+
+  FoodItem _mealPlanFoodItem(Map<String, dynamic> meal) {
+    return FoodItem(
+      foodId: meal['foodId']?.toString(),
+      servingId: meal['servingId']?.toString(),
+      emoji: '\u{1F37D}\u{FE0F}',
+      name: meal['name']?.toString() ?? 'Food',
+      portion: meal['portion']?.toString() ?? '1 serving',
+      quantity: _asDouble(meal['quantity'] ?? 1),
+      calories: _asInt(meal['calories']),
+      time: DateFormat('h:mm a').format(DateTime.now()),
+      protein: _asDouble(meal['protein']),
+      carbohydrate: _asDouble(meal['carbohydrate']),
+      fat: _asDouble(meal['fat']),
+      sodium: _asDouble(meal['sodium']),
+      potassium: _asDouble(meal['potassium']),
+      phosphorus: _asDouble(meal['phosphorus']),
+      source: meal['source']?.toString() ?? 'fatsecret_meal_plan',
+      needsManualReview: meal['needsManualReview'] == true,
+      raw: meal,
+    );
+  }
+
+  Future<void> _generateMealPlan() async {
+    if (_isGeneratingMealPlan) return;
+    debugPrint(
+      'MEAL_PLAN_UI: generate tapped profileUserId=${widget.profileUserId ?? 'active'}',
+    );
+    setState(() {
+      _isGeneratingMealPlan = true;
+    });
+    bool generatingDialogOpen = false;
+    if (mounted) {
+      generatingDialogOpen = true;
+      unawaited(_showMealPlanGeneratingDialog());
+    }
+
+    try {
+      final response = await ApiService.generateMealPlan(
+        profileUserId: widget.profileUserId,
+        date: _selectedDate,
+        days: 7,
+      );
+      debugPrint(
+        'MEAL_PLAN_UI: response success=${response['success']} keys=${response.keys.join(',')}',
+      );
+      final mealPlan = response['mealPlan'];
+      if (!mounted) return;
+      if (mealPlan is! Map) {
+        debugPrint('MEAL_PLAN_UI: missing or invalid mealPlan payload');
+        throw Exception('Meal plan response was incomplete.');
+      }
+      final meals = _mealPlanMeals(Map<String, dynamic>.from(mealPlan));
+      final totals = mealPlan['totals'];
+      debugPrint(
+        'MEAL_PLAN_UI: generated meals=${meals.length} totals=$totals',
+      );
+      final generatedPlan = Map<String, dynamic>.from(mealPlan);
+      setState(() {
+        _generatedMealPlan = generatedPlan;
+      });
+      if (generatingDialogOpen && mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        generatingDialogOpen = false;
+      }
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => MealPlanPage(
+            mealPlan: generatedPlan,
+            profileUserId: widget.profileUserId,
+            selectedDate: _selectedDate,
+            onAddMealPlan: _addMealPlanToFoodLog,
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('MEAL_PLAN_UI: generate failed $e');
+      if (generatingDialogOpen && mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        generatingDialogOpen = false;
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to generate meal plan: $e')),
+      );
+    } finally {
+      if (generatingDialogOpen && mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      if (mounted) {
+        setState(() {
+          _isGeneratingMealPlan = false;
+        });
+      }
+      debugPrint('MEAL_PLAN_UI: generate finished');
+    }
+  }
+
+  Future<void> _showMealPlanGeneratingDialog() {
+    final tips = const [
+      'The plan is a guide. Add a meal to the food log only when the child actually eats it.',
+      'Recipe matches are checked against CKD rules, but caregivers should still review portions.',
+      'If no exact recipe is found, the app keeps the meal idea and marks it for review.',
+      'Recent food logs help the plan suggest familiar foods more often.',
+    ];
+    final faqs = const [
+      {
+        'q': 'Why does this take a moment?',
+        'a': 'The app checks profile limits, recent foods, FatSecret recipes, and ingredient rules.',
+      },
+      {
+        'q': 'What if a recipe is not exact?',
+        'a': 'It can still appear as a guide meal. Review it before adding it to the food log.',
+      },
+      {
+        'q': 'Will this automatically log meals?',
+        'a': 'No. Tap Add to Food Log on a meal only when the child chooses to eat it.',
+      },
+    ];
+
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Text('Generating Meal Plan'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 520),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: const [
+                      SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 3),
+                      ),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Checking CKD rules, meal history, and recipe matches.',
+                          style: TextStyle(
+                            color: Color(0xFF546E7A),
+                            fontSize: 13,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Helpful to Know',
+                    style: TextStyle(
+                      color: Color(0xFF37474F),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ...tips.map(
+                    (tip) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            Icons.check_circle_outline,
+                            color: Color(0xFF00A86B),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              tip,
+                              style: const TextStyle(
+                                color: Color(0xFF607D8B),
+                                fontSize: 12,
+                                height: 1.35,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Quick FAQ',
+                    style: TextStyle(
+                      color: Color(0xFF37474F),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ...faqs.map((faq) {
+                    return Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FBFA),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFE0F2F1)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            faq['q'] ?? '',
+                            style: const TextStyle(
+                              color: Color(0xFF00695C),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            faq['a'] ?? '',
+                            style: const TextStyle(
+                              color: Color(0xFF607D8B),
+                              fontSize: 12,
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _addMealPlanToFoodLog(Map<String, dynamic> mealPlan) async {
+    final plannedMeals = _mealPlanMeals(mealPlan);
+    if (plannedMeals.isEmpty) {
+      debugPrint('MEAL_PLAN_UI: add skipped because plan has no meals');
+      throw Exception('No generated meals to add.');
+    }
+
+    debugPrint('MEAL_PLAN_UI: adding ${plannedMeals.length} generated meals');
+    int addedCount = 0;
+    for (final meal in plannedMeals) {
+      final planMealType = meal['mealType']?.toString() ?? 'Meal';
+      final mealType = _foodLogMealTypeForPlan(planMealType);
+      final food = _mealPlanFoodItem(meal);
+      final plannedDate = meal['date']?.toString() ?? _selectedDate;
+      debugPrint(
+        'MEAL_PLAN_UI: add meal planMealType=$planMealType foodLogMealType=$mealType name=${food.name}',
+      );
+      if (plannedDate == _selectedDate && _hasDuplicateLogForMeal(mealType, food)) {
+        debugPrint('MEAL_PLAN_UI: duplicate skipped name=${food.name}');
+        continue;
+      }
+
+      final response = await _submitFoodLogWithAllergyCheck({
+        'mealType': mealType,
+        'date': plannedDate,
+        'foodId': food.foodId,
+        'servingId': food.servingId,
+        'quantity': food.quantity,
+        'name': food.name,
+        'portion': food.portion,
+        'calories': food.calories,
+        'protein': food.protein,
+        'carbohydrate': food.carbohydrate,
+        'fat': food.fat,
+        'sodium': food.sodium,
+        'potassium': food.potassium,
+        'phosphorus': food.phosphorus,
+        'source': food.source,
+        'needsManualReview': food.needsManualReview,
+        'raw': {
+          ...?food.raw,
+          'planMealType': planMealType,
+        },
+      });
+      if (response == null) {
+        debugPrint('MEAL_PLAN_UI: add cancelled name=${food.name}');
+        continue;
+      }
+      if (response['success'] == false) {
+        debugPrint(
+          'MEAL_PLAN_UI: add failed name=${food.name} error=${response['error']}',
+        );
+        throw Exception(response['error'] ?? 'Could not save ${food.name}.');
+      }
+      final log = response['log'];
+      final savedFood = log is Map
+          ? FoodItem.fromLog(Map<String, dynamic>.from(log))
+          : food;
+      if (!mounted) return;
+      if (plannedDate == _selectedDate) {
+        setState(() {
+          _loggedMeals.putIfAbsent(mealType, () => []).add(savedFood);
+        });
+      }
+      addedCount += 1;
+      debugPrint('MEAL_PLAN_UI: added name=${food.name} count=$addedCount');
+    }
+
+    if (addedCount == 0) {
+      debugPrint('MEAL_PLAN_UI: no new generated meals were added');
+      throw Exception('All generated meals are already logged.');
+    }
+    await _loadGamificationSummary(showAchievementPopup: true);
+    unawaited(_loadNutritionTargets());
+    debugPrint('MEAL_PLAN_UI: add complete addedCount=$addedCount');
+  }
+
+  Future<void> _addMealPlanMealToFoodLog(
+    Map<String, dynamic> meal,
+    String plannedDate,
+  ) async {
+    await _addMealPlanToFoodLog({
+      'planDate': plannedDate,
+      'planDays': 1,
+      'days': [
+        {
+          'date': plannedDate,
+          'meals': [meal],
+          'totals': meal['nutrientPreview'] ?? const <String, dynamic>{},
+        }
+      ],
+      'meals': [meal],
+    });
+  }
+
+  Map<String, dynamic> _mealPlanComponentAsMeal(
+    Map<String, dynamic> component,
+    Map<String, dynamic> parentMeal,
+    String plannedDate,
+  ) {
+    final nutrients = component['nutrients'] is Map
+        ? Map<String, dynamic>.from(component['nutrients'] as Map)
+        : const <String, dynamic>{};
+    return {
+      'date': plannedDate,
+      'mealType': parentMeal['mealType'] ?? 'Meal',
+      'foodId': component['foodId'],
+      'name': component['matchedName'] ?? component['name'] ?? component['component'] ?? 'Food',
+      'portion': component['portion'] ?? '1 serving',
+      'quantity': 1,
+      'calories': nutrients['calories'] ?? 0,
+      'protein': nutrients['protein'] ?? 0,
+      'carbohydrate': nutrients['carbohydrate'] ?? 0,
+      'fat': nutrients['fat'] ?? 0,
+      'sodium': nutrients['sodium'] ?? 0,
+      'potassium': nutrients['potassium'] ?? 0,
+      'phosphorus': nutrients['phosphorus'] ?? 0,
+      'source': component['source'] ?? parentMeal['source'] ?? 'fatsecret_component_meal_plan',
+      'needsManualReview':
+          component['needsManualReview'] == true || parentMeal['needsManualReview'] == true,
+      'raw': {
+        'parentMealPlan': parentMeal,
+        'componentMealPlan': component,
+      },
+    };
+  }
+
+  Future<void> _addMealPlanComponentToFoodLog(
+    Map<String, dynamic> component,
+    Map<String, dynamic> parentMeal,
+    String plannedDate,
+  ) async {
+    await _addMealPlanMealToFoodLog(
+      _mealPlanComponentAsMeal(component, parentMeal, plannedDate),
+      plannedDate,
+    );
+  }
+
+  List<Map<String, dynamic>> _mealPlanMeals(Map<String, dynamic> mealPlan) {
+    final days = mealPlan['days'];
+    if (days is List && days.isNotEmpty) {
+      return days
+          .whereType<Map>()
+          .expand((rawDay) {
+            final day = Map<String, dynamic>.from(rawDay);
+            final date = day['date']?.toString();
+            final meals = day['meals'];
+            if (meals is! List) return const <Map<String, dynamic>>[];
+            return meals.whereType<Map>().map((rawMeal) {
+              return {
+                if (date != null) 'date': date,
+                ...Map<String, dynamic>.from(rawMeal),
+              };
+            });
+          })
+          .toList(growable: false);
+    }
+
+    final meals = mealPlan['meals'];
+    if (meals is! List) return const <Map<String, dynamic>>[];
+    return meals
+        .whereType<Map>()
+        .map((meal) => Map<String, dynamic>.from(meal))
+        .toList(growable: false);
+  }
+
+  List<Map<String, dynamic>> _mealPlanDays(Map<String, dynamic> mealPlan) {
+    final rawDays = mealPlan['days'];
+    if (rawDays is List && rawDays.isNotEmpty) {
+      return rawDays
+          .whereType<Map>()
+          .map((day) => Map<String, dynamic>.from(day))
+          .toList(growable: false);
+    }
+    return [
+      {
+        'date': mealPlan['planDate'] ?? _selectedDate,
+        'meals': mealPlan['meals'] ?? const [],
+        'totals': mealPlan['totals'] ?? const <String, dynamic>{},
+      }
+    ];
+  }
+
+  String _mealPlanProfileLine(Map<String, dynamic> profile) {
+    final parts = <String>[
+      if (profile['stage'] != null) 'CKD ${profile['stage']}',
+      if (profile['egfr'] != null) 'eGFR ${profile['egfr']}',
+      'K ${profile['potassiumStatus'] ?? 'Unknown'}',
+      'Phos ${profile['phosphorusStatus'] ?? 'Unknown'}',
+      if (profile['diabetesRisk'] == true) 'diabetes risk',
+      'BMI ${profile['bmiCategory'] ?? 'Unknown'}',
+    ];
+    return parts.join(' | ');
+  }
+
+  String _mealPlanRecommendationLine(Map<String, dynamic> mealPlan) {
+    final history = mealPlan['historyRecommendations'];
+    if (history is! Map) return '';
+    final messages = history['messages'];
+    if (messages is List && messages.isNotEmpty) {
+      return messages.take(2).map((message) => message.toString()).join(' ');
+    }
+    final logCount = _asInt(history['logCount']);
+    return logCount > 0
+        ? 'Used $logCount recent food logs to personalize this plan.'
+        : '';
+  }
+
+  String _mealPlanComponentLine(Map<String, dynamic> meal) {
+    final components = meal['componentBreakdown'];
+    if (components is! List || components.isEmpty) return '';
+    return components.whereType<Map>().map((component) {
+      final data = Map<String, dynamic>.from(component);
+      final nutrients = data['nutrients'] is Map
+          ? Map<String, dynamic>.from(data['nutrients'] as Map)
+          : const <String, dynamic>{};
+      return '${data['component'] ?? data['matchedName'] ?? 'Food'}: '
+          '${_asInt(nutrients['calories'])} kcal, '
+          '${_asDouble(nutrients['sodium']).round()}mg sodium';
+    }).join(' | ');
+  }
+
+  String _mealPlanMatchLine(Map<String, dynamic> meal) {
+    final confidence = meal['matchConfidence']?.toString() ?? '';
+    final source = meal['source']?.toString() ?? '';
+    if (confidence == 'unresolved' || source == 'unresolved_guide_meal_plan') {
+      return 'No exact recipe match yet. This stays in the plan as a guide; nutrition can be reviewed when logged.';
+    }
+    if ((meal['recipeValidation'] is Map) &&
+        Map<String, dynamic>.from(meal['recipeValidation'] as Map)['isAllowed'] ==
+            true) {
+      return 'Recipe passed ingredient validation.';
+    }
+    if ((meal['componentBreakdown'] is List) &&
+        (meal['componentBreakdown'] as List).isNotEmpty) {
+      return 'Nutrition estimated from ingredient breakdown.';
+    }
+    if (meal['needsManualReview'] == true) {
+      return 'Review before logging.';
+    }
+    return '';
+  }
+
+  String _mealPlanDayLabel(String? date, int index) {
+    if (date == _selectedDate) return 'Meal plan for today';
+    final parsed = DateTime.tryParse(date ?? '');
+    if (parsed != null) {
+      final tomorrow = DateFormat('yyyy-MM-dd').format(
+        DateTime.now().add(const Duration(days: 1)),
+      );
+      if (date == tomorrow) return 'Meal plan for tomorrow';
+      return 'Meal plan for ${DateFormat('MMM d').format(parsed)}';
+    }
+    return 'Meal plan day ${index + 1}';
+  }
+
+  Future<void> _showMealPlanDialog(Map<String, dynamic> mealPlan) async {
+    bool isAddingPlan = false;
+    String? selectedComponentKey;
+    int selectedDayIndex = 0;
+    final days = _mealPlanDays(mealPlan);
+    final meals = _mealPlanMeals(mealPlan);
+    final profile = mealPlan['nutritionProfile'] is Map
+        ? Map<String, dynamic>.from(mealPlan['nutritionProfile'] as Map)
+        : const <String, dynamic>{};
+    final totals = mealPlan['totals'] is Map
+        ? Map<String, dynamic>.from(mealPlan['totals'] as Map)
+        : const <String, dynamic>{};
+    final restrictions = mealPlan['restrictions'] is Map
+        ? Map<String, dynamic>.from(mealPlan['restrictions'] as Map)
+        : const <String, dynamic>{};
+    final avoid = restrictions['avoid'] is List
+        ? (restrictions['avoid'] as List).take(8).join(', ')
+        : '';
+    final recommendationLine = _mealPlanRecommendationLine(mealPlan);
+    final planDays = _asInt(mealPlan['planDays'] ?? days.length);
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: Text('$planDays-Day Meal Plan'),
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 520),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        mealPlan['displayMessage']?.toString() ??
+                            'Meal plans are generated based on your profile and latest laboratory results.',
+                        style: const TextStyle(
+                          color: Color(0xFF546E7A),
+                          fontSize: 13,
+                          height: 1.35,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        _mealPlanProfileLine(profile),
+                        style: const TextStyle(
+                          color: Color(0xFF37474F),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (avoid.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Avoid or limit: $avoid',
+                          style: const TextStyle(
+                            color: Color(0xFF78909C),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                      if (recommendationLine.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          recommendationLine,
+                          style: const TextStyle(
+                            color: Color(0xFF607D8B),
+                            fontSize: 12,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 14),
+                      DropdownButtonFormField<int>(
+                        value: selectedDayIndex,
+                        decoration: InputDecoration(
+                          labelText: 'View',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                        ),
+                        items: days.asMap().entries.map((entry) {
+                          final day = entry.value;
+                          return DropdownMenuItem<int>(
+                            value: entry.key,
+                            child: Text(
+                              _mealPlanDayLabel(
+                                day['date']?.toString(),
+                                entry.key,
+                              ),
+                            ),
+                          );
+                        }).toList(growable: false),
+                        onChanged: isAddingPlan
+                            ? null
+                            : (value) {
+                                if (value == null) return;
+                                setStateDialog(() {
+                                  selectedDayIndex = value;
+                                  selectedComponentKey = null;
+                                });
+                              },
+                      ),
+                      const SizedBox(height: 14),
+                      ...days.asMap().entries
+                          .where((entry) => entry.key == selectedDayIndex)
+                          .map((entry) {
+                        final day = entry.value;
+                        final dayMeals = day['meals'] is List
+                            ? (day['meals'] as List)
+                                .whereType<Map>()
+                                .map((meal) => Map<String, dynamic>.from(meal))
+                                .toList(growable: false)
+                            : const <Map<String, dynamic>>[];
+                        final dayTotals = day['totals'] is Map
+                            ? Map<String, dynamic>.from(day['totals'] as Map)
+                            : const <String, dynamic>{};
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              day['date']?.toString() ?? 'Planned day',
+                              style: const TextStyle(
+                                color: Color(0xFF00695C),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            ...dayMeals.map((meal) {
+                              final componentLine = _mealPlanComponentLine(meal);
+                              final matchLine = _mealPlanMatchLine(meal);
+                              final components = meal['componentBreakdown'] is List
+                                  ? (meal['componentBreakdown'] as List)
+                                      .whereType<Map>()
+                                      .map((component) =>
+                                          Map<String, dynamic>.from(component))
+                                      .toList(growable: false)
+                                  : const <Map<String, dynamic>>[];
+                              final plannedDate =
+                                  day['date']?.toString() ?? _selectedDate;
+                              return Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF8FBFA),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFFE0F2F1)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                meal['mealType']?.toString() ?? 'Meal',
+                                style: const TextStyle(
+                                  color: Color(0xFF00A86B),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                meal['name']?.toString() ?? 'Food',
+                                style: const TextStyle(
+                                  color: Color(0xFF37474F),
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${meal['portion'] ?? '1 serving'} | ${_asInt(meal['calories'])} kcal | ${_asDouble(meal['protein']).toStringAsFixed(1)}g protein | ${_asDouble(meal['sodium']).round()}mg sodium',
+                                style: const TextStyle(
+                                  color: Color(0xFF607D8B),
+                                  fontSize: 12,
+                                ),
+                              ),
+                              if (componentLine.isNotEmpty && components.isEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Breakdown: $componentLine',
+                                  style: const TextStyle(
+                                    color: Color(0xFF78909C),
+                                    fontSize: 11,
+                                    height: 1.3,
+                                  ),
+                                ),
+                              ],
+                              if (matchLine.isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  matchLine,
+                                  style: const TextStyle(
+                                    color: Color(0xFF78909C),
+                                    fontSize: 11,
+                                    height: 1.3,
+                                  ),
+                                ),
+                              ],
+                              if (components.isNotEmpty) ...[
+                                const SizedBox(height: 10),
+                                Text(
+                                  '${meal['mealType'] ?? 'Meal'}: view foods for ${meal['mealType'] ?? 'this meal'}',
+                                  style: const TextStyle(
+                                    color: Color(0xFF00695C),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                ...components.map((component) {
+                                  final nutrients = component['nutrients'] is Map
+                                      ? Map<String, dynamic>.from(
+                                          component['nutrients'] as Map)
+                                      : const <String, dynamic>{};
+                                  final componentKey =
+                                      '${plannedDate}_${meal['mealType']}_${component['component']}_${component['foodId']}_${component['matchedName']}';
+                                  final isSelected =
+                                      selectedComponentKey == componentKey;
+                                  final suggestions =
+                                      component['suggestions'] is List
+                                          ? (component['suggestions'] as List)
+                                              .whereType<Map>()
+                                              .map((suggestion) =>
+                                                  Map<String, dynamic>.from(
+                                                      suggestion))
+                                              .toList(growable: false)
+                                          : const <Map<String, dynamic>>[];
+                                  return Container(
+                                    width: double.infinity,
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? const Color(0xFF80CBC4)
+                                            : const Color(0xFFE0F2F1),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        InkWell(
+                                          onTap: () {
+                                            setStateDialog(() {
+                                              selectedComponentKey = isSelected
+                                                  ? null
+                                                  : componentKey;
+                                            });
+                                          },
+                                          child: Row(
+                                            children: [
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      component['matchedName']
+                                                              ?.toString() ??
+                                                          component['component']
+                                                              ?.toString() ??
+                                                          'Food',
+                                                      style: const TextStyle(
+                                                        color:
+                                                            Color(0xFF37474F),
+                                                        fontSize: 13,
+                                                        fontWeight:
+                                                            FontWeight.w800,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 2),
+                                                    Text(
+                                                      '${component['portion'] ?? '1 serving'} | ${_asInt(nutrients['calories'])} kcal | ${_asDouble(nutrients['sodium']).round()}mg sodium',
+                                                      style: const TextStyle(
+                                                        color:
+                                                            Color(0xFF78909C),
+                                                        fontSize: 11,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              Icon(
+                                                isSelected
+                                                    ? Icons.expand_less
+                                                    : Icons.expand_more,
+                                                color: const Color(0xFF00897B),
+                                                size: 20,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        if (isSelected) ...[
+                                          const SizedBox(height: 8),
+                                          Align(
+                                            alignment: Alignment.centerRight,
+                                            child: TextButton.icon(
+                                              onPressed: isAddingPlan
+                                                  ? null
+                                                  : () async {
+                                                      setStateDialog(() {
+                                                        isAddingPlan = true;
+                                                      });
+                                                      try {
+                                                        await _addMealPlanComponentToFoodLog(
+                                                          component,
+                                                          meal,
+                                                          plannedDate,
+                                                        );
+                                                        if (!mounted) return;
+                                                        ScaffoldMessenger.of(
+                                                                context)
+                                                            .showSnackBar(
+                                                          SnackBar(
+                                                            content: Text(
+                                                              '${component['matchedName'] ?? component['component'] ?? 'Food'} added to food log.',
+                                                            ),
+                                                          ),
+                                                        );
+                                                      } catch (e) {
+                                                        if (!mounted) return;
+                                                        ScaffoldMessenger.of(
+                                                                context)
+                                                            .showSnackBar(
+                                                          SnackBar(
+                                                            content: Text(
+                                                              'Unable to add food: $e',
+                                                            ),
+                                                          ),
+                                                        );
+                                                      } finally {
+                                                        if (dialogContext
+                                                            .mounted) {
+                                                          setStateDialog(() {
+                                                            isAddingPlan =
+                                                                false;
+                                                          });
+                                                        }
+                                                      }
+                                                    },
+                                              icon: const Icon(
+                                                Icons.playlist_add_check,
+                                                size: 18,
+                                              ),
+                                              label: const Text(
+                                                'Add to Food Log',
+                                              ),
+                                            ),
+                                          ),
+                                          if (suggestions.isNotEmpty) ...[
+                                            const SizedBox(height: 6),
+                                            const Text(
+                                              'More with this ingredient',
+                                              style: TextStyle(
+                                                color: Color(0xFF607D8B),
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 4),
+                                            ...suggestions.map((suggestion) {
+                                              final suggestionNutrients =
+                                                  suggestion['nutrients'] is Map
+                                                      ? Map<String, dynamic>.from(
+                                                          suggestion['nutrients']
+                                                              as Map)
+                                                      : const <String,
+                                                          dynamic>{};
+                                              return Padding(
+                                                padding: const EdgeInsets.only(
+                                                  top: 4,
+                                                ),
+                                                child: Row(
+                                                  children: [
+                                                    Expanded(
+                                                      child: Text(
+                                                        suggestion['name']
+                                                                ?.toString() ??
+                                                            'Food',
+                                                        style:
+                                                            const TextStyle(
+                                                          color:
+                                                              Color(0xFF607D8B),
+                                                          fontSize: 11,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    Text(
+                                                      '${_asInt(suggestionNutrients['calories'])} kcal',
+                                                      style:
+                                                          const TextStyle(
+                                                        color:
+                                                            Color(0xFF90A4AE),
+                                                        fontSize: 11,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              );
+                                            }),
+                                          ],
+                                        ],
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ],
+                              const SizedBox(height: 8),
+                              if (components.isEmpty)
+                                Align(
+                                  alignment: Alignment.centerRight,
+                                  child: TextButton.icon(
+                                    onPressed: isAddingPlan
+                                        ? null
+                                        : () async {
+                                            setStateDialog(() {
+                                              isAddingPlan = true;
+                                            });
+                                            try {
+                                              await _addMealPlanMealToFoodLog(
+                                                meal,
+                                                day['date']?.toString() ??
+                                                    _selectedDate,
+                                              );
+                                              if (!mounted) return;
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    '${meal['name'] ?? 'Meal'} added to food log.',
+                                                  ),
+                                                ),
+                                              );
+                                            } catch (e) {
+                                              if (!mounted) return;
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Unable to add meal: $e',
+                                                  ),
+                                                ),
+                                              );
+                                            } finally {
+                                              if (dialogContext.mounted) {
+                                                setStateDialog(() {
+                                                  isAddingPlan = false;
+                                                });
+                                              }
+                                            }
+                                          },
+                                    icon: const Icon(
+                                      Icons.playlist_add_check,
+                                      size: 18,
+                                    ),
+                                    label: const Text('Add to Food Log'),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                            }),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 14),
+                              child: Text(
+                                'Day totals: ${_asInt(dayTotals['calories'])} kcal, ${_asDouble(dayTotals['protein']).toStringAsFixed(1)}g protein, ${_asDouble(dayTotals['sodium']).round()}mg sodium, ${_asDouble(dayTotals['potassium']).round()}mg potassium, ${_asDouble(dayTotals['phosphorus']).round()}mg phosphorus',
+                                style: const TextStyle(
+                                  color: Color(0xFF37474F),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      }),
+                      const SizedBox(height: 4),
+                      Text(
+                        meals.length > 5
+                            ? 'First day totals: ${_asInt(totals['calories'])} kcal, ${_asDouble(totals['protein']).toStringAsFixed(1)}g protein, ${_asDouble(totals['sodium']).round()}mg sodium, ${_asDouble(totals['potassium']).round()}mg potassium, ${_asDouble(totals['phosphorus']).round()}mg phosphorus'
+                            : 'Daily totals: ${_asInt(totals['calories'])} kcal, ${_asDouble(totals['protein']).toStringAsFixed(1)}g protein, ${_asDouble(totals['sodium']).round()}mg sodium, ${_asDouble(totals['potassium']).round()}mg potassium, ${_asDouble(totals['phosphorus']).round()}mg phosphorus',
+                        style: const TextStyle(
+                          color: Color(0xFF37474F),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isAddingPlan
+                      ? null
+                      : () => Navigator.pop(dialogContext),
+                  child: const Text('Close'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildMealPlanGeneratorCard() {
+    final existingPlan = _generatedMealPlan;
+    final hasPlan = existingPlan != null;
+    final planDays = existingPlan != null
+        ? _asInt(existingPlan['planDays'] ?? _mealPlanDays(existingPlan).length)
+        : 7;
+    final mealCount = existingPlan != null ? _mealPlanMeals(existingPlan).length : 0;
+
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(hasPlan ? 12 : 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7FCFA),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFBFE8CB)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (hasPlan) ...[
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isGeneratingMealPlan ? null : _generateMealPlan,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00BFA5),
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: const Color(0xFFB2DFDB),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+                icon: _isGeneratingMealPlan
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.refresh, size: 18),
+                label: Text(
+                  _isGeneratingMealPlan ? 'Generating...' : 'Generate Again',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00BFA5),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.restaurant_menu,
+                  color: Colors.white,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      hasPlan ? '$planDays-Day Meal Plan Ready' : 'Generate Meal Plan',
+                      style: const TextStyle(
+                        color: Color(0xFF37474F),
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      hasPlan
+                          ? '$mealCount guide meals available. View the plan and add meals when you choose to eat them.'
+                          : 'Based on profile, latest labs, CKD dietary guidelines, and FatSecret recipes.',
+                      style: const TextStyle(
+                        color: Color(0xFF78909C),
+                        fontSize: 12,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (hasPlan)
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => _showMealPlanDialog(existingPlan!),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF00897B),
+                  side: const BorderSide(color: Color(0xFF80CBC4)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+                icon: const Icon(Icons.visibility, size: 18),
+                label: const Text(
+                  'View Meal Plan',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isGeneratingMealPlan ? null : _generateMealPlan,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00BFA5),
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: const Color(0xFFB2DFDB),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: _isGeneratingMealPlan
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.auto_awesome, size: 18),
+                label: Text(
+                  _isGeneratingMealPlan ? 'Generating...' : 'Generate Plan',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<bool> _confirmAllergyWarning(Map<String, dynamic> response) async {
@@ -2995,6 +4218,8 @@ class _FoodLogPageState extends State<FoodLogPage> {
                 ),
               ),
               const SizedBox(height: 16),
+              _buildMealPlanGeneratorCard(),
+              const SizedBox(height: 20),
 
               // --- Camera Card ---
               Container(

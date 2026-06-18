@@ -189,6 +189,82 @@ async def recognize_food_from_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=status_code, detail=error_response)
 
 
+@app.get("/api/v1/recipes/search", tags=["Recipe Search"])
+@app.post("/api/v1/recipes/search", tags=["Recipe Search"])
+async def search_recipes(
+    query: str = Query(..., min_length=2, max_length=100, description="Recipe search query"),
+    page: int = Query(0, ge=0, description="Page number for pagination"),
+    max_calories: Optional[int] = Query(None, ge=0, description="Maximum calories filter"),
+):
+    """
+    Search for recipes by text query using FatSecret recipes.search.v3.
+    
+    Algorithm:
+    1. Validate query
+    2. Search FatSecret recipe database
+    3. Normalize results with nutrition data
+    4. Return recipe list with ingredients and nutrition info
+    
+    Best for: Meal planning, generating balanced meals
+    
+    Args:
+        query: Recipe search query (e.g., "chicken with rice")
+        page: Results page number (0-indexed)
+        max_calories: Optional max calories filter
+        
+    Returns:
+        List of matching recipes with nutrition information and ingredients
+        
+    Example:
+        GET /api/v1/recipes/search?query=chicken+rice&page=0&max_calories=500
+    """
+    try:
+        service = get_service()
+        result = service.search_recipes(query, page, max_calories)
+        return result
+    except NutriKidneyServiceError as e:
+        error_response, status_code = ResponseFormatter.error_response(e)
+        raise HTTPException(status_code=status_code, detail=error_response)
+    except Exception as e:
+        logger.error(f"Search recipes error: {str(e)}")
+        error_response, status_code = ResponseFormatter.error_response(e)
+        raise HTTPException(status_code=status_code, detail=error_response)
+
+
+@app.get("/api/v1/recipes/{recipe_id}", tags=["Recipe Details"])
+async def get_recipe_details(recipe_id: str):
+    """
+    Get detailed information for a specific recipe.
+    
+    Algorithm:
+    1. Validate recipe ID
+    2. Fetch from FatSecret
+    3. Extract ingredients, instructions, nutrition
+    4. Normalize nutrition fields
+    5. Return complete recipe data
+    
+    Args:
+        recipe_id: FatSecret recipe ID (from search results)
+        
+    Returns:
+        Complete recipe data including ingredients and full nutrition
+        
+    Example:
+        GET /api/v1/recipes/54321
+    """
+    try:
+        service = get_service()
+        result = service.get_recipe_details(recipe_id)
+        return result
+    except NutriKidneyServiceError as e:
+        error_response, status_code = ResponseFormatter.error_response(e)
+        raise HTTPException(status_code=status_code, detail=error_response)
+    except Exception as e:
+        logger.error(f"Get recipe details error: {str(e)}")
+        error_response, status_code = ResponseFormatter.error_response(e)
+        raise HTTPException(status_code=status_code, detail=error_response)
+
+
 @app.post("/meal-logging/search", tags=["Meal Logging"])
 async def meal_logging_search(payload: dict = Body(...)):
     """Search foods for the staged meal-logging flow."""

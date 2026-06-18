@@ -103,6 +103,68 @@ class ResponseFormatter:
         return response.model_dump()
 
     @staticmethod
+    def recipe_search_response(
+        recipes: List[Nutrition],
+        query: str,
+        total_results: int,
+    ) -> Dict[str, Any]:
+        """
+        Format recipe search response.
+        
+        Args:
+            recipes: List of normalized Nutrition objects from recipes
+            query: Original search query
+            total_results: Total matching results
+            
+        Returns:
+            Formatted response dict
+        """
+        result = FoodSearchResult(
+            foods=recipes,  # Reuse FoodSearchResult since structure is similar
+            total_results=total_results,
+            query=query,
+        )
+
+        response = SuccessResponse(
+            success=True,
+            query_type="recipe_search",
+            result=result.model_dump(),
+            timestamp=ResponseFormatter.get_timestamp(),
+        )
+
+        logger.info(f"Recipe search response: {len(recipes)} results for '{query}'")
+        return response.model_dump()
+
+    @staticmethod
+    def recipe_detail_response(
+        nutrition: Nutrition,
+        ingredients: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Format recipe detail response.
+        
+        Args:
+            nutrition: Normalized Nutrition object from recipe
+            ingredients: List of ingredient objects if available
+            
+        Returns:
+            Formatted response dict
+        """
+        result = nutrition.model_dump()
+        if ingredients:
+            result["ingredients"] = ingredients
+
+        response = SuccessResponse(
+            success=True,
+            query_type="recipe_detail",
+            result=result,
+            timestamp=ResponseFormatter.get_timestamp(),
+        )
+
+        logger.info(f"Recipe detail response: {nutrition.food_name}")
+        return response.model_dump()
+
+    @staticmethod
     def image_recognition_response(
         detected_foods: List[Nutrition],
         confidence_scores: List[float],

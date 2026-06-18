@@ -51,6 +51,8 @@ class FatSecretClient:
         self._search_cache: Dict[str, Dict[str, Any]] = {}
         self._search_cache_lock = RLock()
         self._search_cache_ttl_seconds = 24 * 60 * 60
+        self._platform_access_token: Optional[str] = None
+        self._platform_access_token_expires_at: float = 0.0
 
     def _validate_credentials(self) -> None:
         """Ensure API credentials are available."""
@@ -131,6 +133,83 @@ class FatSecretClient:
             "FatSecret rejected the OAuth timestamp. Check the machine clock and try again.",
             details={"fatsecret_error": last_timestamp_error or {"code": 6}},
         )
+
+    def _get_platform_access_token(self) -> str:
+        """Get an OAuth2 bearer token for platform REST endpoints."""
+        if (
+            self._platform_access_token
+            and time.time() < self._platform_access_token_expires_at - 60
+        ):
+            return self._platform_access_token
+
+        try:
+            response = requests.post(
+                self.config.FATSECRET_OAUTH2_TOKEN_URL,
+                auth=(
+                    self.config.FATSECRET_CLIENT_ID,
+                    self.config.FATSECRET_CLIENT_SECRET,
+                ),
+                data={
+                    "grant_type": "client_credentials",
+                    "scope": self.config.FATSECRET_PLATFORM_SCOPE,
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                timeout=self.config.REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            token_data = response.json()
+        except requests.exceptions.Timeout:
+            raise ServiceTimeoutError("FatSecret OAuth2 token request timed out")
+        except requests.exceptions.RequestException as e:
+            raise AuthenticationError(f"FatSecret OAuth2 token request failed: {str(e)}")
+        except ValueError as e:
+            raise AuthenticationError(f"FatSecret OAuth2 returned invalid JSON: {str(e)}")
+
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise AuthenticationError("FatSecret OAuth2 response did not include an access token")
+
+        expires_in = int(token_data.get("expires_in") or 3600)
+        self._platform_access_token = str(access_token)
+        self._platform_access_token_expires_at = time.time() + expires_in
+        return self._platform_access_token
+
+    def _make_platform_get_request(
+        self,
+        url: str,
+        params: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Make a bearer-token GET request to a FatSecret platform endpoint."""
+        token = self._get_platform_access_token()
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                timeout=self.config.REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.exceptions.Timeout:
+            raise ServiceTimeoutError("FatSecret platform request timed out")
+        except requests.exceptions.RequestException as e:
+            raise FatSecretAPIError(f"FatSecret platform request failed: {str(e)}")
+        except ValueError as e:
+            raise FatSecretAPIError(f"FatSecret platform returned invalid JSON: {str(e)}")
+
+        if "error" in data:
+            raise FatSecretAPIError(
+                f"FatSecret platform API error: {data.get('error')}",
+                details={"fatsecret_error": data.get("error")},
+            )
+
+        return data
 
     @staticmethod
     def _is_timestamp_error(error: Any) -> bool:
@@ -264,6 +343,134 @@ class FatSecretClient:
         staging flow, so we reuse the standard details lookup here.
         """
         return self.get_food_details(food_id)
+
+    def search_recipes(
+        self,
+        query: str,
+        page: int = 0,
+        max_calories: Optional[int] = None,
+        recipe_types: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Search for recipes by text query using recipes.search.v3.
+        
+        Algorithm:
+        1. Validate query
+        2. Send request with optional filters (calories, recipe type, etc.)
+        3. Return raw recipe results with recipe_id, name, image, nutrition
+        
+        Args:
+            query: Recipe search query (e.g., "chicken with rice")
+            page: Page number for pagination (0-indexed)
+            max_calories: Optional max calories filter
+            recipe_types: Optional recipe type filter (e.g., "main_course")
+            
+        Returns:
+            Raw FatSecret recipe search results including recipe_id, nutrition
+            
+        Raises:
+            ValidationError: If query is invalid
+            FatSecretAPIError: If API request fails
+            NoResultsError: If no results found
+        """
+        # Validate query
+        if not query or not isinstance(query, str):
+            raise ValidationError("Recipe query must be a non-empty string")
+        
+        query = query.strip()
+        if len(query) < 2:
+            raise ValidationError("Recipe query must be at least 2 characters")
+        if len(query) > 100:
+            raise ValidationError("Recipe query must be less than 100 characters")
+        
+        logger.info(f"Searching recipes: {query}, page {page}")
+        
+        params = {
+            "search_expression": query,
+            "page_number": str(page),
+            "format": "json",
+        }
+        
+        # Add optional filters
+        if max_calories is not None and max_calories > 0:
+            params["max_calories"] = str(max_calories)
+        if recipe_types:
+            params["recipe_types"] = recipe_types
+        
+        try:
+            response = self._make_platform_get_request(
+                self.config.FATSECRET_RECIPE_SEARCH_URL,
+                params,
+            )
+        except Exception as platform_error:
+            logger.warning(
+                "FatSecret platform recipe search failed; falling back to server.api: %s",
+                str(platform_error),
+            )
+            fallback_params = {
+                **params,
+                "method": "recipes.search.v3",
+            }
+            response = self._make_request(fallback_params)
+        
+        # Check if results exist
+        recipes = response.get("recipes", {}).get("recipe", [])
+        if not recipes:
+            raise NoResultsError(f"No recipes found matching '{query}'")
+        
+        # Ensure recipes is a list
+        if not isinstance(recipes, list):
+            recipes = [recipes]
+        
+        return {
+            "recipes": recipes,
+            "total_results": len(recipes),
+            "query": query,
+        }
+
+    def get_recipe_details(self, recipe_id: str) -> Dict[str, Any]:
+        """
+        Retrieve detailed nutrition information for a specific recipe.
+        
+        Algorithm:
+        1. Validate recipe_id (must be numeric string)
+        2. Request recipe details
+        3. Extract ingredients and nutrition data
+        4. Return complete recipe data
+        
+        Args:
+            recipe_id: FatSecret recipe ID
+            
+        Returns:
+            Detailed recipe data including ingredients and nutrition
+            
+        Raises:
+            ValidationError: If recipe_id is invalid
+            FatSecretAPIError: If API request fails
+        """
+        # Validate recipe_id - ensure it's a string
+        if not recipe_id:
+            raise ValidationError("Recipe ID must be a non-empty string")
+        recipe_id = str(recipe_id).strip()
+        
+        if not recipe_id.isdigit():
+            raise ValidationError("Recipe ID must be numeric")
+        
+        logger.info(f"Getting recipe details for ID: {recipe_id}")
+        
+        params = {
+            "method": "recipe.get",
+            "recipe_id": recipe_id,
+            "format": "json",
+        }
+        
+        response = self._make_request(params)
+        
+        recipe_data = response.get("recipe")
+        if not recipe_data:
+            raise NoResultsError(f"Recipe not found with ID: {recipe_id}")
+        
+        return recipe_data
 
     def get_image_recognition_token(self) -> Optional[str]:
         """

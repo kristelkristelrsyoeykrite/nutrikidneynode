@@ -63,7 +63,12 @@ class NutritionNormalizer:
         """
         config = get_config()
         
-        # Extract values
+        # Extract string fields (food_id, food_name, serving_description)
+        food_name = str(raw_data.get("food_name", "Unknown")).strip()
+        food_id = str(raw_data.get("food_id", "")).strip() or None
+        serving_description = str(raw_data.get("serving_description", "")).strip() or None
+        
+        # Extract numeric fields
         extracted = NutritionNormalizer._extract_fields(raw_data)
         
         # Track missing fields
@@ -77,9 +82,9 @@ class NutritionNormalizer:
         
         # Create nutrition object
         nutrition = Nutrition(
-            food_name=extracted.get("food_name", "Unknown"),
-            food_id=extracted.get("food_id"),
-            serving_description=extracted.get("serving_description"),
+            food_name=food_name,
+            food_id=food_id,
+            serving_description=serving_description,
             serving_size=extracted.get("serving_size"),
             calories=extracted.get("calories"),
             protein=extracted.get("protein"),
@@ -103,16 +108,25 @@ class NutritionNormalizer:
     @staticmethod
     def _extract_fields(raw_data: Dict[str, Any]) -> Dict[str, Optional[float]]:
         """
-        Extract and normalize nutrient fields from raw data.
+        Extract and normalize numeric nutrient fields from raw data.
         
         Handles:
         - Multiple naming conventions (e.g., "carbs" vs "carbohydrates")
         - Type conversion to float
         - Null/zero value handling
+        
+        Note: String fields (food_id, food_name, serving_description) are handled
+        separately in the normalize() method to avoid float conversion.
         """
         extracted = {}
         
-        for raw_key, (normalized_key, _) in NutritionNormalizer.FIELD_MAPPING.items():
+        # Only numeric fields; exclude string fields
+        numeric_fields = {
+            k: v for k, v in NutritionNormalizer.FIELD_MAPPING.items()
+            if k not in ["food_id", "food_name", "serving_description"]
+        }
+        
+        for raw_key, (normalized_key, _) in numeric_fields.items():
             value = raw_data.get(raw_key)
             
             # Skip missing values
