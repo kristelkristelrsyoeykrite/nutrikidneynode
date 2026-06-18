@@ -1136,8 +1136,9 @@ router.post("/meal-plan/save", async (req, res) => {
 
     const requestedProfileId = childProfileId || profileUserId || userId;
     const planDate = date || new Date().toISOString().slice(0, 10);
+    const documentId = `${requestedProfileId}_${planDate}`;
 
-    // Save meal plan to Firestore
+    // Save meal plan to Firestore with predictable document ID
     const mealPlanDoc = {
       userId,
       childProfileId: requestedProfileId,
@@ -1158,10 +1159,10 @@ router.post("/meal-plan/save", async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    const mealPlanRef = await db.collection("mealPlan").add(mealPlanDoc);
+    const mealPlanRef = await db.collection("mealPlan").doc(documentId).set(mealPlanDoc);
 
     console.log("MEAL_PLAN_SAVED:", {
-      mealPlanId: mealPlanRef.id,
+      mealPlanId: documentId,
       userId,
       childProfileId: requestedProfileId,
       date: planDate,
@@ -1170,7 +1171,7 @@ router.post("/meal-plan/save", async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      mealPlanId: mealPlanRef.id,
+      mealPlanId: documentId,
       message: "Meal plan saved successfully",
     });
   } catch (error) {
@@ -1195,16 +1196,12 @@ router.post("/meal-plan/today", async (req, res) => {
 
     const requestedProfileId = childProfileId || profileUserId || userId;
     const today = new Date().toISOString().slice(0, 10);
+    const documentId = `${requestedProfileId}_${today}`;
 
-    // Get today's saved meal plan
-    const snapshot = await db
-      .collection("mealPlan")
-      .where("childProfileId", "==", requestedProfileId)
-      .where("date", "==", today)
-      .limit(1)
-      .get();
+    // Get today's saved meal plan by direct document access (no query needed)
+    const doc = await db.collection("mealPlan").doc(documentId).get();
 
-    if (snapshot.empty) {
+    if (!doc.exists) {
       return res.status(200).json({
         success: true,
         todaysMealPlan: null,
@@ -1212,7 +1209,6 @@ router.post("/meal-plan/today", async (req, res) => {
       });
     }
 
-    const doc = snapshot.docs[0];
     const mealPlan = doc.data();
 
     return res.status(200).json({
