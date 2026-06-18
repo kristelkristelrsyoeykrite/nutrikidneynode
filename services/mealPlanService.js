@@ -1491,14 +1491,35 @@ async function resolveFoodDetails(food) {
   if (usefulNutrition(food)) return food;
   try {
     const details = await fatSecretBridge.getFoodDetails(food.foodId);
-    return {
+    const detailedFood = details.food || {};
+    
+    // Merge details with original food, ensuring all nutrient fields are included
+    const merged = {
       ...food,
-      ...(details.food || {}),
+      ...detailedFood,
+      // Explicitly ensure all nutrient fields are present
+      calories: detailedFood.calories ?? food.calories ?? 0,
+      protein: detailedFood.protein ?? food.protein ?? 0,
+      carbohydrate: detailedFood.carbohydrate ?? food.carbohydrate ?? 0,
+      fat: detailedFood.fat ?? food.fat ?? 0,
+      sodium: detailedFood.sodium ?? food.sodium ?? 0,
+      potassium: detailedFood.potassium ?? food.potassium ?? 0,
+      phosphorus: detailedFood.phosphorus ?? food.phosphorus ?? 0,
       raw: {
         ...(food.raw || {}),
         foodDetails: details.raw || details.food,
       },
     };
+    
+    console.log("FOOD_DETAILS_MERGED:", {
+      foodId: food.foodId,
+      originalHasProtein: food.protein !== undefined && food.protein !== 0,
+      detailsHasProtein: detailedFood.protein !== undefined && detailedFood.protein !== 0,
+      mergedProtein: merged.protein,
+      isUseful: usefulNutrition(merged),
+    });
+    
+    return merged;
   } catch (error) {
     console.error("MEAL_PLAN_FOOD_DETAILS_ERROR:", {
       foodId: food.foodId,
@@ -1609,16 +1630,29 @@ function matchConfidence(plannedMeal, candidate) {
 }
 
 function componentBreakdownFromFoods(componentFoods = []) {
-  return componentFoods.map((food) => ({
-    component: food.component || food.name,
-    matchedName: food.name,
-    foodId: food.foodId,
-    portion: food.servingDescription || food.servingSize || "1 serving",
-    nutrients: roundNutrients(food),
-    source: food.source || "fatsecret",
-    needsManualReview: food.needsManualReview === true,
-    suggestions: food.suggestions || [],
-  }));
+  return componentFoods.map((food) => {
+    const nutrients = roundNutrients(food);
+    console.log("COMPONENT_NUTRIENTS:", {
+      component: food.component || food.name,
+      calories: food.calories,
+      protein: food.protein,
+      phosphorus: food.phosphorus,
+      roundedCalories: nutrients.calories,
+      roundedProtein: nutrients.protein,
+      roundedPhosphorus: nutrients.phosphorus
+    });
+    
+    return {
+      component: food.component || food.name,
+      matchedName: food.name,
+      foodId: food.foodId,
+      portion: food.servingDescription || food.servingSize || "1 serving",
+      nutrients,
+      source: food.source || "fatsecret",
+      needsManualReview: food.needsManualReview === true,
+      suggestions: food.suggestions || [],
+    };
+  });
 }
 
 function componentFoodText(food = {}) {
@@ -1840,6 +1874,27 @@ async function resolveIngredientBasedMeal(
 
   // Combine nutrition from all foods
   const totals = nutrientTotals(foodDetails);
+  
+  // Warn if all nutrients are 0 (indicates data quality issue)
+  const allNutrientsZero = totals.calories === 0 && totals.protein === 0 && 
+                          totals.sodium === 0 && totals.potassium === 0 && 
+                          totals.phosphorus === 0;
+  
+  if (allNutrientsZero) {
+    console.warn("INGREDIENT_MEAL_ZERO_NUTRIENTS:", {
+      mealType: mealTemplate.mealType,
+      components: foodDetails.length,
+      foodDetails: foodDetails.map(f => ({
+        ingredient: f.baseIngredient,
+        variant: f.selectedVariant,
+        calories: f.calories,
+        protein: f.protein,
+        sourceType: f.source,
+        hasUsefulNutrition: usefulNutrition(f)
+      }))
+    });
+  }
+  
   console.log("INGREDIENT_MEAL_TOTALS:", { 
     mealType: mealTemplate.mealType,
     components: foodDetails.length,
@@ -1847,7 +1902,8 @@ async function resolveIngredientBasedMeal(
     protein: totals.protein,
     sodium: totals.sodium,
     potassium: totals.potassium,
-    phosphorus: totals.phosphorus
+    phosphorus: totals.phosphorus,
+    allNutrientsMissing: allNutrientsZero
   });
 
   // Build meal name from actual selected variants
@@ -1904,6 +1960,16 @@ async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrict
       (result.foods || []).slice(0, 8).map(resolveFoodDetails),
     );
     const selected = firstIngredientPresentFood(detailed, component);
+    
+    console.log("RESOLVE_COMPONENT:", {
+      component,
+      foundTotal: result.foods?.length || 0,
+      selectedName: selected?.name,
+      selectedHasNutrition: selected ? usefulNutrition(selected) : false,
+      selectedCalories: selected?.calories,
+      selectedProtein: selected?.protein
+    });
+    
     if (selected) componentFoods.push({ ...selected, component });
     if (selected) {
       componentFoods[componentFoods.length - 1].suggestions = componentSuggestions(
