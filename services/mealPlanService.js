@@ -1655,12 +1655,26 @@ function componentSuggestions(candidates = [], selected = {}, component = "") {
 }
 
 async function resolveWholeMealNutrition(plannedMeal, nutritionProfile, restrictions, seed, ingredientRules) {
+  // GUARD: Skip if meal name and components are both undefined
+  // This prevents "undefined recipe" search queries
+  if (!plannedMeal?.name && (!plannedMeal?.components || plannedMeal.components.length === 0)) {
+    console.warn("SKIP_WHOLE_MEAL_SEARCH: No meal name or components provided");
+    return null;
+  }
+
   const guideTags = buildGuideTags(nutritionProfile).join(" ");
   const queries = [
-    `${plannedMeal.name} recipe`,
-    `${(plannedMeal.components || []).join(" ")} recipe`,
-    `${plannedMeal.name} ${guideTags} recipe`,
-  ];
+    ...(plannedMeal.name ? [`${plannedMeal.name} recipe`] : []),
+    ...(plannedMeal.components?.length > 0 ? [`${plannedMeal.components.join(" ")} recipe`] : []),
+    ...(plannedMeal.name && guideTags ? [`${plannedMeal.name} ${guideTags} recipe`] : []),
+  ].filter(Boolean);
+
+  // GUARD: If no valid queries can be built, skip
+  if (queries.length === 0) {
+    console.warn("SKIP_WHOLE_MEAL_SEARCH: No valid search queries built");
+    return null;
+  }
+
   const searches = await Promise.all(
     queries.map(async (query, index) => {
       const [recipes, foods] = await Promise.all([
