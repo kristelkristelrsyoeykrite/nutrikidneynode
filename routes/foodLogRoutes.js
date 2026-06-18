@@ -1158,7 +1158,7 @@ router.post("/meal-plan/save", async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    const mealPlanRef = await db.collection("mealPlans").add(mealPlanDoc);
+    const mealPlanRef = await db.collection("mealPlan").add(mealPlanDoc);
 
     console.log("MEAL_PLAN_SAVED:", {
       mealPlanId: mealPlanRef.id,
@@ -1198,7 +1198,7 @@ router.post("/meal-plan/today", async (req, res) => {
 
     // Get today's saved meal plan
     const snapshot = await db
-      .collection("mealPlans")
+      .collection("mealPlan")
       .where("childProfileId", "==", requestedProfileId)
       .where("date", "==", today)
       .orderBy("createdAt", "desc")
