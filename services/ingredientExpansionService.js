@@ -1,10 +1,35 @@
 /**
  * ingredientExpansionService.js
  * 
- * Expands generic ingredients into specific food variants from FatSecret.
- * Example: "fish" → ["Fried Tilapia", "Grilled Fish", "Milkfish", "Fish Fillet"]
+ * Expands INDIVIDUAL INGREDIENTS into FatSecret food variants.
+ * Handles caching to eliminate repeated API calls.
  * 
- * Uses caching to avoid repeated API calls.
+ * IMPORTANT: This service works with INDIVIDUAL INGREDIENTS ONLY
+ * - "chicken" (not "Chicken Adobo")
+ * - "rice" (not "Rice with vegetables")
+ * - "cabbage" (not "Stir-fried cabbage with seasoning")
+ * 
+ * Each individual ingredient is searched separately on FatSecret,
+ * and nutrition values are summed at the meal level.
+ * 
+ * EXAMPLE USAGE:
+ * 
+ * // First call: Searches FatSecret and caches
+ * const variants = await expandIngredient("chicken");
+ * // Returns: ["Chicken Breast", "Grilled Chicken", "Fried Chicken", "Chicken Tenderloin", ...]
+ * 
+ * // Pick random variant for meal variety
+ * const variant1 = await pickRandomVariant("chicken"); // "Grilled Chicken"
+ * const variant2 = await pickRandomVariant("chicken"); // "Fried Chicken" (next time, might be different)
+ * 
+ * // Second call: Uses cached data instantly
+ * const variants2 = await expandIngredient("chicken");
+ * // Returns same variants from cache (no API call)
+ * 
+ * CACHING:
+ * - 30-day TTL (refreshes automatically after 30 days)
+ * - Stored in Firestore: ingredient_expansions collection
+ * - Format: { ingredient: "chicken", variants: [...], cachedAt: "2026-06-18..." }
  */
 
 const { db } = require("../firebase/admin");

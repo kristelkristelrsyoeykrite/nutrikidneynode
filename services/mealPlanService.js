@@ -1,3 +1,43 @@
+/**
+ * mealPlanService.js
+ * 
+ * CKD-compliant meal planning using ingredient expansion and breakdown.
+ * 
+ * ARCHITECTURE:
+ * - Templates use INDIVIDUAL INGREDIENTS ONLY: { protein: "chicken", carb: "rice", vegetable: "cabbage" }
+ * - NO recipe names, NO meal combinations, NO prepared dishes
+ * - Each ingredient searched separately on FatSecret
+ * - Nutrition is SUMMED from individual ingredients
+ * 
+ * EXAMPLE:
+ * Template: { protein: "chicken", carb: "rice", vegetable: "cabbage", target: 420 }
+ * 
+ * Process:
+ * 1. Expand "chicken" → FatSecret returns ["Chicken Breast", "Grilled Chicken", "Fried Chicken", ...]
+ * 2. Pick random: "Grilled Chicken"
+ * 3. Search FatSecret: "Grilled Chicken" → gets nutrition data
+ * 
+ * 4. Expand "rice" → ["White Rice", "Brown Rice", "Jasmine Rice", ...]
+ * 5. Pick random: "White Rice"
+ * 6. Search FatSecret: "White Rice" → gets nutrition data
+ * 
+ * 7. Expand "cabbage" → ["Cabbage", "Raw Cabbage", "Cooked Cabbage", ...]
+ * 8. Pick random: "Cooked Cabbage"
+ * 9. Search FatSecret: "Cooked Cabbage" → gets nutrition data
+ * 
+ * 10. TOTAL nutrition: Grilled Chicken + White Rice + Cooked Cabbage
+ * 11. Result: "Grilled Chicken with White Rice with Cooked Cabbage"
+ *     Calories: 450, Protein: 35g, Sodium: 280mg, Potassium: 420mg, Phosphorus: 280mg
+ * 
+ * BENEFITS:
+ * ✓ FatSecret returns reliable nutrition for individual foods
+ * ✓ No recipe search (user-generated, inconsistent)
+ * ✓ Ingredient caching eliminates repeated API calls
+ * ✓ Random variant selection ensures variety (never same meal twice)
+ * ✓ Individual totals are accurate
+ * ✓ CKD validation at ingredient level (each ingredient checked against restrictions)
+ */
+
 const { db } = require("../firebase/admin");
 const fatSecretBridge = require("./fatSecretBridgeService");
 const ingredientVariantService = require("./ingredientVariantService");
@@ -13,149 +53,224 @@ const RECIPE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 14;
 const MAX_CACHED_RECIPE_RESULTS = 50;
 
 const CKD_INGREDIENT_GUIDE = {
+  // Low potassium - safe for all CKD stages
   lowPotassium: [
     "apple",
+    "apricot",
     "asparagus",
     "bamboo shoots",
     "bell pepper",
     "berries",
+    "blueberries",
     "broccoli",
     "cabbage",
     "carrot",
     "cauliflower",
     "celery",
     "chinese cabbage",
-    "corn",
-    "calamansi",
     "cucumber",
+    "daikon radish",
     "eggplant",
+    "garlic",
     "grapes",
     "green beans",
     "green peas",
+    "kale",
     "lemon",
     "lettuce",
-    "mushrooms",
+    "lime",
+    "mushroom",
     "okra",
     "onion",
     "pear",
     "peach",
+    "plum",
     "radish",
+    "raspberries",
+    "rice",
+    "brown rice",
+    "white rice",
+    "jasmine rice",
+    "basmati rice",
     "strawberries",
     "watercress",
-    "white rice",
+    "zucchini",
   ],
+  // High potassium - RESTRICT in CKD
   highPotassium: [
-    "avocado",
     "banana",
-    "banana saba",
-    "beets",
+    "plantain",
+    "bitter melon",
+    "bok choy",
+    "cantaloupe",
+    "dragon fruit",
+    "guava",
+    "honeydew melon",
+    "kiwi",
     "mango",
-    "melon",
+    "mandarin orange",
     "orange",
     "papaya",
-    "potato",
-    "pumpkin",
+    "prunes",
+    "raisins",
     "spinach",
+    "sweet corn",
     "sweet potato",
+    "tangerine",
     "tomato",
-    "tomato paste",
     "watermelon",
+    "yam",
   ],
+  // Lower phosphorus - preferred proteins
   lowerPhosphorus: [
     "chicken",
     "chicken breast",
+    "chicken thigh",
+    "chicken tenderloin",
+    "cod",
+    "crab",
+    "egg white",
+    "fish",
+    "flounder",
+    "haddock",
+    "halibut",
+    "lobster",
+    "mahi mahi",
+    "milkfish",
+    "mussels",
+    "oysters",
+    "pollock",
+    "scallops",
+    "sea bass",
+    "shrimp",
+    "snappers",
+    "tilapia",
+    "tofu",
+    "tuna",
+    "turkey",
+    "salmon",
+  ],
+  // High phosphorus - LIMIT or AVOID in CKD
+  highPhosphorus: [
+    "almonds",
+    "black beans",
+    "cashews",
+    "cheddar cheese",
+    "chicken thigh",
+    "chickpeas",
+    "cottage cheese",
+    "kidney beans",
+    "lentils",
+    "lima beans",
+    "mozzarella cheese",
+    "navy beans",
+    "nuts",
+    "parmesan cheese",
+    "peanut butter",
+    "peanuts",
+    "pinto beans",
+    "pistachios",
+    "pork loin",
+    "pork tenderloin",
+    "soybeans",
+    "swiss cheese",
+    "walnuts",
+  ],
+  // High sodium - AVOID or MINIMIZE
+  highSodium: [
+    "anchovies",
+    "canned foods",
+    "processed cheese",
+    "processed meats",
+    "sardines",
+  ],
+  // Base allowed - safe generic ingredients for meal building
+  baseAllowed: [
+    // Proteins (lower phosphorus)
+    "chicken",
+    "chicken breast",
+    "chicken tenderloin",
+    "cod",
     "egg",
     "egg white",
     "fish",
+    "halibut",
     "lean beef",
-    "seafood",
-    "sirloin",
+    "milkfish",
+    "salmon",
+    "sea bass",
+    "shrimp",
+    "snappers",
     "tilapia",
     "tofu",
+    "tuna",
     "turkey",
-    "white rice",
-  ],
-  highPhosphorus: [
-    "almonds",
-    "beans",
-    "cashew nuts",
-    "cheese",
-    "cola",
-    "dairy",
-    "lentils",
-    "milk",
-    "nuts",
-    "organ meat",
-    "peanuts",
-    "peanut butter",
-    "pistachios",
-    "processed cheese",
-    "soybeans",
-    "sunflower seeds",
-  ],
-  highSodium: [
-    "american cheese",
-    "bagoong",
-    "bouillon",
-    "canned soup",
-    "fish sauce",
-    "hotdog",
-    "instant noodles",
-    "processed meat",
-    "processed cheese",
-    "soy sauce",
-  ],
-  baseAllowed: [
-    "apple",
+    // Grains & Starches
+    "barley",
+    "basmati rice",
+    "bread",
+    "cassava",
+    "corn",
+    "couscous",
+    "jasmine rice",
+    "noodles",
+    "oatmeal",
+    "pasta",
+    "rice",
+    "rolled oats",
+    "steel cut oats",
+    "white bread",
+    "whole wheat bread",
+    "wild rice",
+    // Vegetables (low potassium)
     "asparagus",
     "bamboo shoots",
-    "barley",
     "bell pepper",
-    "berries",
-    "bread",
     "broccoli",
     "cabbage",
-    "calamansi",
     "carrot",
     "cauliflower",
     "celery",
-    "chicken",
-    "chicken breast",
     "chinese cabbage",
-    "corn",
-    "couscous",
-    "crackers",
     "cucumber",
-    "egg white",
+    "daikon radish",
     "eggplant",
-    "fish",
-    "grapes",
+    "garlic",
     "green beans",
     "green peas",
-    "lemon",
-    "lean beef",
     "lettuce",
-    "mushrooms",
-    "noodles",
+    "mushroom",
     "okra",
     "onion",
-    "oatmeal",
-    "pandesal",
-    "pasta",
+    "radish",
+    "watercress",
+    "zucchini",
+    // Fruits (low potassium)
+    "apple",
+    "apricot",
+    "berries",
+    "blueberries",
+    "grapes",
+    "lemon",
+    "lime",
     "pear",
     "peach",
-    "radish",
-    "rice",
-    "seafood",
-    "sirloin",
+    "plum",
+    "raspberries",
     "strawberries",
-    "tilapia",
-    "toast",
-    "tofu",
-    "turkey",
-    "watercress",
-    "white bread",
-    "white rice",
+    // Oils & Fats
+    "butter",
+    "canola oil",
+    "corn oil",
+    "margarine",
+    "mayonnaise",
+    "olive oil",
+    "sunflower oil",
+    "vegetable oil",
+    // Low-fat Dairy (limit portion)
+    "low fat milk",
+    "skim milk",
+    "yogurt",
   ],
 };
 
@@ -2105,8 +2220,38 @@ async function getRecipeReplacements(selectedRecipe, nutritionProfile, restricti
   }
 }
 
+/**
+ * Prewarm the ingredient expansion cache with all common meal ingredients
+ * Call this on app startup to populate cache and avoid first-request delays
+ */
+async function prewarmMealPlanCache() {
+  const allIngredients = [
+    // Common proteins
+    "chicken", "fish", "turkey", "beef", "tilapia", "egg", "tofu", "shrimp", "seafood",
+    // Common carbs
+    "rice", "pasta", "bread", "noodles", "corn", "oatmeal", "barley", "couscous",
+    // Common vegetables
+    "cabbage", "carrot", "cauliflower", "broccoli", "asparagus", "green beans", "cucumber", "lettuce", "bell pepper", "onion",
+    // Common fruits
+    "apple", "pear", "berries", "grapes", "peach", "strawberries",
+  ];
+
+  try {
+    const results = await ingredientExpansionService.prewarmCache(allIngredients);
+    console.log("MEAL_PLAN_CACHE_PREWARMED:", {
+      ingredientsCount: results.length,
+      totalVariants: results.reduce((sum, r) => sum + r.count, 0),
+    });
+    return results;
+  } catch (error) {
+    console.error("PREWARM_CACHE_ERROR:", { error: error.message });
+    return [];
+  }
+}
+
 module.exports = {
   generateMealPlan,
   getRecipeReplacements,
   searchMealPlanRecipesWithVariants,
+  prewarmMealPlanCache,
 };
