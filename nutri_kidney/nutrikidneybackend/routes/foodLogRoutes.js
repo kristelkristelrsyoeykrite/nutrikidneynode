@@ -1635,4 +1635,50 @@ router.post("/logs/delete", async (req, res) => {
   }
 });
 
+/**
+ * POST /meal-plan/delete
+ * Deletes an entire meal plan document (7-day plan) stored in Firestore.
+ */
+router.post("/meal-plan/delete", async (req, res) => {
+  try {
+    const { userId, childProfileId, profileUserId, date } = req.body;
+
+    if (!userId || !date) {
+      return res.status(400).json({
+        success: false,
+        error: "userId and date are required",
+      });
+    }
+
+    const requestedProfileId = childProfileId || profileUserId || userId;
+    const planDate = String(date).slice(0, 10);
+    const documentId = `${requestedProfileId}_${planDate}`;
+
+    const mealPlanRef = db.collection("mealPlan").doc(documentId);
+    const doc = await mealPlanRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Meal plan not found",
+      });
+    }
+
+    await mealPlanRef.delete();
+
+    return res.status(200).json({
+      success: true,
+      mealPlanId: documentId,
+      message: "Meal plan deleted successfully",
+    });
+  } catch (error) {
+    console.error("MEAL_PLAN_DELETE ERROR:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to delete meal plan",
+    });
+  }
+});
+
 module.exports = router;
+
