@@ -1789,4 +1789,71 @@ router.post("/logs/delete", async (req, res) => {
   }
 });
 
+/**
+ * GET /food-log/recipe-replacements
+ * Get alternative recipes when user clicks to replace a recipe
+ * 
+ * Query params:
+ *   - recipeName: The recipe being replaced
+ *   - mealType: The meal type (Breakfast, Lunch, Dinner, etc.)
+ */
+router.get("/recipe-replacements", async (req, res) => {
+  try {
+    const userId = req.user?.uid;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: "Not authenticated",
+      });
+    }
+
+    const { recipeName, mealType } = req.query;
+    if (!recipeName) {
+      return res.status(400).json({
+        success: false,
+        error: "recipeName query parameter required",
+      });
+    }
+
+    // Get user's health profile for restrictions
+    const healthDoc = await db
+      .collection("healthProfiles")
+      .where("userId", "==", userId)
+      .limit(1)
+      .get();
+
+    let nutritionProfile = null;
+    let restrictions = {};
+
+    if (!healthDoc.empty) {
+      const profileData = healthDoc.docs[0].data();
+      try {
+        nutritionProfile = await decryptHealthProfile(profileData);
+        restrictions = nutritionProfile.restrictions || {};
+      } catch (decryptError) {
+        console.error("Health profile decryption failed:", decryptError.message);
+      }
+    }
+
+    // Get recipe replacements
+    const { getRecipeReplacements } = require("../services/mealPlanService");
+    const replacements = await getRecipeReplacements(
+      {
+        name: recipeName,
+        mealType: mealType || "Lunch",
+      },
+      nutritionProfile,
+      restrictions
+    );
+
+    return res.json(replacements);
+  } catch (error) {
+    console.error("RECIPE_REPLACEMENTS_ERROR:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to get recipe replacements",
+    });
+  }
+});
+
 module.exports = router;

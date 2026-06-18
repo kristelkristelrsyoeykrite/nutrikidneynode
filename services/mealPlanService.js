@@ -1,5 +1,6 @@
 const { db } = require("../firebase/admin");
 const fatSecretBridge = require("./fatSecretBridgeService");
+const ingredientVariantService = require("./ingredientVariantService");
 const {
   decryptHealthDocument,
   decryptHealthProfile,
@@ -465,6 +466,25 @@ function normalizeCachedRecipe(recipe = {}, query = "") {
 function cacheIsFresh(value) {
   const cachedAt = timestampMillis(value?.cachedAt || value?.updatedAt);
   return cachedAt > 0 && Date.now() - cachedAt < RECIPE_CACHE_TTL_MS;
+}
+
+/**
+ * Extract base ingredient from a search query
+ * "chicken rice low sodium recipe" → "chicken"
+ * "fish stew recipe" → "fish"
+ */
+function extractBaseSearchTerm(query) {
+  if (!query || typeof query !== "string") return null;
+  
+  // Remove common query modifiers
+  const cleaned = query
+    .toLowerCase()
+    .replace(/\b(recipe|healthy|low sodium|low potassium|low phosphorus|diabetic|high protein)\b/g, "")
+    .trim();
+  
+  // Get first meaningful word (usually the main ingredient)
+  const words = cleaned.split(/\s+/).filter(w => w.length > 2);
+  return words.length > 0 ? words[0] : null;
 }
 
 async function getFirstUserDocument(collection, userId) {
@@ -1024,6 +1044,14 @@ async function searchMealPlanRecipes(query, mealType, calorieTarget = null, page
       .slice(0, MAX_CACHED_RECIPE_RESULTS)
       .map((recipe) => normalizeCachedRecipe(recipe, query));
 
+    // Learn ingredient variants from recipe titles
+    // Extract base ingredient from query (e.g., "chicken" from "chicken rice low sodium recipe")
+    const baseIngredient = extractBaseSearchTerm(query);
+    if (baseIngredient && recipes.length > 0) {
+      ingredientVariantService.learnVariantsFromRecipes(baseIngredient, recipes)
+        .catch(err => console.error("VARIANT_LEARNING_FAILED:", err.message));
+    }
+
     try {
       await cacheRef.set(
         {
@@ -1075,6 +1103,96 @@ async function searchMealPlanRecipes(query, mealType, calorieTarget = null, page
       console.error("MEAL_PLAN_RECIPE_FALLBACK_ERROR:", fallbackError.message);
       return { recipes: [], foods: [] };
     }
+  }
+}
+
+/**
+ * Enhanced recipe search using learned ingredient variants
+ * 
+ * Instead of just searching "fish recipe",
+ * searches: ["fish recipe", "tilapia recipe", "bangus recipe", "salmon recipe"]
+ * and combines + deduplicates results
+ */
+async function searchMealPlanRecipesWithVariants(
+  query,
+  mealType,
+  calorieTarget = null,
+  page = 0
+) {
+  try {
+    // Get base ingredient from query
+    const baseIngredient = extractBaseSearchTerm(query);
+    
+    // Get learned variants
+    const variantData = await ingredientVariantService.getVariantsForIngredient(baseIngredient);
+    const expandedIngredients = [baseIngredient, ...variantData.variants];
+    
+    if (expandedIngredients.length === 1) {
+      // No variants learned yet, use standard search
+      return await searchMealPlanRecipes(query, mealType, calorieTarget, page);
+    }
+
+    // Generate search queries for each variant
+    const queries = expandedIngredients.map(ingredient => {
+      // Preserve the original query structure but replace ingredient
+      const remainder = query.toLowerCase()
+        .replace(new RegExp(`\\b${baseIngredient}\\b`, "i"), "")
+        .trim();
+      return remainder ? `${ingredient} ${remainder}` : `${ingredient} recipe`;
+    });
+
+    // Search with all variant queries
+    const allResults = [];
+    const seenRecipeIds = new Set();
+    let totalResults = 0;
+
+    for (const variantQuery of queries) {
+      try {
+        const result = await searchMealPlanRecipes(
+          variantQuery,
+          mealType,
+          calorieTarget,
+          0
+        );
+        
+        if (result.recipes) {
+          // Deduplicate by recipeId
+          result.recipes.forEach(recipe => {
+            const recipeId = recipe.recipeId || recipe.foodId || recipe.id;
+            if (recipeId && !seenRecipeIds.has(recipeId)) {
+              seenRecipeIds.add(recipeId);
+              allResults.push({
+                ...recipe,
+                searchVariant: variantQuery, // Track which variant found this
+              });
+            }
+          });
+          totalResults += result.totalResults || 0;
+        }
+      } catch (err) {
+        console.error("VARIANT_SEARCH_FAILED:", {
+          query: variantQuery,
+          error: err.message,
+        });
+      }
+    }
+
+    return {
+      query,
+      baseIngredient,
+      variantsUsed: expandedIngredients,
+      variantCount: expandedIngredients.length,
+      recipes: allResults,
+      totalResults,
+      source: "variant_search",
+    };
+  } catch (error) {
+    console.error("VARIANT_SEARCH_ERROR:", {
+      query,
+      error: error.message,
+    });
+    // Fallback to standard search
+    return await searchMealPlanRecipes(query, mealType, calorieTarget, page);
   }
 }
 
@@ -1638,6 +1756,110 @@ async function generateMealPlan(body = {}) {
   };
 }
 
+/**
+ * Get replacement suggestions for a recipe
+ * 
+ * User clicks "Grilled Tilapia" → returns similar recipes like:
+ * - Fish Stew (90% similar)
+ * - Baked Salmon (85% similar)
+ * - Fish Soup (80% similar)
+ */
+async function getRecipeReplacements(selectedRecipe, nutritionProfile, restrictions) {
+  try {
+    if (!selectedRecipe || !selectedRecipe.name) {
+      return {
+        success: false,
+        error: "No recipe selected",
+        suggestions: [],
+      };
+    }
+
+    // Extract primary ingredient from selected recipe
+    const primaryIngredient = ingredientVariantService.extractPrimaryFoodName(selectedRecipe.name);
+    
+    if (!primaryIngredient) {
+      return {
+        success: false,
+        error: "Could not extract ingredient from recipe",
+        suggestions: [],
+      };
+    }
+
+    // Get variants of the primary ingredient
+    const variantData = await ingredientVariantService.getVariantsForIngredient(primaryIngredient);
+    const searchIngredients = [primaryIngredient, ...variantData.variants];
+
+    // Search for recipes with all variants
+    const allRecipes = [];
+    const seenRecipeIds = new Set();
+
+    for (const ingredient of searchIngredients) {
+      try {
+        const results = await searchMealPlanRecipes(`${ingredient} recipe`, selectedRecipe.mealType || "Lunch");
+        
+        if (results.recipes) {
+          results.recipes.forEach(recipe => {
+            const recipeId = recipe.recipeId || recipe.foodId || recipe.id;
+            if (recipeId && !seenRecipeIds.has(recipeId)) {
+              seenRecipeIds.add(recipeId);
+              allRecipes.push(recipe);
+            }
+          });
+        }
+      } catch (err) {
+        console.error("REPLACEMENT_SEARCH_ERROR:", { ingredient, error: err.message });
+      }
+    }
+
+    // Find similar recipes using the variant service
+    const similarRecipes = await ingredientVariantService.findSimilarRecipes(
+      selectedRecipe,
+      allRecipes,
+      6 // Return top 6 suggestions
+    );
+
+    // Score replacements based on medical safety
+    const scoredReplacements = similarRecipes
+      .map(recipe => ({
+        ...recipe,
+        medicalScore: scoreMealCandidate(recipe, selectedRecipe.mealType || "Lunch"),
+      }))
+      .filter(recipe => recipe.medicalScore >= 45) // Must pass safety threshold
+      .sort((a, b) => {
+        // Primary: Medical score
+        if (b.medicalScore !== a.medicalScore) {
+          return b.medicalScore - a.medicalScore;
+        }
+        // Secondary: Similarity to original
+        return (b.similarityScore || 0) - (a.similarityScore || 0);
+      })
+      .slice(0, 5);
+
+    return {
+      success: true,
+      originalRecipe: {
+        name: selectedRecipe.name,
+        primaryIngredient,
+      },
+      suggestions: scoredReplacements,
+      variantsExplored: searchIngredients,
+      discoveredCount: similarRecipes.length,
+    };
+  } catch (error) {
+    console.error("GET_RECIPE_REPLACEMENTS_ERROR:", {
+      recipe: selectedRecipe?.name,
+      error: error.message,
+    });
+    return {
+      success: false,
+      error: error.message,
+      suggestions: [],
+    };
+  }
+}
+
 module.exports = {
   generateMealPlan,
+  getRecipeReplacements,
+  searchMealPlanRecipesWithVariants,
 };
