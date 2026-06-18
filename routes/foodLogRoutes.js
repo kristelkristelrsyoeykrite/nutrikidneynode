@@ -1201,7 +1201,6 @@ router.post("/meal-plan/today", async (req, res) => {
       .collection("mealPlan")
       .where("childProfileId", "==", requestedProfileId)
       .where("date", "==", today)
-      .orderBy("createdAt", "desc")
       .limit(1)
       .get();
 
