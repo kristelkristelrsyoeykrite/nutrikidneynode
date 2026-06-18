@@ -1,6 +1,7 @@
 const { db } = require("../firebase/admin");
 const fatSecretBridge = require("./fatSecretBridgeService");
 const ingredientVariantService = require("./ingredientVariantService");
+const ingredientExpansionService = require("./ingredientExpansionService");
 const {
   decryptHealthDocument,
   decryptHealthProfile,
@@ -984,78 +985,70 @@ function recipeDrivenTemplates(mealType, history = {}, ingredientRules = {}) {
 function mealTemplateBank(profile, history = {}, ingredientRules = {}) {
   const bank = {
     Breakfast: [
-      { name: "Apple oatmeal", components: ["oatmeal", "apple"], target: 300 },
-      { name: "Rice porridge with chicken", components: ["rice porridge", "chicken"], target: 300 },
-      { name: "Egg white toast with grapes", components: ["egg white", "toast", "grapes"], target: 280 },
-      { name: "Oatmeal with berries", components: ["oatmeal", "berries"], target: 290 },
-      { name: "Pandesal with egg white", components: ["pandesal", "egg white"], target: 270 },
-      { name: "Rice with strawberries", components: ["white rice", "strawberries"], target: 280 },
-      { name: "Noodles with chicken", components: ["noodles", "chicken"], target: 310 },
-      { name: "Bread with pear", components: ["white bread", "pear"], target: 260 },
-      { name: "Oatmeal with apple and calamansi", components: ["oatmeal", "apple", "calamansi"], target: 300 },
-      { name: "Pandesal with berries", components: ["pandesal", "berries"], target: 280 },
-      { name: "Rice porridge with tofu", components: ["rice porridge", "tofu"], target: 290 },
-      { name: "Toast with grapes and egg white", components: ["toast", "grapes", "egg white"], target: 300 },
+      { protein: "egg", carb: "bread", fruit: "apple", target: 280, mealType: "Breakfast" },
+      { protein: "chicken", carb: "rice", fruit: "berries", target: 300, mealType: "Breakfast" },
+      { protein: "tofu", carb: "oatmeal", fruit: "pear", target: 290, mealType: "Breakfast" },
+      { protein: "egg", carb: "pandesal", fruit: "grapes", target: 270, mealType: "Breakfast" },
+      { protein: "fish", carb: "rice", fruit: "strawberries", target: 300, mealType: "Breakfast" },
+      { protein: "turkey", carb: "noodles", fruit: "apple", target: 310, mealType: "Breakfast" },
+      { protein: "egg", carb: "toast", fruit: "peach", target: 260, mealType: "Breakfast" },
+      { protein: "tofu", carb: "bread", fruit: "berries", target: 280, mealType: "Breakfast" },
     ],
     "AM Snack": [
-      { name: "Apple slices", components: ["apple"], target: 150 },
-      { name: "Grapes", components: ["grapes"], target: 150 },
-      { name: "Peach slices", components: ["peach"], target: 140 },
-      { name: "Strawberries", components: ["strawberries"], target: 120 },
-      { name: "Pear slices", components: ["pear"], target: 140 },
-      { name: "Cucumber with rice crackers", components: ["cucumber", "rice crackers"], target: 150 },
-      { name: "Lemon water with crackers", components: ["lemon", "crackers"], target: 140 },
-      { name: "Lettuce wrap", components: ["lettuce"], target: 100 },
-      { name: "Carrot sticks", components: ["carrot"], target: 130 },
-      { name: "Bell pepper strips", components: ["bell pepper"], target: 120 },
+      { fruit: "apple", target: 150, mealType: "AM Snack" },
+      { fruit: "grapes", target: 150, mealType: "AM Snack" },
+      { fruit: "pear", target: 140, mealType: "AM Snack" },
+      { fruit: "strawberries", target: 120, mealType: "AM Snack" },
+      { fruit: "peach", target: 140, mealType: "AM Snack" },
+      { vegetable: "cucumber", carb: "bread", target: 150, mealType: "AM Snack" },
+      { vegetable: "carrot", carb: "crackers", target: 140, mealType: "AM Snack" },
+      { vegetable: "bell pepper", target: 120, mealType: "AM Snack" },
     ],
     Lunch: [
-      { name: "Chicken rice with cabbage", components: ["chicken breast", "white rice", "cabbage"], target: 420 },
-      { name: "Lean beef with noodles and broccoli", components: ["lean beef", "noodles", "broccoli"], target: 430 },
-      { name: "Fish with pasta and asparagus", components: ["fish", "pasta", "asparagus"], target: 420 },
-      { name: "Tofu with rice and mushrooms", components: ["tofu", "white rice", "mushrooms"], target: 410 },
-      { name: "Turkey with barley and cauliflower", components: ["turkey", "barley", "cauliflower"], target: 420 },
-      { name: "Tilapia with corn and bell pepper", components: ["tilapia", "corn", "bell pepper"], target: 410 },
-      { name: "Seafood noodle with cucumber", components: ["seafood", "noodles", "cucumber"], target: 420 },
-      { name: "Sirloin beef with rice and lettuce", components: ["sirloin", "white rice", "lettuce"], target: 430 },
-      { name: "Chicken with couscous and eggplant", components: ["chicken breast", "couscous", "eggplant"], target: 410 },
-      { name: "Fish bread sandwich with tomato", components: ["fish", "white bread", "tomato"], target: 400 },
-      { name: "Tofu stir-fry with carrot and okra", components: ["tofu", "carrot", "okra"], target: 410 },
-      { name: "Turkey with rice and chinese cabbage", components: ["turkey", "white rice", "chinese cabbage"], target: 420 },
-      { name: "Beef pasta with bell pepper", components: ["lean beef", "pasta", "bell pepper"], target: 430 },
-      { name: "Tilapia with bamboo shoots and onion", components: ["tilapia", "bamboo shoots", "onion"], target: 410 },
-      { name: "Chicken with pandesal and cucumber salad", components: ["chicken breast", "pandesal", "cucumber"], target: 400 },
-      { name: "Seafood with corn noodles", components: ["seafood", "corn", "noodles"], target: 420 },
+      { protein: "chicken", carb: "rice", vegetable: "cabbage", target: 420, mealType: "Lunch" },
+      { protein: "fish", carb: "pasta", vegetable: "asparagus", target: 420, mealType: "Lunch" },
+      { protein: "turkey", carb: "barley", vegetable: "cauliflower", target: 420, mealType: "Lunch" },
+      { protein: "beef", carb: "noodles", vegetable: "broccoli", target: 430, mealType: "Lunch" },
+      { protein: "tilapia", carb: "corn", vegetable: "bell pepper", target: 410, mealType: "Lunch" },
+      { protein: "tofu", carb: "rice", vegetable: "mushrooms", target: 410, mealType: "Lunch" },
+      { protein: "seafood", carb: "noodles", vegetable: "cucumber", target: 420, mealType: "Lunch" },
+      { protein: "chicken", carb: "couscous", vegetable: "eggplant", target: 410, mealType: "Lunch" },
+      { protein: "fish", carb: "bread", vegetable: "tomato", target: 400, mealType: "Lunch" },
+      { protein: "turkey", carb: "rice", vegetable: "chinese cabbage", target: 420, mealType: "Lunch" },
+      { protein: "beef", carb: "pasta", vegetable: "bell pepper", target: 430, mealType: "Lunch" },
+      { protein: "tilapia", carb: "barley", vegetable: "onion", target: 410, mealType: "Lunch" },
+      { protein: "tofu", carb: "noodles", vegetable: "carrot", target: 410, mealType: "Lunch" },
+      { protein: "seafood", carb: "couscous", vegetable: "okra", target: 410, mealType: "Lunch" },
     ],
     "PM Snack": [
-      { name: "Grapes and crackers", components: ["grapes", "crackers"], target: 150 },
-      { name: "Apple with toast", components: ["apple", "toast"], target: 160 },
-      { name: "Cucumber slices", components: ["cucumber"], target: 100 },
-      { name: "Berries", components: ["berries"], target: 120 },
-      { name: "Pear with crackers", components: ["pear", "crackers"], target: 150 },
-      { name: "Carrot sticks with dip", components: ["carrot"], target: 130 },
-      { name: "Bell pepper strips", components: ["bell pepper"], target: 120 },
-      { name: "Radish slices", components: ["radish"], target: 110 },
-      { name: "Lemon water with toast", components: ["lemon", "toast"], target: 140 },
-      { name: "Peach slices", components: ["peach"], target: 140 },
+      { fruit: "grapes", carb: "bread", target: 160, mealType: "PM Snack" },
+      { fruit: "apple", carb: "crackers", target: 150, mealType: "PM Snack" },
+      { vegetable: "cucumber", target: 100, mealType: "PM Snack" },
+      { fruit: "berries", target: 120, mealType: "PM Snack" },
+      { fruit: "pear", carb: "crackers", target: 150, mealType: "PM Snack" },
+      { vegetable: "carrot", target: 130, mealType: "PM Snack" },
+      { vegetable: "bell pepper", target: 120, mealType: "PM Snack" },
+      { vegetable: "radish", target: 110, mealType: "PM Snack" },
+      { fruit: "strawberries", carb: "bread", target: 150, mealType: "PM Snack" },
+      { fruit: "peach", target: 140, mealType: "PM Snack" },
     ],
     Dinner: [
-      { name: "Fish with white rice and cauliflower", components: ["fish", "white rice", "cauliflower"], target: 420 },
-      { name: "Chicken with pasta and cabbage", components: ["chicken breast", "pasta", "cabbage"], target: 430 },
-      { name: "Turkey with couscous and broccoli", components: ["turkey", "couscous", "broccoli"], target: 420 },
-      { name: "Lean beef with rice and mushrooms", components: ["lean beef", "white rice", "mushrooms"], target: 430 },
-      { name: "Tilapia with barley and asparagus", components: ["tilapia", "barley", "asparagus"], target: 410 },
-      { name: "Tofu noodles with bok choy", components: ["tofu", "noodles", "chinese cabbage"], target: 410 },
-      { name: "Seafood with rice and bell pepper", components: ["seafood", "white rice", "bell pepper"], target: 420 },
-      { name: "Chicken with corn and carrot", components: ["chicken breast", "corn", "carrot"], target: 410 },
-      { name: "Sirloin beef with pasta and cucumber", components: ["sirloin", "pasta", "cucumber"], target: 430 },
-      { name: "Fish with couscous and okra", components: ["fish", "couscous", "okra"], target: 400 },
-      { name: "Turkey noodles with mushroom", components: ["turkey", "noodles", "mushrooms"], target: 420 },
-      { name: "Tilapia rice with eggplant", components: ["tilapia", "white rice", "eggplant"], target: 410 },
-      { name: "Tofu with bread and lettuce", components: ["tofu", "white bread", "lettuce"], target: 380 },
-      { name: "Beef couscous with bamboo shoots", components: ["lean beef", "couscous", "bamboo shoots"], target: 420 },
-      { name: "Chicken with pandesal and green peas", components: ["chicken breast", "pandesal", "green peas"], target: 400 },
-      { name: "Seafood rice with watercress", components: ["seafood", "white rice", "watercress"], target: 410 },
+      { protein: "fish", carb: "rice", vegetable: "cauliflower", target: 420, mealType: "Dinner" },
+      { protein: "chicken", carb: "pasta", vegetable: "cabbage", target: 430, mealType: "Dinner" },
+      { protein: "turkey", carb: "couscous", vegetable: "broccoli", target: 420, mealType: "Dinner" },
+      { protein: "beef", carb: "rice", vegetable: "mushrooms", target: 430, mealType: "Dinner" },
+      { protein: "tilapia", carb: "barley", vegetable: "asparagus", target: 410, mealType: "Dinner" },
+      { protein: "tofu", carb: "noodles", vegetable: "chinese cabbage", target: 410, mealType: "Dinner" },
+      { protein: "seafood", carb: "rice", vegetable: "bell pepper", target: 420, mealType: "Dinner" },
+      { protein: "chicken", carb: "corn", vegetable: "carrot", target: 410, mealType: "Dinner" },
+      { protein: "beef", carb: "pasta", vegetable: "cucumber", target: 430, mealType: "Dinner" },
+      { protein: "fish", carb: "couscous", vegetable: "okra", target: 400, mealType: "Dinner" },
+      { protein: "turkey", carb: "noodles", vegetable: "mushrooms", target: 420, mealType: "Dinner" },
+      { protein: "tilapia", carb: "rice", vegetable: "eggplant", target: 410, mealType: "Dinner" },
+      { protein: "tofu", carb: "bread", vegetable: "lettuce", target: 380, mealType: "Dinner" },
+      { protein: "beef", carb: "couscous", vegetable: "bamboo shoots", target: 420, mealType: "Dinner" },
+      { protein: "chicken", carb: "pandesal", vegetable: "green peas", target: 400, mealType: "Dinner" },
+      { protein: "seafood", carb: "rice", vegetable: "watercress", target: 410, mealType: "Dinner" },
     ],
   };
 
@@ -1077,27 +1070,33 @@ function mealTemplateBank(profile, history = {}, ingredientRules = {}) {
   Object.entries(history.byMealType || {}).forEach(([mealType, foods]) => {
     const targetMealType = mealType === "Snacks" ? "PM Snack" : mealType;
     if (!bank[targetMealType]) return;
-    foods.slice(0, 4).forEach((food) => {
+    foods.slice(0, 3).forEach((food) => {
       bank[targetMealType].push({
-        name: food.name,
-        components: [food.name],
+        protein: food.name,
         target: Math.round(food.average?.calories || 250),
         portion: food.portion,
         source: "recent_food_log_template",
+        mealType: targetMealType,
       });
     });
   });
 
-  Object.keys(bank).forEach((mealType) => {
-    bank[mealType].push(...recipeDrivenTemplates(mealType, history, ingredientRules));
-  });
   return bank;
 }
 
 function safeMealTemplates(mealType, profile, restrictions, history, ingredientRules) {
   const templates = mealTemplateBank(profile, history, ingredientRules)[mealType] || [];
   const safe = templates.filter((template) => {
-    const text = [template.name, ...(template.components || [])].join(" ");
+    const text = [
+      template.name,
+      template.protein,
+      template.carb,
+      template.grain,
+      template.vegetable,
+      ...(template.components || []),
+    ]
+      .filter(Boolean)
+      .join(" ");
     return (
       !containsAny(text, restrictions.avoid) &&
       !containsAny(text, ingredientRules?.blockedIngredients || [])
@@ -1590,6 +1589,130 @@ async function resolveWholeMealNutrition(plannedMeal, nutritionProfile, restrict
   );
 }
 
+/**
+ * Resolve a meal using ingredient expansion (PREFERRED METHOD)
+ * 
+ * Template structure:
+ * { protein: "chicken", carb: "white rice", vegetable: "cabbage", target: 420 }
+ * 
+ * Process:
+ * 1. Expand each ingredient to specific FatSecret variants
+ * 2. Randomly pick one variant from each ingredient
+ * 3. Search FatSecret for each specific variant
+ * 4. Combine nutrition values
+ * 5. Return complete meal with real food names
+ */
+async function resolveIngredientBasedMeal(
+  mealTemplate,
+  nutritionProfile,
+  restrictions,
+  ingredientRules,
+) {
+  if (!mealTemplate) return null;
+
+  const ingredients = {
+    protein: mealTemplate.protein,
+    carb: mealTemplate.carb || mealTemplate.grain,
+    vegetable: mealTemplate.vegetable || mealTemplate.vegetables,
+    ...Object.keys(mealTemplate)
+      .filter((k) => !["name", "target", "mealType", "source", "components"].includes(k))
+      .reduce((acc, k) => {
+        if (typeof mealTemplate[k] === "string" && mealTemplate[k].length > 2) {
+          acc[k] = mealTemplate[k];
+        }
+        return acc;
+      }, {}),
+  };
+
+  const selectedFoods = {};
+  const foodDetails = [];
+
+  // Expand each ingredient and pick a random variant
+  for (const [role, ingredient] of Object.entries(ingredients)) {
+    if (!ingredient) continue;
+
+    try {
+      // Get random variant from cache/FatSecret
+      const variant = await ingredientExpansionService.pickRandomVariant(ingredient);
+      selectedFoods[role] = variant;
+
+      // Search FatSecret for this specific variant
+      const result = await searchMealPlanFoods(variant, mealTemplate.mealType, 0);
+      if (result.foods && result.foods.length > 0) {
+        const food = result.foods[0];
+        const detailed = await resolveFoodDetails(food);
+        foodDetails.push({
+          ...detailed,
+          role,
+          baseIngredient: ingredient,
+          selectedVariant: variant,
+        });
+      }
+    } catch (error) {
+      console.error("INGREDIENT_EXPANSION_ERROR:", { ingredient, error: error.message });
+    }
+  }
+
+  if (foodDetails.length === 0) return null;
+
+  // Validate ingredients against CKD rules
+  const validation = {
+    blocked: [],
+    allowed: [],
+    unknown: [],
+  };
+
+  foodDetails.forEach((food) => {
+    const status = ingredientStatus(food.selectedVariant, ingredientRules);
+    if (status === "blocked") validation.blocked.push(food.selectedVariant);
+    else if (status === "allowed") validation.allowed.push(food.selectedVariant);
+    else validation.unknown.push(food.selectedVariant);
+  });
+
+  // Reject if any blocked ingredients
+  if (validation.blocked.length > 0) return null;
+
+  // Combine nutrition from all foods
+  const totals = nutrientTotals(foodDetails);
+
+  // Build meal name from actual selected variants
+  const mealName = Object.values(selectedFoods)
+    .filter(Boolean)
+    .join(" with ");
+
+  return {
+    foodId: foodDetails.map((f) => f.foodId).filter(Boolean).join(","),
+    name: mealName,
+    portion: "1 serving",
+    servingDescription: "1 serving",
+    ...totals,
+    componentBreakdown: foodDetails.map((food) => ({
+      component: food.role,
+      matchedName: food.selectedVariant,
+      foodId: food.foodId,
+      baseIngredient: food.baseIngredient,
+      portion: food.servingDescription || food.servingSize || "1 serving",
+      nutrients: roundNutrients(food),
+      source: food.source || "fatsecret",
+    })),
+    nutrientPreview: roundNutrients(totals),
+    score: scoreMealCandidate(
+      { ...totals, name: mealName },
+      mealTemplate.mealType,
+      nutritionProfile,
+      restrictions,
+    ),
+    source: "fatsecret_ingredient_expansion_meal",
+    reason:
+      "Meal generated from ingredient expansion with FatSecret variants; ensures diversity without recipe search complexity.",
+    raw: {
+      template: mealTemplate,
+      selectedFoods,
+      validation,
+    },
+  };
+}
+
 async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrictions) {
   const componentFoods = [];
   for (const component of plannedMeal.components || []) {
@@ -1642,36 +1765,22 @@ async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrict
 }
 
 async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, seed, ingredientRules) {
-  const wholeMeal = await resolveWholeMealNutrition(
-    plannedMeal,
-    nutritionProfile,
-    restrictions,
-    seed,
-    ingredientRules,
-  );
-  const confidence = wholeMeal ? matchConfidence(plannedMeal, wholeMeal) : null;
-
-  if (wholeMeal && confidence === "exact_or_close") {
-    const preview = roundNutrients(wholeMeal);
-    return {
-      ...wholeMeal,
-      name: plannedMeal.name,
-      nutrientPreview: preview,
-      componentBreakdown: [],
-      matchConfidence: confidence,
-      source:
-        wholeMeal.sourceType === "food"
-          ? "fatsecret_food_meal_plan"
-          : "fatsecret_recipe_meal_plan",
-      reason:
-        "Meal idea selected by CKD guide rules; nutrition resolved from FatSecret whole-meal search.",
-      raw: {
-        ...(wholeMeal.raw || {}),
-        plannedMeal,
-      },
-    };
+  // PREFERRED: Use ingredient expansion if template has protein/carb/vegetable fields
+  const hasIngredientFields = plannedMeal.protein || plannedMeal.carb || plannedMeal.grain || plannedMeal.vegetable;
+  
+  if (hasIngredientFields) {
+    const ingredientBased = await resolveIngredientBasedMeal(
+      plannedMeal,
+      nutritionProfile,
+      restrictions,
+      ingredientRules,
+    );
+    if (ingredientBased && ingredientBased.score >= 45) {
+      return ingredientBased;
+    }
   }
 
+  // FALLBACK: Use old component-based resolution if needed
   const components = await resolveComponentNutrition(
     plannedMeal,
     nutritionProfile,
@@ -1679,6 +1788,14 @@ async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, s
   );
   if (components) return components;
 
+  // Last resort: whole meal nutrition search (not recommended)
+  const wholeMeal = await resolveWholeMealNutrition(
+    plannedMeal,
+    nutritionProfile,
+    restrictions,
+    seed,
+    ingredientRules,
+  );
   if (wholeMeal) {
     const preview = roundNutrients(wholeMeal);
     return {
