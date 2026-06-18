@@ -1123,6 +1123,115 @@ router.post("/meal-plan/generate", async (req, res) => {
   }
 });
 
+router.post("/meal-plan/save", async (req, res) => {
+  try {
+    const { userId, childProfileId, profileUserId, mealPlan, date } = req.body;
+
+    if (!userId || !mealPlan) {
+      return res.status(400).json({
+        success: false,
+        error: "userId and mealPlan are required",
+      });
+    }
+
+    const requestedProfileId = childProfileId || profileUserId || userId;
+    const planDate = date || new Date().toISOString().slice(0, 10);
+
+    // Save meal plan to Firestore
+    const mealPlanDoc = {
+      userId,
+      childProfileId: requestedProfileId,
+      date: planDate,
+      mealPlan: {
+        planDate: mealPlan.planDate || planDate,
+        planDays: mealPlan.planDays || 1,
+        nutritionProfile: mealPlan.nutritionProfile || {},
+        restrictions: mealPlan.restrictions || {},
+        days: mealPlan.days || [],
+        meals: mealPlan.meals || [],
+        totals: mealPlan.totals || {},
+        weeklyTotals: mealPlan.weeklyTotals || {},
+        mealStructure: mealPlan.mealStructure || [],
+        historyRecommendations: mealPlan.historyRecommendations || {},
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    const mealPlanRef = await db.collection("mealPlans").add(mealPlanDoc);
+
+    console.log("MEAL_PLAN_SAVED:", {
+      mealPlanId: mealPlanRef.id,
+      userId,
+      childProfileId: requestedProfileId,
+      date: planDate,
+      mealsCount: (mealPlan.meals || []).length,
+    });
+
+    return res.status(200).json({
+      success: true,
+      mealPlanId: mealPlanRef.id,
+      message: "Meal plan saved successfully",
+    });
+  } catch (error) {
+    console.error("MEAL_PLAN_SAVE ERROR:", error.message);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message || "Failed to save meal plan",
+    });
+  }
+});
+
+router.post("/meal-plan/today", async (req, res) => {
+  try {
+    const { userId, childProfileId, profileUserId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: "userId is required",
+      });
+    }
+
+    const requestedProfileId = childProfileId || profileUserId || userId;
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Get today's saved meal plan
+    const snapshot = await db
+      .collection("mealPlans")
+      .where("childProfileId", "==", requestedProfileId)
+      .where("date", "==", today)
+      .orderBy("createdAt", "desc")
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      return res.status(200).json({
+        success: true,
+        todaysMealPlan: null,
+        message: "No meal plan saved for today",
+      });
+    }
+
+    const doc = snapshot.docs[0];
+    const mealPlan = doc.data();
+
+    return res.status(200).json({
+      success: true,
+      todaysMealPlan: {
+        id: doc.id,
+        ...mealPlan.mealPlan,
+      },
+    });
+  } catch (error) {
+    console.error("MEAL_PLAN_TODAY ERROR:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to fetch today's meal plan",
+    });
+  }
+});
+
 router.post("/logs/list", async (req, res) => {
   try {
     const {
