@@ -135,13 +135,29 @@ async function getFoodDetails(foodId) {
 
 function normalizeRecipe(recipe = {}) {
   // Extract recipe_id, ensuring it's a string
-  const recipeId = String(recipe.recipe_id || recipe.recipeId || recipe.id || "");
+  // Handle both old naming (recipe_id, recipe_name) and new naming (food_id, food_name)
+  const recipeId = String(
+    recipe.recipe_id || 
+    recipe.recipeId || 
+    recipe.food_id ||  // Python service uses food_id
+    recipe.id || 
+    ""
+  );
   
   return {
     recipeId,
-    name: recipe.recipe_name || recipe.name || recipe.title || "Unknown recipe",
+    name: 
+      recipe.recipe_name || 
+      recipe.name || 
+      recipe.food_name ||  // Python service uses food_name
+      recipe.title || 
+      "Unknown recipe",
     description: recipe.recipe_description || recipe.description || "",
-    servingSize: recipe.serving_size || recipe.servingSize || "1 serving",
+    servingSize: 
+      recipe.serving_size || 
+      recipe.servingSize || 
+      recipe.serving_description ||  // Python service uses serving_description
+      "1 serving",
     servings: toNumber(recipe.servings || recipe.number_of_servings),
     imageUrl: recipe.recipe_image || recipe.image_url || recipe.imageUrl || "",
     prepTime: toNumber(recipe.prep_time),
@@ -151,7 +167,7 @@ function normalizeRecipe(recipe = {}) {
     ingredients: recipe.ingredients || [],
     calories: Math.round(toNumber(recipe.calories)),
     protein: toNumber(recipe.protein),
-    carbohydrate: toNumber(recipe.carbohydrate ?? recipe.carbs),
+    carbohydrate: toNumber(recipe.carbohydrate ?? recipe.carbs ?? recipe.carbohydrates),
     fat: toNumber(recipe.fat),
     sodium: toNumber(recipe.sodium),
     potassium: toNumber(recipe.potassium),
@@ -160,7 +176,7 @@ function normalizeRecipe(recipe = {}) {
     sugar: toNumber(recipe.sugar),
     source: recipe.source || "fatsecret_recipe",
     needsManualReview: Boolean(
-      recipe.needs_manual_review ?? recipe.needsManualReview ?? true
+      recipe.needs_manual_review ?? recipe.needsManualReview ?? recipe.is_estimated ?? false
     ),
     raw: recipe,
   };
@@ -172,7 +188,12 @@ async function searchRecipes(query, page = 0, maxCalories = null) {
     query: { query, page, ...(maxCalories && { max_calories: maxCalories }) },
   });
   const result = unwrapResult(response);
-  const recipes = Array.isArray(result.recipes) ? result.recipes : [];
+  // Python service returns 'foods' for recipe search (it reuses FoodSearchResult)
+  const recipes = Array.isArray(result.recipes) 
+    ? result.recipes 
+    : Array.isArray(result.foods)
+      ? result.foods
+      : [];
 
   return {
     query,

@@ -1272,7 +1272,7 @@ function firstIngredientPresentFood(candidates = [], component = "") {
   const withIngredient = candidates.filter((food) =>
     containsAny(componentFoodText(food), [component]),
   );
-  return withIngredient[0] || candidates[0] || null;
+  return withIngredient.find(usefulNutrition) || withIngredient[0] || candidates[0] || null;
 }
 
 function componentSuggestions(candidates = [], selected = {}, component = "") {
