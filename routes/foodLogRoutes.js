@@ -1227,6 +1227,55 @@ router.post("/meal-plan/today", async (req, res) => {
   }
 });
 
+router.post("/meal-plan/delete", async (req, res) => {
+  try {
+    const { userId, childProfileId, profileUserId, mealPlanId } = req.body;
+
+    if (!userId || !mealPlanId) {
+      return res.status(400).json({
+        success: false,
+        error: "userId and mealPlanId are required",
+      });
+    }
+
+    const docRef = db.collection("mealPlan").doc(mealPlanId);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: "Meal plan not found",
+      });
+    }
+
+    const requestedProfileId = childProfileId || profileUserId || userId;
+    const mealPlan = doc.data();
+    if (
+      mealPlan.userId !== userId &&
+      mealPlan.childProfileId !== requestedProfileId
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: "You do not have access to this meal plan",
+      });
+    }
+
+    await docRef.delete();
+
+    return res.status(200).json({
+      success: true,
+      mealPlanId,
+      message: "Meal plan deleted successfully",
+    });
+  } catch (error) {
+    console.error("MEAL_PLAN_DELETE ERROR:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to delete meal plan",
+    });
+  }
+});
+
 router.post("/logs/list", async (req, res) => {
   try {
     const {
