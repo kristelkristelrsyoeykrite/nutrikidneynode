@@ -42,6 +42,7 @@ const { db } = require("../firebase/admin");
 const fatSecretBridge = require("./fatSecretBridgeService");
 const ingredientVariantService = require("./ingredientVariantService");
 const ingredientExpansionService = require("./ingredientExpansionService");
+const portionControlService = require("./portionControlService");
 const {
   decryptHealthDocument,
   decryptHealthProfile,
@@ -2195,6 +2196,24 @@ async function generateMealPlan(body = {}) {
             "Meal selected by CKD guide rules and resolved with FatSecret nutrition data.",
           source: selected.source || "fatsecret_meal_plan",
           needsManualReview: selected.needsManualReview === true,
+          portionControl: portionControlService.generateMealPortions({
+            weightKg: nutritionProfile.weightKg,
+            calorieTarget: nutritionProfile.calorieTarget,
+            ckdStage: nutritionProfile.stage,
+            dialysisStatus: nutritionProfile.dialysis_status,
+            mealType,
+            ingredientList: extractRecipeIngredients(selected),
+            ingredientNutrients: (selected.componentBreakdown || []).map((item) => ({
+              name: item.name || item.ingredient || item.foodName,
+              calories: item.calories,
+              protein: item.protein,
+            })),
+            restrictions: {
+              highPotassium: CKD_INGREDIENT_GUIDE.highPotassium,
+              highPhosphorus: CKD_INGREDIENT_GUIDE.highPhosphorus,
+              highSodium: CKD_INGREDIENT_GUIDE.highSodium,
+            },
+          }),
           raw: selected.raw || selected,
         };
         
