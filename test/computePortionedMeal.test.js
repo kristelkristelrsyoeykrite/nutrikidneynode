@@ -215,6 +215,51 @@ async function testUsesOneFixedReferenceServing() {
   assert.strictEqual(detailCalls, 1);
 }
 
+async function testRiskBasedMissingNutrients() {
+  const oilWithMissingMinerals = food("Olive Oil", {
+    calories: 119,
+    protein: 0,
+    carbohydrate: 0,
+    fat: 13.5,
+    sodium: null,
+    potassium: null,
+    phosphorus: null,
+  });
+  const oilMeal = await computePortionedMeal(
+    { mealType: "AM Snack", fat: "olive oil" },
+    { sodium: 2000, potassium: 3000, phosphorus: 1000 },
+    null,
+    {},
+    {
+      adapters: {
+        expandIngredient: async (ingredient) => [ingredient],
+        searchFoods: async () => ({ foods: [oilWithMissingMinerals] }),
+        resolveFood: async (candidate) => candidate,
+      },
+    },
+  );
+  assert.ok(oilMeal);
+  assert.strictEqual(oilMeal.satisfied, true);
+  assert.strictEqual(oilMeal.components[0].nutrientSources.phosphorus, "trace_category_assumption");
+  assert.ok(oilMeal.components[0].estimatedNutrients.includes("phosphorus"));
+
+  const chickenWithMissingPhosphorus = food("Chicken", { phosphorus: null });
+  const riskyMeal = await computePortionedMeal(
+    { mealType: "Lunch", protein: "chicken" },
+    { protein: 48, sodium: 2000, phosphorus: 1000 },
+    null,
+    {},
+    {
+      adapters: {
+        expandIngredient: async (ingredient) => [ingredient],
+        searchFoods: async () => ({ foods: [chickenWithMissingPhosphorus] }),
+        resolveFood: async (candidate) => candidate,
+      },
+    },
+  );
+  assert.strictEqual(riskyMeal, null);
+}
+
 async function testDailySafetyValidation() {
   const status = dailyConstraintStatus(
     { calories: 1700, protein: 48, sodium: 1900, potassium: 2900, phosphorus: 900 },
@@ -342,6 +387,7 @@ async function run() {
   await testManualPortionsAndProteinSplit();
   await testVariantRetryAndFailure();
   await testUsesOneFixedReferenceServing();
+  await testRiskBasedMissingNutrients();
   await testDailySafetyValidation();
   await testDailyCalorieBalancing();
   await testTemplateReplacement();

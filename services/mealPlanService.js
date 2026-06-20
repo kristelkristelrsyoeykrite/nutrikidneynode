@@ -53,6 +53,17 @@ const MAX_CACHED_RECIPE_RESULTS = 50;
 const FOOD_DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FOOD_DETAIL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
 const foodDetailCache = new Map();
+const TRACE_MINERAL_FOOD_NAMES = [
+  "oil",
+  "cooking oil",
+  "olive oil",
+  "canola oil",
+  "vegetable oil",
+  "butter",
+  "margarine",
+  "sugar",
+  "honey",
+];
 
 function ingredientVariants() {
   return require("./ingredientVariantService");
@@ -2359,10 +2370,38 @@ async function computePortionedMeal(
     if (!food || (numberOrNull(food.calories) || 0) <= 0) return false;
     if (role === "protein" && (numberOrNull(food.protein) || 0) <= 0) return false;
     if (role === "carb" && (numberOrNull(food.carbohydrate) || 0) <= 0) return false;
+    if (role === "fat" && (numberOrNull(food.fat) || 0) <= 0) return false;
     if (!nutrientProvided("sodium")) return false;
     if (mealTargets.potassium && !nutrientProvided("potassium")) return false;
     if (mealTargets.phosphorus && !nutrientProvided("phosphorus")) return false;
     return true;
+  }
+
+  function applyRiskBasedNutrientFallbacks(role, ingredient, food) {
+    if (!food) return food;
+    const name = normalizeTextToken(food.name || ingredient);
+    const traceCategory = TRACE_MINERAL_FOOD_NAMES.some((item) => name.includes(item));
+    const plannedGrams = role === "fat" ? 5 : null;
+    if (!traceCategory || plannedGrams === null || plannedGrams > 15) return food;
+
+    const resolved = {
+      ...food,
+      estimatedNutrients: [...(food.estimatedNutrients || [])],
+      nutrientSources: { ...(food.nutrientSources || {}) },
+      nutrientEstimateNotes: { ...(food.nutrientEstimateNotes || {}) },
+    };
+    for (const nutrient of ["sodium", "potassium", "phosphorus"]) {
+      if (numberOrNull(resolved[nutrient]) !== null) continue;
+      resolved[nutrient] = 0;
+      if (!resolved.estimatedNutrients.includes(nutrient)) {
+        resolved.estimatedNutrients.push(nutrient);
+      }
+      resolved.nutrientSources[nutrient] = "trace_category_assumption";
+      resolved.nutrientEstimateNotes[nutrient] =
+        `Estimated as trace for a ${plannedGrams} g planned portion.`;
+    }
+    resolved.isEstimated = resolved.estimatedNutrients.length > 0;
+    return resolved;
   }
 
   const picked = [];
@@ -2379,7 +2418,7 @@ async function computePortionedMeal(
           const text = componentFoodText(candidate);
           return containsAny(text, [ingredient, variant]) &&
             !containsAny(text, restrictions.avoid || []);
-        });
+        }).map((candidate) => applyRiskBasedNutrientFallbacks(role, ingredient, candidate));
 
         const fixedServing = candidates.find((candidate) =>
           requiredNutritionPresent(role, candidate),
@@ -2391,7 +2430,11 @@ async function computePortionedMeal(
 
         if (!detailLookupUsed && candidates[0]) {
           detailLookupUsed = true;
-          const detailed = await adapters.resolveFood(candidates[0]);
+          const detailed = applyRiskBasedNutrientFallbacks(
+            role,
+            ingredient,
+            await adapters.resolveFood(candidates[0]),
+          );
           if (requiredNutritionPresent(role, detailed)) {
             selected = { role, ingredient, variant, food: detailed };
           }
@@ -2545,6 +2588,7 @@ async function computePortionedMeal(
       isEstimated: p.food?.isEstimated === true,
       estimatedNutrients: p.food?.estimatedNutrients || [],
       nutrientSources: p.food?.nutrientSources || {},
+      nutrientEstimateNotes: p.food?.nutrientEstimateNotes || {},
       phosphorusReference: p.food?.phosphorusReference || null,
     })),
     totals: roundNutrients({
@@ -2745,6 +2789,7 @@ function mealFromPortionResult(portioned, date) {
       isEstimated: component.isEstimated,
       estimatedNutrients: component.estimatedNutrients,
       nutrientSources: component.nutrientSources,
+      nutrientEstimateNotes: component.nutrientEstimateNotes,
       phosphorusReference: component.phosphorusReference,
     })),
     recipeValidation: { isAllowed: portioned.satisfied },
