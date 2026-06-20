@@ -126,6 +126,15 @@ function normalizeFood(food = {}) {
     needsManualReview: Boolean(
       food.needs_manual_review ?? food.needsManualReview,
     ),
+    isEstimated: Boolean(food.is_estimated ?? food.isEstimated),
+    missingNutrients:
+      food.missing_nutrients || food.missingNutrients || [],
+    estimatedNutrients:
+      food.estimated_nutrients || food.estimatedNutrients || [],
+    nutrientSources:
+      food.nutrient_sources || food.nutrientSources || {},
+    phosphorusReference:
+      food.phosphorus_reference || food.phosphorusReference || null,
     raw: food,
   };
 }
