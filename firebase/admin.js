@@ -1,3 +1,16 @@
+// Allow tests to skip initializing firebase-admin when env var is set
+if (process.env.SKIP_FIREBASE_ADMIN_INIT === 'true') {
+  const fakeDb = {
+    collection: () => ({
+      doc: () => ({ get: async () => ({ exists: false, data: () => null }), set: async () => null }),
+      where: () => ({ get: async () => ({ docs: [] }) }),
+      get: async () => ({ docs: [] }),
+    }),
+  };
+  module.exports = { admin: null, db: fakeDb, auth: {} };
+  return;
+}
+
 const admin = require("firebase-admin");
 
 const brokenProxyValues = new Set([

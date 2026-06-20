@@ -40,9 +40,7 @@
 
 const { db } = require("../firebase/admin");
 const fatSecretBridge = require("./fatSecretBridgeService");
-const ingredientVariantService = require("./ingredientVariantService");
 const ingredientExpansionService = require("./ingredientExpansionService");
-const portionControlService = require("./portionControlService");
 const {
   decryptHealthDocument,
   decryptHealthProfile,
@@ -52,6 +50,10 @@ const RECIPE_CACHE_COLLECTION = "recipes";
 const RECIPE_SEARCH_CACHE_COLLECTION = "recipeSearchCache";
 const RECIPE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 14;
 const MAX_CACHED_RECIPE_RESULTS = 50;
+
+function ingredientVariants() {
+  return require("./ingredientVariantService");
+}
 
 const CKD_INGREDIENT_GUIDE = {
   // Low potassium - safe for all CKD stages
@@ -360,6 +362,66 @@ function isFluidRestrictionEnabled(value) {
   );
 }
 
+function isDialysisStatus(value) {
+  const normalized = normalizeTextToken(value);
+  if (
+    !normalized ||
+    normalized.includes("not on dialysis") ||
+    normalized.includes("no dialysis") ||
+    normalized.includes("pre-dialysis") ||
+    normalized.includes("pre dialysis")
+  ) return false;
+  return normalized.includes("dialysis") || normalized === "rrt" || normalized === "5d";
+}
+
+function isAffirmative(value) {
+  if (value === true || value === 1) return true;
+  return ["yes", "true", "1", "enabled", "positive"].includes(normalizeTextToken(value));
+}
+
+function normalizedLabStatus(value, numericValue, highThreshold) {
+  const normalized = normalizeTextToken(value);
+  if (["high", "danger", "caution", "elevated"].some((item) => normalized.includes(item))) {
+    return "High";
+  }
+  if (normalized.includes("low")) return "Low";
+  if (["normal", "safe", "within range"].some((item) => normalized.includes(item))) {
+    return "Normal";
+  }
+  return labStatus(numericValue, highThreshold);
+}
+
+function proteinPrescription({ weightKg, dialysisStatus, ckdType, prescribedProtein }) {
+  const prescribed = numberOrNull(prescribedProtein);
+  if (prescribed !== null && prescribed > 0) {
+    return { gramsPerDay: prescribed, factor: null, source: "clinician_target" };
+  }
+
+  const weight = numberOrNull(weightKg);
+  if (weight === null || weight <= 0) {
+    return { gramsPerDay: null, factor: null, source: "missing_weight" };
+  }
+
+  const dialysis = isDialysisStatus(dialysisStatus);
+  const type = normalizeTextToken(ckdType);
+  const status = normalizeTextToken(dialysisStatus);
+  const preDialysis =
+    type.includes("pre") ||
+    status.includes("pre-dialysis") ||
+    status.includes("pre dialysis") ||
+    (!dialysis && type.includes("ckd") && !type.includes("stone"));
+  const factor = dialysis ? 1.2 : preDialysis ? 0.7 : 0.8;
+  return {
+    gramsPerDay: Number((weight * factor).toFixed(1)),
+    factor,
+    source: dialysis
+      ? "manual_dialysis_formula"
+      : preDialysis
+        ? "manual_predialysis_fallback"
+        : "conservative_application_fallback",
+  };
+}
+
 async function buildChildContext(userId, requestedChildProfileId) {
   const rawUser = await getDocData("users", userId);
   const user = rawUser ? decryptHealthProfile(rawUser) : null;
@@ -425,11 +487,24 @@ async function buildChildContext(userId, requestedChildProfileId) {
       medicalProfile?.ckdStage ||
       medicalProfile?.ckd_stage ||
       medicalProfile?.stage ||
+      targets?.ckd_stage ||
       "unknown",
     dialysis_status:
       medicalProfile?.dialysisStatus ||
       medicalProfile?.dialysis_status ||
+      targets?.dialysis_status ||
       (medicalProfile?.onDialysis === true ? "on_dialysis" : "unknown"),
+    ckd_type:
+      medicalProfile?.ckdType ||
+      medicalProfile?.ckd_type ||
+      medicalProfile?.kidneyDiseaseType ||
+      medicalProfile?.kidney_disease_type ||
+      "unknown",
+    has_diabetes:
+      medicalProfile?.hasDiabetes ??
+      medicalProfile?.has_diabetes ??
+      medicalProfile?.diabetes ??
+      false,
     diet_pattern:
       medicalProfile?.dietPattern ||
       medicalProfile?.diet_pattern ||
@@ -452,24 +527,40 @@ async function buildChildContext(userId, requestedChildProfileId) {
         targets.sodium ??
           targets.sodiumLimitMg ??
           targets.sodium_limit_mg ??
-          targets.maxSodiumMg,
+          targets.maxSodiumMg ??
+          targets.sodium_target_mg,
       ),
       potassium: numberOrNull(
         targets.potassium ??
           targets.potassiumLimitMg ??
           targets.potassium_limit_mg ??
-          targets.maxPotassiumMg,
+          targets.maxPotassiumMg ??
+          targets.potassium_target_mg,
       ),
       phosphorus: numberOrNull(
         targets.phosphorus ??
           targets.phosphorusLimitMg ??
-          targets.phosphorus_limit_mg,
+          targets.phosphorus_limit_mg ??
+          targets.phosphorus_target_mg ??
+          targets.phosphate_target_mg,
       ),
       protein_min: numberOrNull(
-        targets.proteinMin ?? targets.protein_min ?? targets.minProteinG,
+        targets.proteinMin ??
+          targets.protein_min ??
+          targets.minProteinG ??
+          targets.protein_target_min_g,
       ),
       protein_max: numberOrNull(
-        targets.proteinMax ?? targets.protein_max ?? targets.maxProteinG,
+        targets.proteinMax ??
+          targets.protein_max ??
+          targets.maxProteinG ??
+          targets.protein_target_g,
+      ),
+      calories: numberOrNull(
+        targets.calories ??
+          targets.calories_max ??
+          targets.calorieTarget ??
+          targets.energy_target_kcal,
       ),
       dailyFluidLimitMl,
     }),
@@ -722,11 +813,13 @@ function buildNutritionProfile({
     firstPresent(anthropometrics, ["bmi", "BMI"]) ||
       firstPresent(medicalProfile, ["bmi", "BMI"]),
   );
-  const dialysisStatus = String(childContext.dialysis_status || "").toLowerCase();
-  const onDialysis = dialysisStatus.includes("dialysis") && !dialysisStatus.includes("pre");
-  const proteinTarget = weightKg
-    ? Number((weightKg * (onDialysis ? 1.2 : 0.8)).toFixed(1))
-    : numberOrNull(childContext.targets?.protein_max);
+  const dialysisStatus = childContext.dialysis_status || "unknown";
+  const protein = proteinPrescription({
+    weightKg,
+    dialysisStatus,
+    ckdType: childContext.ckd_type,
+    prescribedProtein: childContext.targets?.protein_max,
+  });
   const glucose = numberOrNull(firstPresent(labs, ["glucose", "fastingGlucose"]));
   const hba1c = numberOrNull(firstPresent(labs, ["HbA1c", "hba1c", "hemoglobinA1c"]));
   const serumAlbumin = numberOrNull(
@@ -739,15 +832,30 @@ function buildNutritionProfile({
   return {
     stage,
     egfr,
-    potassiumStatus: labStatus(firstPresent(labs, ["potassium", "K"]), 5.0),
-    phosphorusStatus: labStatus(firstPresent(labs, ["phosphorus", "phosphate"]), 4.5),
-    sodiumStatus: labStatus(firstPresent(labs, ["sodium", "Na"]), 145),
+    potassiumStatus: normalizedLabStatus(
+      firstPresent(labs, ["potassium_status", "potassiumStatus"]),
+      firstPresent(labs, ["potassium", "K"]),
+      5.0,
+    ),
+    phosphorusStatus: normalizedLabStatus(
+      firstPresent(labs, ["phosphorus_status", "phosphorusStatus"]),
+      firstPresent(labs, ["phosphorus", "phosphate"]),
+      4.5,
+    ),
+    sodiumStatus: normalizedLabStatus(
+      firstPresent(labs, ["sodium_status", "sodiumStatus"]),
+      firstPresent(labs, ["sodium", "Na"]),
+      145,
+    ),
     diabetesRisk:
-      (hba1c !== null && hba1c >= 6.5) || (glucose !== null && glucose > 126),
+      isAffirmative(childContext.has_diabetes) ||
+      (hba1c !== null && hba1c >= 6.5) ||
+      (glucose !== null && glucose > 126),
     bmiCategory: bmiCategory(bmi),
-    proteinTarget,
+    proteinTarget: protein.gramsPerDay,
+    proteinFactor: protein.factor,
+    proteinTargetSource: protein.source,
     calorieTarget:
-      numberOrNull(childContext.targets?.calories_max) ||
       numberOrNull(childContext.targets?.calories) ||
       1800,
     riskMalnutrition:
@@ -755,6 +863,11 @@ function buildNutritionProfile({
       (totalProtein !== null && totalProtein < 6.0),
     weightKg,
     bmi,
+    ckdType: childContext.ckd_type,
+    dialysisStatus,
+    diabetes: isAffirmative(childContext.has_diabetes),
+    fluidRestrictionStatus: childContext.fluid_restriction_status,
+    dailyFluidLimitMl: childContext.targets?.dailyFluidLimitMl || null,
   };
 }
 
@@ -990,19 +1103,14 @@ function buildGuideTags(profile) {
 
 function perMealTargets(profile, restrictions, mealType) {
   const isSnack = mealType.includes("Snack");
-  const calorieTarget = isSnack ? 150 : Math.round((profile.calorieTarget || 1800) / 4);
-  const proteinTarget = profile.proteinTarget
-    ? profile.proteinTarget * (isSnack ? 0.08 : 0.28)
+  const proteinTarget = profile.proteinTarget && !isSnack
+    ? Number((profile.proteinTarget / 3).toFixed(1))
     : null;
   return {
-    calories: calorieTarget,
-    sodium: Math.round((restrictions.dailySodiumLimitMg || 2000) * (isSnack ? 0.08 : 0.28)),
-    potassium: restrictions.dailyPotassiumLimitMg
-      ? Math.round(restrictions.dailyPotassiumLimitMg * (isSnack ? 0.08 : 0.28))
-      : null,
-    phosphorus: restrictions.dailyPhosphorusLimitMg
-      ? Math.round(restrictions.dailyPhosphorusLimitMg * (isSnack ? 0.08 : 0.28))
-      : null,
+    calories: null,
+    sodium: restrictions.dailySodiumLimitMg || 2000,
+    potassium: restrictions.dailyPotassiumLimitMg || null,
+    phosphorus: restrictions.dailyPhosphorusLimitMg || null,
     protein: proteinTarget,
   };
 }
@@ -1028,7 +1136,14 @@ function scoreMealCandidate(food, mealType, profile, restrictions) {
 
   if (sodium > 600) score -= 20;
   if (containsAny(foodText, restrictions.avoid)) score -= 35;
-  if (sodium > targets.sodium) score -= Math.min(35, Math.ceil((sodium - targets.sodium) / 40));
+  if (targets.sodium && sodium > targets.sodium) {
+    score -= Math.min(35, Math.ceil((sodium - targets.sodium) / 40));
+  }
+  if (normalizeTextToken(profile.ckdType).includes("stone")) {
+    ["organ meat", "shellfish", "small fish", "fish sauce", "alcohol", "processed meat"].forEach(
+      (item) => avoid.add(item),
+    );
+  }
   if (targets.potassium && potassium > targets.potassium) score -= 24;
   if (targets.phosphorus && phosphorus > targets.phosphorus) score -= 24;
   if (profile.potassiumStatus === "High" && potassium > 500) score -= 20;
@@ -1041,7 +1156,9 @@ function scoreMealCandidate(food, mealType, profile, restrictions) {
   if (containsAny(foodText, restrictions.prefer)) score += 10;
   if (mealType.includes("Snack") && calories > 300) score -= 12;
   if (!mealType.includes("Snack") && calories < 120) score -= 8;
-  if (Math.abs(calories - targets.calories) <= targets.calories * 0.3) score += 8;
+  if (targets.calories && Math.abs(calories - targets.calories) <= targets.calories * 0.3) {
+    score += 8;
+  }
 
   return score;
 }
@@ -1237,6 +1354,45 @@ function plannedMealFor(mealType, profile, restrictions, seed, mealIndex, histor
   };
 }
 
+function portionTemplateCandidates(
+  mealType,
+  profile,
+  restrictions,
+  seed,
+  mealIndex,
+  history,
+  ingredientRules,
+  limit = 5,
+) {
+  const templates = safeMealTemplates(
+    mealType,
+    profile,
+    restrictions,
+    history,
+    ingredientRules,
+  );
+  if (!templates.length) return [];
+  const start = Math.abs(seed + mealIndex * 7) % templates.length;
+  const fruitChoices = ["apple", "grapes", "pear", "strawberries"];
+  const vegetableChoices = ["cabbage", "cauliflower", "cucumber", "lettuce"];
+
+  return Array.from({ length: Math.min(limit, templates.length) }, (_, offset) => {
+    const template = templates[(start + offset) % templates.length];
+    if (mealType.includes("Snack")) {
+      return { mealType, ...template, source: "ckd_guide_rule_template" };
+    }
+    return {
+      mealType,
+      ...template,
+      vegetable:
+        template.vegetable || vegetableChoices[(start + offset) % vegetableChoices.length],
+      fruit: template.fruit || fruitChoices[(start + offset) % fruitChoices.length],
+      fat: template.fat || "olive oil",
+      source: "ckd_guide_rule_template",
+    };
+  });
+}
+
 function usefulNutrition(food = {}) {
   const values = [
     numberOrNull(food.calories),
@@ -1286,7 +1442,7 @@ async function searchMealPlanRecipes(query, mealType, calorieTarget = null, page
     // Extract base ingredient from query (e.g., "chicken" from "chicken rice low sodium recipe")
     const baseIngredient = extractBaseSearchTerm(query);
     if (baseIngredient && recipes.length > 0) {
-      ingredientVariantService.learnVariantsFromRecipes(baseIngredient, recipes)
+      ingredientVariants().learnVariantsFromRecipes(baseIngredient, recipes)
         .catch(err => console.error("VARIANT_LEARNING_FAILED:", err.message));
     }
 
@@ -1362,7 +1518,7 @@ async function searchMealPlanRecipesWithVariants(
     const baseIngredient = extractBaseSearchTerm(query);
     
     // Get learned variants
-    const variantData = await ingredientVariantService.getVariantsForIngredient(baseIngredient);
+    const variantData = await ingredientVariants().getVariantsForIngredient(baseIngredient);
     const expandedIngredients = [baseIngredient, ...variantData.variants];
     
     if (expandedIngredients.length === 1) {
@@ -1754,6 +1910,73 @@ async function resolveWholeMealNutrition(plannedMeal, nutritionProfile, restrict
 }
 
 /**
+ * Try to find a single FatSecret food whose per-serving protein
+ * closely matches the meal protein target. This is the "search-first"
+ * fast-path: prefer whole-serving suggestions when available.
+ */
+async function findSingleServingProteinMatch(plannedMeal, nutritionProfile, restrictions, ingredientRules, tolerancePercent = 0.15) {
+  try {
+    const targets = perMealTargets(nutritionProfile, restrictions, plannedMeal.mealType || "Lunch");
+    const mealProtein = numberOrNull(targets.protein) || null;
+    if (!mealProtein) return null;
+
+    // Determine a focused search term (prefer explicit protein ingredient)
+    const queryBase = (plannedMeal.protein && String(plannedMeal.protein).trim()) ||
+      extractBaseSearchTerm(plannedMeal.name) || plannedMeal.name || (plannedMeal.components && plannedMeal.components[0]);
+    if (!queryBase) return null;
+
+    const searchResult = await searchMealPlanFoods(queryBase, plannedMeal.mealType || "Lunch", 0);
+    const foods = (searchResult.foods || []).slice(0, 20);
+    if (!foods.length) return null;
+
+    const detailed = await Promise.all(foods.map(resolveFoodDetails));
+
+    for (const candidate of detailed) {
+      if (!usefulNutrition(candidate)) continue;
+      const candidateProtein = numberOrNull(candidate.protein);
+      if (!candidateProtein || candidateProtein <= 0) continue;
+      const ratio = Math.abs(candidateProtein - mealProtein) / Math.max(1, mealProtein);
+      if (ratio > tolerancePercent) continue;
+
+      // Quick CKD restriction checks (per-meal targets)
+      if (targets.sodium && numberOrNull(candidate.sodium) > targets.sodium) continue;
+      if (targets.potassium && numberOrNull(candidate.potassium) > targets.potassium) continue;
+      if (targets.phosphorus && numberOrNull(candidate.phosphorus) > targets.phosphorus) continue;
+
+      const score = scoreMealCandidate(candidate, plannedMeal.mealType || "Lunch", nutritionProfile, restrictions);
+      if (score < 40) continue;
+
+      // Build a meal object consistent with other resolvers
+      const meal = {
+        foodId: candidate.foodId || candidate.recipeId,
+        name: candidate.name || candidate.title || queryBase,
+        portion: candidate.servingDescription || candidate.servingSize || "1 serving",
+        servingDescription: candidate.servingDescription || candidate.servingSize || "1 serving",
+        calories: numberOrNull(candidate.calories),
+        protein: numberOrNull(candidate.protein),
+        carbohydrate: numberOrNull(candidate.carbohydrate),
+        fat: numberOrNull(candidate.fat),
+        sodium: numberOrNull(candidate.sodium),
+        potassium: numberOrNull(candidate.potassium),
+        phosphorus: numberOrNull(candidate.phosphorus),
+        componentBreakdown: componentBreakdownFromFoods([candidate]),
+        nutrientPreview: roundNutrients(candidate),
+        score,
+        source: "fatsecret_single_serving_match",
+        reason: `Single serving matched protein target within ${Math.round(tolerancePercent * 100)}% tolerance.`,
+        raw: { candidateQuery: queryBase, candidate },
+      };
+
+      return meal;
+    }
+    return null;
+  } catch (err) {
+    console.error("SINGLE_SERVING_MATCH_ERROR:", { plannedMeal: plannedMeal?.name, error: err.message });
+    return null;
+  }
+}
+
+/**
  * Resolve a meal using ingredient expansion (PREFERRED METHOD)
  * 
  * Template structure:
@@ -1953,6 +2176,359 @@ async function resolveIngredientBasedMeal(
   return result;
 }
 
+/**
+ * Compute a portioned meal from a simple template following the user's 10-step flow.
+ * - Calculates per-meal nutrient targets (from daily targets or profile)
+ * - Picks FatSecret variants for each ingredient
+ * - Computes initial portions (grams / servings) from protein/carbohydrate primary nutrient
+ * - Recalculates totals and adjusts portions / substitutes to satisfy CKD constraints
+ */
+async function computePortionedMeal(
+  mealTemplate = {},
+  dailyTargets = {},
+  nutritionProfile = null,
+  restrictions = {},
+  options = {},
+) {
+  const maxIterations = Number(options.maxIterations || 8);
+  const maxVariants = Number(options.maxVariants || 3);
+  const mealType = mealTemplate.mealType || "Lunch";
+  const isSnack = mealType.includes("Snack");
+  const adapters = {
+    expandIngredient:
+      options.adapters?.expandIngredient || ingredientExpansionService.expandIngredient,
+    searchFoods: options.adapters?.searchFoods || searchMealPlanFoods,
+    resolveFood: options.adapters?.resolveFood || resolveFoodDetails,
+  };
+
+  // Protein is split only across the three main meals. Electrolyte caps are
+  // supplied as a shrinking daily budget by generateMealPlan.
+  let mealTargets = {};
+  if (nutritionProfile && nutritionProfile.calorieTarget) {
+    mealTargets = perMealTargets(nutritionProfile, restrictions, mealType);
+  } else {
+    const daily = {
+      calories: Number(dailyTargets.calories || 1800),
+      protein: Number(dailyTargets.protein || 60),
+      sodium: Number(dailyTargets.sodium || 2000),
+      potassium: Number(dailyTargets.potassium || 0),
+      phosphorus: Number(dailyTargets.phosphorus || 0),
+    };
+    mealTargets = {
+      calories: null,
+      protein: isSnack ? null : Number((daily.protein / 3).toFixed(1)),
+      sodium: daily.sodium || null,
+      potassium: daily.potassium || null,
+      phosphorus: daily.phosphorus || null,
+    };
+  }
+  for (const nutrient of ["sodium", "potassium", "phosphorus"]) {
+    const budget = numberOrNull(options.nutrientBudgets?.[nutrient]);
+    if (budget !== null) mealTargets[nutrient] = Math.max(0, Math.round(budget));
+  }
+
+  const plate = { vegetables: 0.5, protein: 0.25, carbs: 0.25 };
+  const components = {
+    protein: mealTemplate.protein || mealTemplate.proteins || null,
+    carb: mealTemplate.carb || mealTemplate.carbohydrate || mealTemplate.grain || null,
+    vegetable: mealTemplate.vegetable || mealTemplate.vegetables || null,
+    fruit: mealTemplate.fruit || null,
+    fat: mealTemplate.fat || null,
+  };
+
+  function parseServingGrams(desc) {
+    if (!desc || typeof desc !== "string") return null;
+    const m = desc.match(/([\d.,]+)\s*(g|gram|grams)\b/i);
+    if (m) return Number(String(m[1]).replace(/,/g, ""));
+    // Some descriptions have formats like "1 cup (150 g)" - try to extract parenthesized grams
+    const p = desc.match(/\((?:[^)]*?)\s*([\d.,]+)\s*(g|gram|grams)\)/i);
+    if (p) return Number(String(p[1]).replace(/,/g, ""));
+    return null;
+  }
+
+  function servingMeasurement(desc) {
+    const text = String(desc || "").toLowerCase();
+    const match = text.match(/([\d.]+|one|half)\s*(cup|cups|slice|slices|piece|pieces|small|teaspoon|teaspoons|tsp)\b/);
+    if (!match) return null;
+    const quantity = match[1] === "one" ? 1 : match[1] === "half" ? 0.5 : Number(match[1]);
+    return Number.isFinite(quantity) ? { quantity, unit: match[2] } : null;
+  }
+
+  function manualPortion(role, ingredient, food) {
+    const description = food.servingDescription || food.servingSize || "";
+    const gramsPerServing = parseServingGrams(description) || 100;
+    const measure = servingMeasurement(description);
+    const ingredientText = normalizeTextToken(ingredient);
+    let text = "1 serving";
+    let servings = 1;
+    let desiredGrams = null;
+
+    if (role === "protein") {
+      const proteinPerServing = numberOrNull(food.protein) || 0;
+      if (!mealTargets.protein || proteinPerServing <= 0) return null;
+      servings = mealTargets.protein / proteinPerServing;
+      const grams = Math.max(10, Math.round(servings * gramsPerServing));
+      const matchboxes = mealTargets.protein / 8;
+      return {
+        text: `${grams} g (${matchboxes.toFixed(1)} matchbox portions)`,
+        grams,
+        servings,
+        manualServing: "1 matchbox is approximately 1 oz or 8 g protein",
+      };
+    }
+
+    if (role === "vegetable") {
+      text = isSnack ? "1/2 cup cooked" : "1 cup cooked";
+      const cups = isSnack ? 0.5 : 1;
+      if (measure?.unit.startsWith("cup")) servings = cups / measure.quantity;
+      else desiredGrams = isSnack ? 75 : 150;
+    } else if (role === "fruit") {
+      text = "1 small fruit or 1/2 cup";
+      if (measure?.unit.startsWith("cup")) servings = 0.5 / measure.quantity;
+      else if (measure?.unit === "small" || measure?.unit.startsWith("piece")) {
+        servings = 1 / measure.quantity;
+      } else desiredGrams = 100;
+    } else if (role === "carb") {
+      if (ingredientText.includes("rice")) {
+        text = "1/2 cup rice";
+        if (measure?.unit.startsWith("cup")) servings = 0.5 / measure.quantity;
+        else desiredGrams = 79;
+      } else if (/(noodle|oatmeal|pasta)/.test(ingredientText)) {
+        text = "1 cup";
+        if (measure?.unit.startsWith("cup")) servings = 1 / measure.quantity;
+        else desiredGrams = ingredientText.includes("oatmeal") ? 117 : 125;
+      } else if (ingredientText.includes("pandesal")) {
+        text = "3 pandesal";
+        if (measure?.unit.startsWith("piece")) servings = 3 / measure.quantity;
+        else desiredGrams = 150;
+      } else if (/(bread|toast)/.test(ingredientText)) {
+        text = "2 slices bread";
+        if (measure?.unit.startsWith("slice")) servings = 2 / measure.quantity;
+        else desiredGrams = 60;
+      }
+    } else if (role === "fat") {
+      text = "1 tsp";
+      if (["teaspoon", "teaspoons", "tsp"].includes(measure?.unit)) {
+        servings = 1 / measure.quantity;
+      } else desiredGrams = 5;
+    }
+
+    if (desiredGrams !== null) servings = desiredGrams / gramsPerServing;
+
+    return {
+      text,
+      grams: Math.max(1, Math.round(desiredGrams ?? gramsPerServing * servings)),
+      servings,
+      manualServing: text,
+    };
+  }
+
+  function requiredNutritionPresent(role, food) {
+    function nutrientProvided(nutrient) {
+      const value = numberOrNull(food?.[nutrient]);
+      if (value === null) return false;
+      if (value !== 0 || !food.raw) return true;
+      const rawValues = [
+        food.raw?.[nutrient],
+        food.raw?.food?.[nutrient],
+        food.raw?.foodDetails?.[nutrient],
+        food.raw?.foodDetails?.food?.[nutrient],
+      ];
+      return rawValues.some((rawValue) => rawValue !== undefined && rawValue !== null && rawValue !== "");
+    }
+
+    if (!food || (numberOrNull(food.calories) || 0) <= 0) return false;
+    if (role === "protein" && (numberOrNull(food.protein) || 0) <= 0) return false;
+    if (role === "carb" && (numberOrNull(food.carbohydrate) || 0) <= 0) return false;
+    if (!nutrientProvided("sodium")) return false;
+    if (mealTargets.potassium && !nutrientProvided("potassium")) return false;
+    if (mealTargets.phosphorus && !nutrientProvided("phosphorus")) return false;
+    return true;
+  }
+
+  const picked = [];
+  for (const [role, ingredient] of Object.entries(components)) {
+    if (!ingredient) continue;
+    try {
+      const expanded = await adapters.expandIngredient(ingredient);
+      const variants = [...new Set([...(Array.isArray(expanded) ? expanded : []), ingredient])]
+        .slice(0, maxVariants);
+      let selected = null;
+      for (const variant of variants) {
+        const result = await adapters.searchFoods(variant, mealType, 0);
+        const candidates = (result.foods || []).slice(0, 8);
+        for (const candidate of candidates) {
+          const detailed = await adapters.resolveFood(candidate);
+          const text = componentFoodText(detailed);
+          if (!containsAny(text, [ingredient, variant])) continue;
+          if (containsAny(text, restrictions.avoid || [])) continue;
+          if (requiredNutritionPresent(role, detailed)) {
+            selected = { role, ingredient, variant, food: detailed };
+            break;
+          }
+        }
+        if (selected) break;
+      }
+      if (!selected) return null;
+      picked.push(selected);
+    } catch (err) {
+      console.error("COMPUTE_PORTIONED_MEAL_FETCH_ERROR:", { role, ingredient, error: err.message });
+      return null;
+    }
+  }
+
+  if (picked.length === 0) return null;
+
+  function scaleNutrients(food, scale) {
+    return {
+      calories: Math.round((numberOrNull(food.calories) || 0) * scale),
+      protein: Number(((numberOrNull(food.protein) || 0) * scale).toFixed(1)),
+      carbohydrate: Number(((numberOrNull(food.carbohydrate) || 0) * scale).toFixed(1)),
+      fat: Number(((numberOrNull(food.fat) || 0) * scale).toFixed(1)),
+      sodium: Math.round((numberOrNull(food.sodium) || 0) * scale),
+      potassium: Math.round((numberOrNull(food.potassium) || 0) * scale),
+      phosphorus: Math.round((numberOrNull(food.phosphorus) || 0) * scale),
+    };
+  }
+
+  const componentsPortions = picked.map((entry) => {
+    const portion = manualPortion(entry.role, entry.ingredient, entry.food);
+    if (!portion) return null;
+    const nutrients = scaleNutrients(entry.food, portion.servings);
+
+    return {
+      role: entry.role,
+      ingredient: entry.ingredient,
+      variant: entry.variant,
+      food: entry.food || null,
+      portion,
+      nutrients,
+    };
+  });
+  if (componentsPortions.some((part) => !part)) return null;
+
+  // STEP 6: Recalculate totals
+  function totalsFromParts(parts) {
+    return parts.reduce((sum, part) => ({
+      calories: sum.calories + (numberOrNull(part.nutrients.calories) || 0),
+      protein: sum.protein + (numberOrNull(part.nutrients.protein) || 0),
+      carbs: sum.carbs + (numberOrNull(part.nutrients.carbohydrate) || 0),
+      fat: sum.fat + (numberOrNull(part.nutrients.fat) || 0),
+      sodium: sum.sodium + (numberOrNull(part.nutrients.sodium) || 0),
+      potassium: sum.potassium + (numberOrNull(part.nutrients.potassium) || 0),
+      phosphorus: sum.phosphorus + (numberOrNull(part.nutrients.phosphorus) || 0),
+    }), { calories: 0, protein: 0, carbs: 0, fat: 0, sodium: 0, potassium: 0, phosphorus: 0 });
+  }
+
+  let parts = componentsPortions;
+  let totals = totalsFromParts(parts);
+
+  function checkConstraints(totals, targets) {
+    const proteinOk = !targets.protein || Math.abs(totals.protein - Number(targets.protein)) <= Math.max(1, Number(targets.protein) * 0.1);
+    const caloriesOk = true;
+    const sodiumOk = !targets.sodium || totals.sodium <= Number(targets.sodium);
+    const potassiumOk = !targets.potassium || (Number.isFinite(Number(targets.potassium)) ? totals.potassium <= Number(targets.potassium) : true);
+    const phosphorusOk = !targets.phosphorus || totals.phosphorus <= Number(targets.phosphorus);
+    return { proteinOk, caloriesOk, sodiumOk, potassiumOk, phosphorusOk, allOk: proteinOk && caloriesOk && sodiumOk && potassiumOk && phosphorusOk };
+  }
+
+  let iter = 0;
+
+  while (iter < maxIterations) {
+    const status = checkConstraints(totals, mealTargets);
+    if (status.allOk) break;
+
+    // Protein adjustments
+    if (!status.proteinOk) {
+      const proteinPart = parts.find((p) => p.role === "protein");
+      if (proteinPart && proteinPart.portion && proteinPart.portion.grams) {
+        const currentProtein = totals.protein || 0;
+        const wanted = mealTargets.protein || 0;
+        if (currentProtein > 0 && wanted >= 0) {
+          const ratio = wanted / currentProtein;
+          const newGrams = Math.max(10, Math.round((proteinPart.portion.grams || 0) * ratio));
+          proteinPart.portion.grams = newGrams;
+          proteinPart.portion.servings = newGrams / (
+            parseServingGrams(proteinPart.food?.servingDescription) ||
+            parseServingGrams(proteinPart.food?.servingSize) ||
+            100
+          );
+          proteinPart.portion.text = `${newGrams} g (${(wanted / 8).toFixed(1)} matchbox portions)`;
+          const scale = proteinPart.portion.servings;
+          proteinPart.nutrients = scaleNutrients(proteinPart.food || {}, scale);
+        }
+      }
+    }
+
+    totals = totalsFromParts(parts);
+    const currentStatus = checkConstraints(totals, mealTargets);
+    const failingNutrient = !currentStatus.sodiumOk
+      ? "sodium"
+      : !currentStatus.potassiumOk
+        ? "potassium"
+        : !currentStatus.phosphorusOk
+          ? "phosphorus"
+          : null;
+    if (failingNutrient) {
+      const culprit = [...parts]
+        .filter((part) => part.role !== "protein")
+        .sort((a, b) => (b.nutrients[failingNutrient] || 0) - (a.nutrients[failingNutrient] || 0))[0];
+      if (!culprit || culprit.portion.servings <= 0.5) break;
+      culprit.portion.servings = Math.max(0.5, culprit.portion.servings * 0.85);
+      const gramsPerServing =
+        parseServingGrams(culprit.food?.servingDescription) ||
+        parseServingGrams(culprit.food?.servingSize) ||
+        100;
+      culprit.portion.grams = Math.max(1, Math.round(gramsPerServing * culprit.portion.servings));
+      culprit.portion.text = `${culprit.portion.grams} g`;
+      culprit.nutrients = scaleNutrients(culprit.food || {}, culprit.portion.servings);
+    }
+
+    // Recompute totals at end of iteration
+    totals = totalsFromParts(parts);
+    iter += 1;
+  }
+
+  totals = totalsFromParts(parts);
+
+  // STEP 10: Return structured meal
+  const meal = {
+    mealType,
+    template: mealTemplate,
+    plate,
+    components: parts.map((p) => ({
+      role: p.role,
+      ingredient: p.ingredient,
+      variant: p.variant,
+      name: p.food?.name || String(p.variant || p.ingredient || ""),
+      foodId: p.food?.foodId || null,
+      portion: p.portion.text || (p.portion.grams ? `${p.portion.grams} g` : "1 serving"),
+      grams: p.portion.grams || null,
+      servings: Number((p.portion.servings || 1).toFixed(2)),
+      manualServing: p.portion.manualServing,
+      nutrients: p.nutrients,
+      source: p.food?.source || "fatsecret",
+    })),
+    totals: roundNutrients({
+      calories: totals.calories,
+      protein: totals.protein,
+      carbohydrate: totals.carbs,
+      fat: totals.fat,
+      sodium: totals.sodium,
+      potassium: totals.potassium,
+      phosphorus: totals.phosphorus,
+    }),
+    iterations: iter,
+    satisfied: checkConstraints(totals, mealTargets).allOk,
+    mealTargets,
+    dailyProteinTarget:
+      nutritionProfile?.proteinTarget || numberOrNull(dailyTargets.protein) || null,
+    validation: checkConstraints(totals, mealTargets),
+  };
+
+  return meal;
+}
+
 async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrictions) {
   const componentFoods = [];
   for (const component of plannedMeal.components || []) {
@@ -2015,6 +2591,16 @@ async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrict
 }
 
 async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, seed, ingredientRules) {
+  // FAST PATH: try to find a single FatSecret serving that already matches
+  // the meal protein target (search-first). Falls back to ingredient-based
+  // or component resolution if no good single-serving match is found.
+  try {
+    const singleMatch = await findSingleServingProteinMatch(plannedMeal, nutritionProfile, restrictions, ingredientRules);
+    if (singleMatch) return singleMatch;
+  } catch (err) {
+    console.warn("SINGLE_MATCH_FAILED", { name: plannedMeal?.name, error: err?.message });
+  }
+
   // PREFERRED: Use ingredient expansion if template has protein/carb/vegetable fields
   const hasIngredientFields = plannedMeal.protein || plannedMeal.carb || plannedMeal.grain || plannedMeal.vegetable;
   
@@ -2094,6 +2680,183 @@ async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, s
   };
 }
 
+function mealFromPortionResult(portioned, date) {
+  const nutrients = roundNutrients(portioned.totals);
+  const name = portioned.components.map((component) => component.name).filter(Boolean).join(" with ");
+  return {
+    date,
+    mealType: portioned.mealType,
+    foodId: portioned.components.map((component) => component.foodId).filter(Boolean).join(",") || null,
+    name,
+    portion: "Calculated portions",
+    quantity: 1,
+    ...nutrients,
+    nutrientPreview: nutrients,
+    componentBreakdown: portioned.components.map((component) => ({
+      component: component.role,
+      matchedName: component.name,
+      foodId: component.foodId || null,
+      baseIngredient: component.ingredient,
+      portion: component.portion,
+      grams: component.grams,
+      manualGrams: component.grams,
+      servings: component.servings,
+      manualServing: component.manualServing,
+      nutrients: roundNutrients(component.nutrients),
+      source: component.source,
+    })),
+    recipeValidation: { isAllowed: portioned.satisfied },
+    ingredients: portioned.components.map((component) => component.ingredient),
+    matchConfidence: "profile_portioned",
+    score: portioned.satisfied ? 100 : 0,
+    selectionReason:
+      "Portions calculated from the CKD nutrition manual, medical profile, and FatSecret nutrients.",
+    source: "fatsecret_profile_portioned_meal",
+    needsManualReview: false,
+    portionControl: {
+      satisfied: portioned.satisfied,
+      iterations: portioned.iterations,
+      targets: portioned.mealTargets,
+      validation: portioned.validation,
+      plate: portioned.plate,
+      dailyProteinTarget: portioned.dailyProteinTarget,
+    },
+    raw: { template: portioned.template },
+  };
+}
+
+function mealSignature(meal) {
+  return (meal.componentBreakdown || [])
+    .map((component) => normalizeTextToken(component.baseIngredient || component.matchedName))
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
+async function resolvePortionedMealFromTemplates({
+  templates,
+  nutritionProfile,
+  restrictions,
+  nutrientBudgets,
+  existingMeals = [],
+  date,
+  compute = computePortionedMeal,
+}) {
+  for (const template of templates) {
+    const portioned = await compute(
+      template,
+      {},
+      nutritionProfile,
+      restrictions,
+      { maxIterations: 8, maxVariants: 3, nutrientBudgets },
+    );
+    if (!portioned?.satisfied) continue;
+    const candidate = mealFromPortionResult(portioned, date);
+    const signature = mealSignature(candidate);
+    if (!signature || existingMeals.some((meal) => mealSignature(meal) === signature)) continue;
+    return candidate;
+  }
+  return null;
+}
+
+function dailyConstraintStatus(totals, nutritionProfile, restrictions) {
+  const calorieTarget = numberOrNull(nutritionProfile.calorieTarget);
+  const proteinTarget = numberOrNull(nutritionProfile.proteinTarget);
+  const sodiumLimit = numberOrNull(restrictions.dailySodiumLimitMg);
+  const potassiumLimit = numberOrNull(restrictions.dailyPotassiumLimitMg);
+  const phosphorusLimit = numberOrNull(restrictions.dailyPhosphorusLimitMg);
+  const caloriesWithinTarget = !calorieTarget ||
+    Math.abs(totals.calories - calorieTarget) <= Math.max(100, calorieTarget * 0.2);
+  const proteinWithinTarget = !proteinTarget ||
+    Math.abs(totals.protein - proteinTarget) <= Math.max(2, proteinTarget * 0.1);
+  const sodiumWithinLimit = !sodiumLimit || totals.sodium <= sodiumLimit;
+  const potassiumWithinLimit = !potassiumLimit || totals.potassium <= potassiumLimit;
+  const phosphorusWithinLimit = !phosphorusLimit || totals.phosphorus <= phosphorusLimit;
+  return {
+    caloriesWithinTarget,
+    proteinWithinTarget,
+    sodiumWithinLimit,
+    potassiumWithinLimit,
+    phosphorusWithinLimit,
+    allSafetyLimitsMet:
+      proteinWithinTarget && sodiumWithinLimit && potassiumWithinLimit && phosphorusWithinLimit,
+    allTargetsMet:
+      caloriesWithinTarget &&
+      proteinWithinTarget &&
+      sodiumWithinLimit &&
+      potassiumWithinLimit &&
+      phosphorusWithinLimit,
+  };
+}
+
+function balanceDailyCalories(meals, calorieTarget, maxIterations = 8, nutritionProfile = {}) {
+  const target = numberOrNull(calorieTarget);
+  if (!target || target <= 0) return { meals, iterations: 0 };
+  let iterations = 0;
+
+  while (iterations < maxIterations) {
+    const totals = nutrientTotals(meals);
+    if (Math.abs(totals.calories - target) <= Math.max(100, target * 0.2)) break;
+    const increasingCalories = totals.calories < target;
+    const adjustable = meals.flatMap((meal) =>
+      (meal.componentBreakdown || [])
+        .filter((component) =>
+          component.component === "fat" ||
+          (component.component === "carb" && !(increasingCalories && nutritionProfile.diabetesRisk)),
+        )
+        .map((component) => ({ meal, component })),
+    );
+    const adjustableCalories = adjustable.reduce(
+      (sum, item) => sum + (numberOrNull(item.component.nutrients?.calories) || 0),
+      0,
+    );
+    if (adjustableCalories <= 0) break;
+    const fixedCalories = totals.calories - adjustableCalories;
+    const desiredAdjustableCalories = Math.max(0, target - fixedCalories);
+    const ratio = Math.min(1.35, Math.max(0.75, desiredAdjustableCalories / adjustableCalories));
+    if (Math.abs(ratio - 1) < 0.01) break;
+
+    for (const { component } of adjustable) {
+      const oldServings = numberOrNull(component.servings) || 1;
+      const oldGrams = numberOrNull(component.grams);
+      let appliedRatio = ratio;
+      if (oldGrams) {
+        const manualGrams = numberOrNull(component.manualGrams) || oldGrams;
+        const maximum = manualGrams * (component.component === "fat" ? 3 : 2);
+        const minimum = manualGrams * 0.5;
+        const nextGrams = Math.min(maximum, Math.max(minimum, oldGrams * ratio));
+        appliedRatio = nextGrams / oldGrams;
+        component.grams = Math.max(1, Math.round(nextGrams));
+        component.portion = `${component.grams} g`;
+      }
+      component.servings = Number((oldServings * appliedRatio).toFixed(2));
+      const scaled = {};
+      for (const nutrient of [
+        "calories",
+        "protein",
+        "carbohydrate",
+        "fat",
+        "sodium",
+        "potassium",
+        "phosphorus",
+      ]) {
+        scaled[nutrient] = (numberOrNull(component.nutrients?.[nutrient]) || 0) * appliedRatio;
+      }
+      component.nutrients = roundNutrients(scaled);
+    }
+
+    for (const meal of meals) {
+      const mealTotals = roundNutrients(
+        nutrientTotals((meal.componentBreakdown || []).map((component) => component.nutrients || {})),
+      );
+      Object.assign(meal, mealTotals, { nutrientPreview: mealTotals });
+      if (meal.portionControl) meal.portionControl.calorieBalanced = true;
+    }
+    iterations += 1;
+  }
+  return { meals, iterations };
+}
+
 async function generateMealPlan(body = {}) {
   const userId = body.userId || body.uid;
   const requestedProfileId = body.childProfileId || body.profileUserId || userId;
@@ -2147,7 +2910,21 @@ async function generateMealPlan(body = {}) {
     const daySeed = seed + dayIndex * 97;
     const meals = [];
     for (const [mealIndex, mealType] of mealTypes.entries()) {
-      const plannedMeal = plannedMealFor(
+      const totalsSoFar = nutrientTotals(meals);
+      const slotsRemaining = mealTypes.length - mealIndex;
+      const nutrientBudgets = {};
+      for (const [nutrient, dailyLimit] of [
+        ["sodium", restrictions.dailySodiumLimitMg],
+        ["potassium", restrictions.dailyPotassiumLimitMg],
+        ["phosphorus", restrictions.dailyPhosphorusLimitMg],
+      ]) {
+        const limit = numberOrNull(dailyLimit);
+        if (limit !== null) {
+          nutrientBudgets[nutrient] = Math.max(0, (limit - totalsSoFar[nutrient]) / slotsRemaining);
+        }
+      }
+
+      const templates = portionTemplateCandidates(
         mealType,
         nutritionProfile,
         restrictions,
@@ -2155,87 +2932,46 @@ async function generateMealPlan(body = {}) {
         mealIndex + dayIndex,
         history,
         ingredientRules,
+        5,
       );
-      const selected = await resolvePlannedMeal(
-        plannedMeal,
+      const mealObject = await resolvePortionedMealFromTemplates({
+        templates,
         nutritionProfile,
         restrictions,
-        daySeed + mealIndex,
-        ingredientRules,
-      );
+        nutrientBudgets,
+        existingMeals: meals,
+        date: currentDate,
+      });
 
-      if (selected) {
-        const nutrients = roundNutrients(selected.nutrientPreview || selected);
-        console.log("MEAL_PLAN_MEAL_CONSTRUCTION:", {
-          name: selected.name,
-          hasNutrientPreview: !!selected.nutrientPreview,
-          extractedNutrients: nutrients,
-          selectedSource: selected.source
-        });
-        const mealObject = {
-          date: currentDate,
-          mealType,
-          foodId: selected.foodId || selected.recipeId,
-          name: selected.name,
-          portion:
-            selected.portion ||
-            selected.servingDescription ||
-            selected.servingSize ||
-            plannedMeal.portion ||
-            "1 serving",
-          quantity: 1,
-          ...nutrients,
-          nutrientPreview: nutrients,
-          componentBreakdown: selected.componentBreakdown || [],
-          recipeValidation: selected.recipeValidation || null,
-          ingredients: extractRecipeIngredients(selected),
-          matchConfidence: selected.matchConfidence || "component_resolved",
-          score: selected.score ?? 50,
-          selectionReason:
-            selected.reason ||
-            "Meal selected by CKD guide rules and resolved with FatSecret nutrition data.",
-          source: selected.source || "fatsecret_meal_plan",
-          needsManualReview: selected.needsManualReview === true,
-          portionControl: portionControlService.generateMealPortions({
-            weightKg: nutritionProfile.weightKg,
-            calorieTarget: nutritionProfile.calorieTarget,
-            ckdStage: nutritionProfile.stage,
-            dialysisStatus: nutritionProfile.dialysis_status,
-            mealType,
-            ingredientList: extractRecipeIngredients(selected),
-            ingredientNutrients: (selected.componentBreakdown || []).map((item) => ({
-              name: item.name || item.ingredient || item.foodName,
-              calories: item.calories,
-              protein: item.protein,
-            })),
-            restrictions: {
-              highPotassium: CKD_INGREDIENT_GUIDE.highPotassium,
-              highPhosphorus: CKD_INGREDIENT_GUIDE.highPhosphorus,
-              highSodium: CKD_INGREDIENT_GUIDE.highSodium,
-            },
-          }),
-          raw: selected.raw || selected,
-        };
-        
-        console.log("MEAL_PLAN_MEAL_ADDED:", {
-          name: selected.name,
-          mealType,
-          source: selected.source,
-          componentsCount: (selected.componentBreakdown || []).length,
-          calories: nutrients.calories,
-          protein: nutrients.protein,
-          sodium: nutrients.sodium,
-          objectKeys: Object.keys(mealObject)
-        });
-        
-        meals.push(mealObject);
+      if (!mealObject) {
+        const error = new Error(
+          `Unable to resolve a complete, profile-safe ${mealType.toLowerCase()} after trying replacement meals.`,
+        );
+        error.statusCode = 503;
+        error.code = "meal_plan_resolution_failed";
+        throw error;
       }
+      meals.push(mealObject);
     }
 
+    const calorieBalance = balanceDailyCalories(meals, nutritionProfile.calorieTarget, 8, nutritionProfile);
+    const dayTotals = roundNutrients(nutrientTotals(calorieBalance.meals));
+    const dayValidation = dailyConstraintStatus(dayTotals, nutritionProfile, restrictions);
+    dayValidation.calorieBalanceIterations = calorieBalance.iterations;
+    if (!dayValidation.allTargetsMet) {
+      const error = new Error(
+        `Unable to generate a complete meal plan within the daily CKD safety limits for ${currentDate}.`,
+      );
+      error.statusCode = 503;
+      error.code = "meal_plan_daily_limits_failed";
+      error.validation = dayValidation;
+      throw error;
+    }
     days.push({
       date: currentDate,
       meals,
-      totals: roundNutrients(nutrientTotals(meals)),
+      totals: dayTotals,
+      validation: dayValidation,
     });
   }
 
@@ -2265,20 +3001,17 @@ async function generateMealPlan(body = {}) {
     totals,
     weeklyTotals,
     validation: {
-      sodiumWithinLimit: totals.sodium <= restrictions.dailySodiumLimitMg,
-      proteinWithinTarget:
-        !nutritionProfile.proteinTarget || totals.protein <= nutritionProfile.proteinTarget,
+      ...dailyConstraintStatus(totals, nutritionProfile, restrictions),
       generatedFrom: [
         "profile",
         "latest_labs",
         "nutrition_targets",
         "guide_rule_meal_templates",
         "allowed_ingredient_rules",
-        "fatsecret_recipe_search",
-        "recipe_search_cache",
-        "recipe_validation",
-        "fatsecret_nutrition_resolution",
-        "fatsecret_component_fallback",
+        "manual_portion_rules",
+        "fatsecret_component_resolution",
+        "profile_driven_portion_adjustment",
+        "automatic_meal_replacement",
         "previous_food_logs",
         "personalized_history_recommendations",
         "ckd_guide_rules",
@@ -2286,7 +3019,7 @@ async function generateMealPlan(body = {}) {
       ],
     },
     displayMessage:
-      "Meal ideas are selected from CKD guide rules and recent food logs, then nutrition is resolved from FatSecret. If a whole meal is not an exact database match, the service breaks it into foods and totals the nutrients for preview.",
+      "Every meal is portioned from CKD manual rules, verified with FatSecret nutrients, and checked against the medical profile. Unresolved meals are replaced before the plan is returned.",
   };
 }
 
@@ -2309,7 +3042,7 @@ async function getRecipeReplacements(selectedRecipe, nutritionProfile, restricti
     }
 
     // Extract primary ingredient from selected recipe
-    const primaryIngredient = ingredientVariantService.extractPrimaryFoodName(selectedRecipe.name);
+    const primaryIngredient = ingredientVariants().extractPrimaryFoodName(selectedRecipe.name);
     
     if (!primaryIngredient) {
       return {
@@ -2320,7 +3053,7 @@ async function getRecipeReplacements(selectedRecipe, nutritionProfile, restricti
     }
 
     // Get variants of the primary ingredient
-    const variantData = await ingredientVariantService.getVariantsForIngredient(primaryIngredient);
+    const variantData = await ingredientVariants().getVariantsForIngredient(primaryIngredient);
     const searchIngredients = [primaryIngredient, ...variantData.variants];
 
     // Search for recipes with all variants
@@ -2346,7 +3079,7 @@ async function getRecipeReplacements(selectedRecipe, nutritionProfile, restricti
     }
 
     // Find similar recipes using the variant service
-    const similarRecipes = await ingredientVariantService.findSimilarRecipes(
+    const similarRecipes = await ingredientVariants().findSimilarRecipes(
       selectedRecipe,
       allRecipes,
       6 // Return top 6 suggestions
@@ -2426,4 +3159,10 @@ module.exports = {
   getRecipeReplacements,
   searchMealPlanRecipesWithVariants,
   prewarmMealPlanCache,
+  computePortionedMeal,
+  proteinPrescription,
+  dailyConstraintStatus,
+  balanceDailyCalories,
+  resolvePortionedMealFromTemplates,
+  buildNutritionProfile,
 };
