@@ -130,10 +130,18 @@ async function testManualPortionsAndProteinSplit() {
 
 async function testVariantRetryAndFailure() {
   let searches = 0;
+  const grilledChicken = food("Grilled Chicken", {
+    calories: 165,
+    protein: 20,
+    carbohydrate: 0,
+    fat: 4,
+  });
   const retryAdapters = adapters({
-    expandIngredient: async (ingredient) => ingredient === "chicken" ? ["missing chicken", "chicken"] : [ingredient],
+    expandIngredient: async (ingredient) => ingredient === "chicken" ? ["grilled chicken"] : [ingredient],
     searchFoods: async (query) => {
       searches += 1;
+      if (query === "chicken") return { foods: [] };
+      if (query === "grilled chicken") return { foods: [grilledChicken] };
       return { foods: foods[query] ? [foods[query]] : [] };
     },
   });

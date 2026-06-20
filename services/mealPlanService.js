@@ -1109,8 +1109,10 @@ function perMealTargets(profile, restrictions, mealType) {
   return {
     calories: null,
     sodium: restrictions.dailySodiumLimitMg || 2000,
-    potassium: restrictions.dailyPotassiumLimitMg || null,
-    phosphorus: restrictions.dailyPhosphorusLimitMg || null,
+    potassium:
+      profile.potassiumStatus === "High" ? restrictions.dailyPotassiumLimitMg || null : null,
+    phosphorus:
+      profile.phosphorusStatus === "High" ? restrictions.dailyPhosphorusLimitMg || null : null,
     protein: proteinTarget,
   };
 }
@@ -1645,7 +1647,7 @@ async function enrichCandidate(item) {
 
 async function resolveFoodDetails(food) {
   if (!food?.foodId) return food;
-  if (usefulNutrition(food)) return food;
+  if (usefulNutrition(food) && food.needsManualReview !== true) return food;
   try {
     const details = await fatSecretBridge.getFoodDetails(food.foodId);
     const detailedFood = details.food || {};
@@ -2351,7 +2353,7 @@ async function computePortionedMeal(
     if (!ingredient) continue;
     try {
       const expanded = await adapters.expandIngredient(ingredient);
-      const variants = [...new Set([...(Array.isArray(expanded) ? expanded : []), ingredient])]
+      const variants = [...new Set([ingredient, ...(Array.isArray(expanded) ? expanded : [])])]
         .slice(0, maxVariants);
       let selected = null;
       for (const variant of variants) {
@@ -2891,8 +2893,14 @@ async function generateMealPlan(body = {}) {
     anthropometrics,
   });
   nutritionProfile.sodiumLimitMg = numberOrNull(childContext.targets?.sodium);
-  nutritionProfile.potassiumLimitMg = numberOrNull(childContext.targets?.potassium);
-  nutritionProfile.phosphorusLimitMg = numberOrNull(childContext.targets?.phosphorus);
+  nutritionProfile.potassiumLimitMg =
+    nutritionProfile.potassiumStatus === "High"
+      ? numberOrNull(childContext.targets?.potassium)
+      : null;
+  nutritionProfile.phosphorusLimitMg =
+    nutritionProfile.phosphorusStatus === "High"
+      ? numberOrNull(childContext.targets?.phosphorus)
+      : null;
   const ingredientRules = buildIngredientRules(nutritionProfile, childContext);
   const history = analyzeFoodHistory(
     await getRecentFoodLogs(userId, requestedProfileId),
@@ -2911,7 +2919,6 @@ async function generateMealPlan(body = {}) {
     const meals = [];
     for (const [mealIndex, mealType] of mealTypes.entries()) {
       const totalsSoFar = nutrientTotals(meals);
-      const slotsRemaining = mealTypes.length - mealIndex;
       const nutrientBudgets = {};
       for (const [nutrient, dailyLimit] of [
         ["sodium", restrictions.dailySodiumLimitMg],
@@ -2920,7 +2927,7 @@ async function generateMealPlan(body = {}) {
       ]) {
         const limit = numberOrNull(dailyLimit);
         if (limit !== null) {
-          nutrientBudgets[nutrient] = Math.max(0, (limit - totalsSoFar[nutrient]) / slotsRemaining);
+          nutrientBudgets[nutrient] = Math.max(0, limit - totalsSoFar[nutrient]);
         }
       }
 
