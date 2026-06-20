@@ -1676,7 +1676,16 @@ async function resolveFoodDetails(food) {
         },
       };
       const entry = foodDetailCache.get(cacheKey);
-      if (entry) entry.expiresAt = Date.now() + FOOD_DETAIL_CACHE_TTL_MS;
+      const remainsIncomplete =
+        detailedFood.needsManualReview === true ||
+        (Array.isArray(detailedFood.missingNutrients) && detailedFood.missingNutrients.length > 0);
+      if (entry) {
+        entry.expiresAt = Date.now() + (
+          remainsIncomplete
+            ? FOOD_DETAIL_FAILURE_CACHE_TTL_MS
+            : FOOD_DETAIL_CACHE_TTL_MS
+        );
+      }
       return merged;
     } catch (error) {
       console.error("MEAL_PLAN_FOOD_DETAILS_ERROR:", {
