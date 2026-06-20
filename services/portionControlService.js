@@ -12,44 +12,21 @@ function normalizeText(value) {
 }
 
 function getDailyProtein(weightKg, dialysisStatus) {
-  const onDialysis = Boolean(dialysisStatus) && /dialysis/i.test(String(dialysisStatus));
+  const status = normalizeText(dialysisStatus);
+  const onDialysis = status.includes("dialysis") &&
+    !status.includes("not on dialysis") &&
+    !status.includes("no dialysis") &&
+    !status.includes("pre-dialysis") &&
+    !status.includes("pre dialysis");
   const proteinPerKg = onDialysis ? 1.2 : 0.7;
   return Number((Number(weightKg || 0) * proteinPerKg).toFixed(1));
-}
-
-function mealCalories(calorieTarget, mealType) {
-  const mealDistribution = {
-    breakfast: 0.25,
-    lunch: 0.35,
-    dinner: 0.3,
-    snack: 0.1,
-  };
-
-  const normalizedMealType = normalizeText(mealType);
-  const isBreakfast = normalizedMealType.includes("breakfast");
-  const isLunch = normalizedMealType.includes("lunch");
-  const isDinner = normalizedMealType.includes("dinner");
-  const isSnack = normalizedMealType.includes("snack");
-
-  const ratio = isBreakfast
-    ? mealDistribution.breakfast
-    : isLunch
-      ? mealDistribution.lunch
-      : isDinner
-        ? mealDistribution.dinner
-        : isSnack
-          ? mealDistribution.snack
-          : 0.25;
-
-  return Math.round(Number(calorieTarget || 0) * ratio);
 }
 
 function mealProteinTarget(weightKg, dialysisStatus, mealType) {
   const dailyProtein = getDailyProtein(weightKg, dialysisStatus);
   const normalizedMealType = normalizeText(mealType);
-  const isSnack = normalizedMealType.includes("snack");
-  const ratio = isSnack ? 0.1 : normalizedMealType.includes("lunch") ? 0.35 : normalizedMealType.includes("dinner") ? 0.3 : 0.25;
-  return Number((dailyProtein * ratio).toFixed(1));
+  if (normalizedMealType.includes("snack")) return 0;
+  return Number((dailyProtein / 3).toFixed(1));
 }
 
 function categorizeIngredients(ingredients = []) {
@@ -72,21 +49,15 @@ function categorizeIngredients(ingredients = []) {
       buckets.vegetables.push(ingredient);
     } else if (/(apple|banana|pear|orange|grape|strawberry|berries|peach|mango|melon|plum)/.test(text)) {
       buckets.fruits.push(ingredient);
+    } else if (/(olive oil|canola oil|vegetable oil|corn oil|sunflower oil|butter|margarine)/.test(text)) {
+      buckets.fats = buckets.fats || [];
+      buckets.fats.push(ingredient);
     } else {
       buckets.others.push(ingredient);
     }
   }
 
   return buckets;
-}
-
-function proteinPortionEstimate(mealProtein, proteinNutrients = []) {
-  const totalProteinPer100g = proteinNutrients.reduce((sum, item) => sum + (numberOrNull(item.proteinPer100g) || 0), 0);
-  if (totalProteinPer100g > 0) {
-    const averageProteinPer100g = totalProteinPer100g / proteinNutrients.length;
-    return Math.max(25, Math.round((mealProtein / averageProteinPer100g) * 100));
-  }
-  return Math.max(25, Math.round(mealProtein * 3));
 }
 
 function handMeasureForCategory(category) {
@@ -97,22 +68,49 @@ function handMeasureForCategory(category) {
   return "1 serving";
 }
 
-function buildIngredientPortion(item, category, share, mealCaloriesTarget, mealProteinTarget) {
+function buildIngredientPortion(item, category, targetProtein, mealType) {
   const baseCalories = numberOrNull(item.calories) || 0;
   const baseProtein = numberOrNull(item.protein) || 0;
-  const scaledCalories = Math.max(0, Math.round(mealCaloriesTarget * share));
-  const scaledProtein = Math.max(0, Number((mealProteinTarget * share).toFixed(1)));
+  const name = item.name || item.foodName || item.ingredient || "Ingredient";
+  const normalizedName = normalizeText(name);
+  const isSnack = normalizeText(mealType).includes("snack");
+  let estimatedPortion = "1 serving";
+  let manualServing = "1 serving";
+  let targetProteinForItem = 0;
+
+  if (category === "protein") {
+    targetProteinForItem = Math.max(0, Number(targetProtein.toFixed(1)));
+    const matchboxes = targetProteinForItem / 8;
+    estimatedPortion = `about ${matchboxes.toFixed(1)} matchbox-sized portions`;
+    manualServing = "1 matchbox is approximately 1 oz or 8 g protein";
+  } else if (category === "carb") {
+    estimatedPortion = normalizedName.includes("rice")
+      ? "1/2 cup rice"
+      : /(noodle|oatmeal|pasta)/.test(normalizedName)
+        ? "1 cup"
+        : normalizedName.includes("pandesal")
+          ? "3 pandesal"
+          : "2 slices bread";
+    manualServing = estimatedPortion;
+  } else if (category === "vegetable") {
+    estimatedPortion = isSnack ? "1/2 cup cooked vegetables" : "1 cup cooked vegetables";
+    manualServing = "1 vegetable serving is 1/2 cup cooked";
+  } else if (category === "fruit") {
+    estimatedPortion = "1/2 cup or 1 small fruit";
+    manualServing = estimatedPortion;
+  } else if (category === "fat") {
+    estimatedPortion = "1 tsp-1 tbsp";
+    manualServing = estimatedPortion;
+  }
 
   return {
-    name: item.name || item.foodName || item.ingredient || "Ingredient",
+    name,
     category,
-    share: Number(share.toFixed(2)),
-    targetCalories: scaledCalories,
-    targetProtein: scaledProtein,
-    estimatedPortion: category === "protein"
-      ? `${proteinPortionEstimate(scaledProtein, [{ proteinPer100g: baseProtein }])} g`
-      : handMeasureForCategory(category),
-    handMeasure: handMeasureForCategory(category),
+    targetProtein: targetProteinForItem,
+    matchboxes: category === "protein" ? Number((targetProteinForItem / 8).toFixed(1)) : null,
+    estimatedPortion,
+    manualServing,
+    handMeasure: category === "protein" ? "1 matchbox" : handMeasureForCategory(category),
     referenceNutrients: {
       calories: baseCalories,
       protein: baseProtein,
@@ -151,7 +149,6 @@ function generateMealPortions({
   restrictions = {},
 }) {
   const dailyProtein = getDailyProtein(weightKg, dialysisStatus || ckdStage);
-  const mealCaloriesTarget = mealCalories(calorieTarget, mealType);
   const mealProteinForMeal = mealProteinTarget(weightKg, dialysisStatus || ckdStage, mealType);
   const categorized = categorizeIngredients(ingredientList);
   const categoriesInOrder = [
@@ -159,21 +156,20 @@ function generateMealPortions({
     ["carb", categorized.carbs],
     ["vegetable", categorized.vegetables],
     ["fruit", categorized.fruits],
+    ["fat", categorized.fats || []],
   ];
 
   const portions = [];
   for (const [category, items] of categoriesInOrder) {
     if (!items.length) continue;
-    const share = category === "protein" ? 0.25 : category === "carb" ? 0.25 : category === "vegetable" ? 0.5 : 0.25;
     items.forEach((item) => {
       const nutrientMatch = ingredientNutrients.find((entry) => normalizeText(entry.name) === normalizeText(item));
       portions.push(
         buildIngredientPortion(
           nutrientMatch || { name: item },
           category,
-          share / items.length,
-          mealCaloriesTarget,
-          mealProteinForMeal,
+          category === "protein" ? mealProteinForMeal / items.length : 0,
+          mealType,
         ),
       );
     });
@@ -187,7 +183,7 @@ function generateMealPortions({
     weightKg: numberOrNull(weightKg),
     calorieTarget: numberOrNull(calorieTarget),
     dailyProteinTarget: dailyProtein,
-    mealCaloriesTarget,
+    mealCaloriesTarget: null,
     mealProteinTarget: mealProteinForMeal,
     plateMethod: {
       vegetables: 0.5,

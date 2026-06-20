@@ -11,6 +11,7 @@ const {
   resolvePortionedMealFromTemplates,
   buildNutritionProfile,
 } = require("../services/mealPlanService");
+const { generateMealPortions } = require("../services/portionControlService");
 
 function food(name, nutrients = {}) {
   return {
@@ -63,6 +64,30 @@ async function testProteinRules() {
     proteinPrescription({ weightKg: 50, prescribedProtein: 42 }).gramsPerDay,
     42,
   );
+}
+
+async function testLegacyPortionMetadataUsesManualServings() {
+  const result = generateMealPortions({
+    weightKg: 50,
+    calorieTarget: 1800,
+    dialysisStatus: "not on dialysis",
+    mealType: "Lunch",
+    ingredientList: ["chicken", "rice", "cabbage", "apple", "olive oil"],
+  });
+  assert.strictEqual(result.mealProteinTarget, 11.7);
+  assert.strictEqual(result.mealCaloriesTarget, null);
+  assert.strictEqual(result.portions.find((item) => item.category === "protein").matchboxes, 1.5);
+  assert.strictEqual(result.portions.find((item) => item.category === "carb").estimatedPortion, "1/2 cup rice");
+  assert.strictEqual(result.portions.find((item) => item.category === "vegetable").estimatedPortion, "1 cup cooked vegetables");
+  assert.strictEqual(result.portions.some((item) => "share" in item), false);
+
+  const snack = generateMealPortions({
+    weightKg: 50,
+    dialysisStatus: "not on dialysis",
+    mealType: "AM Snack",
+    ingredientList: ["apple"],
+  });
+  assert.strictEqual(snack.mealProteinTarget, 0);
 }
 
 async function testProfileTargetsTakePrecedence() {
@@ -240,7 +265,7 @@ async function testRiskBasedMissingNutrients() {
   );
   assert.ok(oilMeal);
   assert.strictEqual(oilMeal.satisfied, true);
-  assert.strictEqual(oilMeal.components[0].nutrientSources.phosphorus, "trace_category_assumption");
+  assert.strictEqual(oilMeal.components[0].nutrientSources.phosphorus, "fat_trace_assumption");
   assert.ok(oilMeal.components[0].estimatedNutrients.includes("phosphorus"));
 
   const chickenWithMissingPhosphorus = food("Chicken", { phosphorus: null });
@@ -383,6 +408,7 @@ async function testTemplateReplacement() {
 
 async function run() {
   await testProteinRules();
+  await testLegacyPortionMetadataUsesManualServings();
   await testProfileTargetsTakePrecedence();
   await testManualPortionsAndProteinSplit();
   await testVariantRetryAndFailure();

@@ -53,16 +53,14 @@ const MAX_CACHED_RECIPE_RESULTS = 50;
 const FOOD_DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FOOD_DETAIL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
 const foodDetailCache = new Map();
-const TRACE_MINERAL_FOOD_NAMES = [
-  "oil",
-  "cooking oil",
+const SIMPLE_FAT_FOOD_NAMES = [
   "olive oil",
   "canola oil",
   "vegetable oil",
+  "corn oil",
+  "sunflower oil",
   "butter",
   "margarine",
-  "sugar",
-  "honey",
 ];
 
 function ingredientVariants() {
@@ -2380,7 +2378,7 @@ async function computePortionedMeal(
   function applyRiskBasedNutrientFallbacks(role, ingredient, food) {
     if (!food) return food;
     const name = normalizeTextToken(food.name || ingredient);
-    const traceCategory = TRACE_MINERAL_FOOD_NAMES.some((item) => name.includes(item));
+    const traceCategory = SIMPLE_FAT_FOOD_NAMES.some((item) => name.includes(item));
     const plannedGrams = role === "fat" ? 5 : null;
     if (!traceCategory || plannedGrams === null || plannedGrams > 15) return food;
 
@@ -2390,13 +2388,19 @@ async function computePortionedMeal(
       nutrientSources: { ...(food.nutrientSources || {}) },
       nutrientEstimateNotes: { ...(food.nutrientEstimateNotes || {}) },
     };
-    for (const nutrient of ["sodium", "potassium", "phosphorus"]) {
+    for (const nutrient of [
+      "protein",
+      "carbohydrate",
+      "sodium",
+      "potassium",
+      "phosphorus",
+    ]) {
       if (numberOrNull(resolved[nutrient]) !== null) continue;
       resolved[nutrient] = 0;
       if (!resolved.estimatedNutrients.includes(nutrient)) {
         resolved.estimatedNutrients.push(nutrient);
       }
-      resolved.nutrientSources[nutrient] = "trace_category_assumption";
+      resolved.nutrientSources[nutrient] = "fat_trace_assumption";
       resolved.nutrientEstimateNotes[nutrient] =
         `Estimated as trace for a ${plannedGrams} g planned portion.`;
     }
@@ -2855,7 +2859,7 @@ function dailyConstraintStatus(totals, nutritionProfile, restrictions) {
   const caloriesWithinTarget = !calorieTarget ||
     Math.abs(totals.calories - calorieTarget) <= Math.max(100, calorieTarget * 0.2);
   const proteinWithinTarget = !proteinTarget ||
-    Math.abs(totals.protein - proteinTarget) <= Math.max(2, proteinTarget * 0.1);
+    totals.protein <= proteinTarget + Math.max(2, proteinTarget * 0.1);
   const sodiumWithinLimit = !sodiumLimit || totals.sodium <= sodiumLimit;
   const potassiumWithinLimit = !potassiumLimit || totals.potassium <= potassiumLimit;
   const phosphorusWithinLimit = !phosphorusLimit || totals.phosphorus <= phosphorusLimit;
@@ -3050,7 +3054,7 @@ async function generateMealPlan(body = {}) {
     const dayTotals = roundNutrients(nutrientTotals(calorieBalance.meals));
     const dayValidation = dailyConstraintStatus(dayTotals, nutritionProfile, restrictions);
     dayValidation.calorieBalanceIterations = calorieBalance.iterations;
-    if (!dayValidation.allTargetsMet) {
+    if (!dayValidation.allSafetyLimitsMet) {
       const error = new Error(
         `Unable to generate a complete meal plan within the daily CKD safety limits for ${currentDate}.`,
       );
