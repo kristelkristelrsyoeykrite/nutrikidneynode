@@ -2276,7 +2276,7 @@ async function computePortionedMeal(
 
   function servingMeasurement(desc) {
     const text = String(desc || "").toLowerCase();
-    const match = text.match(/([\d.]+|one|half)\s*(cup|cups|slice|slices|piece|pieces|small|teaspoon|teaspoons|tsp)\b/);
+    const match = text.match(/([\d.]+|one|half)\s*(cup|cups|slice|slices|piece|pieces|small|teaspoon|teaspoons|tsp|tablespoon|tablespoons|tbsp)\b/);
     if (!match) return null;
     const quantity = match[1] === "one" ? 1 : match[1] === "half" ? 0.5 : Number(match[1]);
     return Number.isFinite(quantity) ? { quantity, unit: match[2] } : null;
@@ -2336,9 +2336,19 @@ async function computePortionedMeal(
       }
     } else if (role === "fat") {
       text = "1 tsp";
-      if (["teaspoon", "teaspoons", "tsp"].includes(measure?.unit)) {
+      if (["tablespoon", "tablespoons", "tbsp"].includes(measure?.unit)) {
+        servings = (1 / 3) / measure.quantity;
+      } else if (["teaspoon", "teaspoons", "tsp"].includes(measure?.unit)) {
         servings = 1 / measure.quantity;
-      } else desiredGrams = 5;
+      } else {
+        servings = 5 / gramsPerServing;
+      }
+      return {
+        text,
+        grams: 5,
+        servings,
+        manualServing: text,
+      };
     }
 
     if (desiredGrams !== null) servings = desiredGrams / gramsPerServing;
@@ -2380,7 +2390,12 @@ async function computePortionedMeal(
     const name = normalizeTextToken(food.name || ingredient);
     const traceCategory = SIMPLE_FAT_FOOD_NAMES.some((item) => name.includes(item));
     const plannedGrams = role === "fat" ? 5 : null;
-    if (!traceCategory || plannedGrams === null || plannedGrams > 15) return food;
+    const fatRoleTracePortion =
+      role === "fat" &&
+      plannedGrams !== null &&
+      plannedGrams <= 15 &&
+      (traceCategory || /\b(oil|butter|margarine)\b/.test(name));
+    if (!fatRoleTracePortion) return food;
 
     const resolved = {
       ...food,
@@ -2388,6 +2403,25 @@ async function computePortionedMeal(
       nutrientSources: { ...(food.nutrientSources || {}) },
       nutrientEstimateNotes: { ...(food.nutrientEstimateNotes || {}) },
     };
+    const calories = numberOrNull(resolved.calories);
+    const fat = numberOrNull(resolved.fat);
+    if (fat === null && calories !== null && calories > 0) {
+      resolved.fat = Number((calories / 9).toFixed(1));
+      if (!resolved.estimatedNutrients.includes("fat")) {
+        resolved.estimatedNutrients.push("fat");
+      }
+      resolved.nutrientSources.fat = "fat_from_calories_assumption";
+      resolved.nutrientEstimateNotes.fat =
+        "Estimated from calories for a simple fat/oil reference serving.";
+    } else if ((calories === null || calories <= 0) && fat !== null && fat > 0) {
+      resolved.calories = Math.round(fat * 9);
+      if (!resolved.estimatedNutrients.includes("calories")) {
+        resolved.estimatedNutrients.push("calories");
+      }
+      resolved.nutrientSources.calories = "calories_from_fat_assumption";
+      resolved.nutrientEstimateNotes.calories =
+        "Estimated from fat grams for a simple fat/oil reference serving.";
+    }
     for (const nutrient of [
       "protein",
       "carbohydrate",
@@ -2880,7 +2914,60 @@ function dailyConstraintStatus(totals, nutritionProfile, restrictions) {
   };
 }
 
-function balanceDailyCalories(meals, calorieTarget, maxIterations = 8, nutritionProfile = {}) {
+function refreshMealNutrients(meals, adjustmentFlag) {
+  for (const meal of meals) {
+    const mealTotals = roundNutrients(
+      nutrientTotals((meal.componentBreakdown || []).map((component) => component.nutrients || {})),
+    );
+    Object.assign(meal, mealTotals, { nutrientPreview: mealTotals });
+    if (meal.portionControl && adjustmentFlag) {
+      meal.portionControl[adjustmentFlag] = true;
+    }
+  }
+}
+
+function scaleComponentNutrients(component, ratio) {
+  const oldServings = numberOrNull(component.servings) || 1;
+  const oldGrams = numberOrNull(component.grams);
+  component.servings = Number((oldServings * ratio).toFixed(3));
+  if (oldGrams) {
+    component.grams = Math.max(1, Math.round(oldGrams * ratio));
+    component.portion = `${component.grams} g`;
+  }
+  const scaled = {};
+  for (const nutrient of [
+    "calories",
+    "protein",
+    "carbohydrate",
+    "fat",
+    "sodium",
+    "potassium",
+    "phosphorus",
+  ]) {
+    scaled[nutrient] = (numberOrNull(component.nutrients?.[nutrient]) || 0) * ratio;
+  }
+  component.nutrients = roundNutrients(scaled);
+}
+
+function dailySafetyUpperLimits(nutritionProfile = {}, restrictions = {}) {
+  const proteinTarget = numberOrNull(nutritionProfile.proteinTarget);
+  return {
+    protein: proteinTarget
+      ? proteinTarget + Math.max(2, proteinTarget * 0.1)
+      : null,
+    sodium: numberOrNull(restrictions.dailySodiumLimitMg),
+    potassium: numberOrNull(restrictions.dailyPotassiumLimitMg),
+    phosphorus: numberOrNull(restrictions.dailyPhosphorusLimitMg),
+  };
+}
+
+function balanceDailyCalories(
+  meals,
+  calorieTarget,
+  maxIterations = 8,
+  nutritionProfile = {},
+  restrictions = {},
+) {
   const target = numberOrNull(calorieTarget);
   if (!target || target <= 0) return { meals, iterations: 0 };
   let iterations = 0;
@@ -2904,7 +2991,21 @@ function balanceDailyCalories(meals, calorieTarget, maxIterations = 8, nutrition
     if (adjustableCalories <= 0) break;
     const fixedCalories = totals.calories - adjustableCalories;
     const desiredAdjustableCalories = Math.max(0, target - fixedCalories);
-    const ratio = Math.min(1.35, Math.max(0.75, desiredAdjustableCalories / adjustableCalories));
+    let ratio = Math.min(1.35, Math.max(0.75, desiredAdjustableCalories / adjustableCalories));
+    if (ratio > 1) {
+      const safetyLimits = dailySafetyUpperLimits(nutritionProfile, restrictions);
+      for (const [nutrient, limit] of Object.entries(safetyLimits)) {
+        if (limit === null) continue;
+        const adjustableNutrient = adjustable.reduce(
+          (sum, item) => sum + (numberOrNull(item.component.nutrients?.[nutrient]) || 0),
+          0,
+        );
+        if (adjustableNutrient <= 0) continue;
+        const fixedNutrient = totals[nutrient] - adjustableNutrient;
+        const safeRatio = (limit - fixedNutrient) / adjustableNutrient;
+        ratio = Math.min(ratio, Math.max(1, safeRatio));
+      }
+    }
     if (Math.abs(ratio - 1) < 0.01) break;
 
     for (const { component } of adjustable) {
@@ -2917,35 +3018,68 @@ function balanceDailyCalories(meals, calorieTarget, maxIterations = 8, nutrition
         const minimum = manualGrams * 0.5;
         const nextGrams = Math.min(maximum, Math.max(minimum, oldGrams * ratio));
         appliedRatio = nextGrams / oldGrams;
-        component.grams = Math.max(1, Math.round(nextGrams));
-        component.portion = `${component.grams} g`;
       }
-      component.servings = Number((oldServings * appliedRatio).toFixed(2));
-      const scaled = {};
-      for (const nutrient of [
-        "calories",
-        "protein",
-        "carbohydrate",
-        "fat",
-        "sodium",
-        "potassium",
-        "phosphorus",
-      ]) {
-        scaled[nutrient] = (numberOrNull(component.nutrients?.[nutrient]) || 0) * appliedRatio;
-      }
-      component.nutrients = roundNutrients(scaled);
+      component.servings = oldServings;
+      scaleComponentNutrients(component, appliedRatio);
     }
 
-    for (const meal of meals) {
-      const mealTotals = roundNutrients(
-        nutrientTotals((meal.componentBreakdown || []).map((component) => component.nutrients || {})),
-      );
-      Object.assign(meal, mealTotals, { nutrientPreview: mealTotals });
-      if (meal.portionControl) meal.portionControl.calorieBalanced = true;
-    }
+    refreshMealNutrients(meals, "calorieBalanced");
     iterations += 1;
   }
   return { meals, iterations };
+}
+
+function enforceDailySafetyLimits(
+  meals,
+  nutritionProfile = {},
+  restrictions = {},
+  maxIterations = 24,
+) {
+  const limits = dailySafetyUpperLimits(nutritionProfile, restrictions);
+  let iterations = 0;
+
+  while (iterations < maxIterations) {
+    const totals = nutrientTotals(meals);
+    const failingNutrient = Object.entries(limits)
+      .find(([nutrient, limit]) => limit !== null && totals[nutrient] > limit)?.[0];
+    if (!failingNutrient) break;
+
+    const limit = limits[failingNutrient];
+    const excess = totals[failingNutrient] - limit;
+    const candidates = meals
+      .flatMap((meal) => (meal.componentBreakdown || []).map((component) => ({ meal, component })))
+      .filter(({ component }) => (numberOrNull(component.nutrients?.[failingNutrient]) || 0) > 0)
+      .sort((left, right) => {
+        const leftProtein = left.component.component === "protein" ? 1 : 0;
+        const rightProtein = right.component.component === "protein" ? 1 : 0;
+        if (leftProtein !== rightProtein) return leftProtein - rightProtein;
+        return (right.component.nutrients[failingNutrient] || 0) -
+          (left.component.nutrients[failingNutrient] || 0);
+      });
+    const culprit = candidates[0]?.component;
+    if (!culprit) break;
+
+    const contribution = numberOrNull(culprit.nutrients?.[failingNutrient]) || 0;
+    const currentGrams = numberOrNull(culprit.grams);
+    const manualGrams = numberOrNull(culprit.manualGrams) || currentGrams;
+    const minimumRatio = currentGrams && manualGrams
+      ? Math.min(1, (manualGrams * 0.5) / currentGrams)
+      : 0.5;
+    const neededRatio = Math.max(0, (contribution - excess - 0.5) / contribution);
+    const ratio = Math.max(minimumRatio, Math.min(0.95, neededRatio));
+    if (ratio >= 0.999) break;
+    scaleComponentNutrients(culprit, ratio);
+    refreshMealNutrients(meals, "safetyAdjusted");
+    iterations += 1;
+  }
+
+  const totals = roundNutrients(nutrientTotals(meals));
+  return {
+    meals,
+    totals,
+    validation: dailyConstraintStatus(totals, nutritionProfile, restrictions),
+    iterations,
+  };
 }
 
 async function generateMealPlan(body = {}) {
@@ -3050,17 +3184,39 @@ async function generateMealPlan(body = {}) {
       meals.push(mealObject);
     }
 
-    const calorieBalance = balanceDailyCalories(meals, nutritionProfile.calorieTarget, 8, nutritionProfile);
-    const dayTotals = roundNutrients(nutrientTotals(calorieBalance.meals));
-    const dayValidation = dailyConstraintStatus(dayTotals, nutritionProfile, restrictions);
+    const calorieBalance = balanceDailyCalories(
+      meals,
+      nutritionProfile.calorieTarget,
+      8,
+      nutritionProfile,
+      restrictions,
+    );
+    const safetyBalance = enforceDailySafetyLimits(
+      calorieBalance.meals,
+      nutritionProfile,
+      restrictions,
+    );
+    const dayTotals = safetyBalance.totals;
+    const dayValidation = safetyBalance.validation;
     dayValidation.calorieBalanceIterations = calorieBalance.iterations;
+    dayValidation.safetyBalanceIterations = safetyBalance.iterations;
     if (!dayValidation.allSafetyLimitsMet) {
+      const failedDailyLimits = Object.entries({
+        protein: dayValidation.proteinWithinTarget,
+        sodium: dayValidation.sodiumWithinLimit,
+        potassium: dayValidation.potassiumWithinLimit,
+        phosphorus: dayValidation.phosphorusWithinLimit,
+      })
+        .filter(([, passed]) => passed === false)
+        .map(([nutrient]) => nutrient);
       const error = new Error(
-        `Unable to generate a complete meal plan within the daily CKD safety limits for ${currentDate}.`,
+        `Unable to generate a complete meal plan within the daily CKD safety limits for ${currentDate}: ${failedDailyLimits.join(", ") || "unknown limit"}.`,
       );
       error.statusCode = 503;
       error.code = "meal_plan_daily_limits_failed";
       error.validation = dayValidation;
+      error.totals = dayTotals;
+      error.failedDailyLimits = failedDailyLimits;
       throw error;
     }
     days.push({
@@ -3259,6 +3415,7 @@ module.exports = {
   proteinPrescription,
   dailyConstraintStatus,
   balanceDailyCalories,
+  enforceDailySafetyLimits,
   resolvePortionedMealFromTemplates,
   buildNutritionProfile,
 };

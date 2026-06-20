@@ -8,6 +8,7 @@ const {
   proteinPrescription,
   dailyConstraintStatus,
   balanceDailyCalories,
+  enforceDailySafetyLimits,
   resolvePortionedMealFromTemplates,
   buildNutritionProfile,
 } = require("../services/mealPlanService");
@@ -245,7 +246,7 @@ async function testRiskBasedMissingNutrients() {
     calories: 119,
     protein: 0,
     carbohydrate: 0,
-    fat: 13.5,
+    fat: null,
     sodium: null,
     potassium: null,
     phosphorus: null,
@@ -265,6 +266,7 @@ async function testRiskBasedMissingNutrients() {
   );
   assert.ok(oilMeal);
   assert.strictEqual(oilMeal.satisfied, true);
+  assert.strictEqual(oilMeal.components[0].nutrientSources.fat, "fat_from_calories_assumption");
   assert.strictEqual(oilMeal.components[0].nutrientSources.phosphorus, "fat_trace_assumption");
   assert.ok(oilMeal.components[0].estimatedNutrients.includes("phosphorus"));
 
@@ -283,6 +285,37 @@ async function testRiskBasedMissingNutrients() {
     },
   );
   assert.strictEqual(riskyMeal, null);
+}
+
+async function testTablespoonFatServingConversion() {
+  const tablespoonOil = food("Olive Oil", {
+    servingDescription: "1 tbsp",
+    calories: 119,
+    protein: 0,
+    carbohydrate: 0,
+    fat: 13.5,
+    sodium: 0,
+    potassium: 0,
+    phosphorus: null,
+  });
+  const meal = await computePortionedMeal(
+    { mealType: "AM Snack", fat: "olive oil" },
+    { sodium: 2000 },
+    null,
+    {},
+    {
+      adapters: {
+        expandIngredient: async (ingredient) => [ingredient],
+        searchFoods: async () => ({ foods: [tablespoonOil] }),
+        resolveFood: async (candidate) => candidate,
+      },
+    },
+  );
+  assert.ok(meal);
+  assert.strictEqual(meal.components[0].grams, 5);
+  assert.ok(Math.abs(meal.components[0].servings - (1 / 3)) < 0.01);
+  assert.strictEqual(meal.totals.calories, 40);
+  assert.strictEqual(meal.totals.fat, 4.5);
 }
 
 async function testDailySafetyValidation() {
@@ -352,6 +385,49 @@ async function testDailyCalorieBalancing() {
   assert.notStrictEqual(meals[0].componentBreakdown[1].portion, "50 g");
 }
 
+async function testDailyBalancingPreservesSafetyLimits() {
+  const meals = [{
+    calories: 300,
+    protein: 10,
+    carbohydrate: 30,
+    fat: 5,
+    sodium: 100,
+    potassium: 100,
+    phosphorus: 50,
+    componentBreakdown: [
+      {
+        component: "protein",
+        portion: "100 g",
+        grams: 100,
+        manualGrams: 100,
+        servings: 1,
+        nutrients: { calories: 200, protein: 8, sodium: 95 },
+      },
+      {
+        component: "carb",
+        portion: "50 g",
+        grams: 50,
+        manualGrams: 50,
+        servings: 0.5,
+        nutrients: { calories: 100, protein: 2, carbohydrate: 22, sodium: 5 },
+      },
+    ],
+    portionControl: {},
+  }];
+  balanceDailyCalories(meals, 600, 8, { proteinTarget: 10 }, { dailySodiumLimitMg: 2000 });
+  assert.ok(meals[0].protein <= 12);
+
+  meals[0].componentBreakdown[1].nutrients.sodium = 2500;
+  meals[0].sodium = 2595;
+  const repaired = enforceDailySafetyLimits(
+    meals,
+    { proteinTarget: 10 },
+    { dailySodiumLimitMg: 2000 },
+  );
+  assert.strictEqual(repaired.validation.allSafetyLimitsMet, true);
+  assert.ok(repaired.iterations > 0);
+}
+
 async function testTemplateReplacement() {
   const templates = [
     { mealType: "Lunch", protein: "missing" },
@@ -414,8 +490,10 @@ async function run() {
   await testVariantRetryAndFailure();
   await testUsesOneFixedReferenceServing();
   await testRiskBasedMissingNutrients();
+  await testTablespoonFatServingConversion();
   await testDailySafetyValidation();
   await testDailyCalorieBalancing();
+  await testDailyBalancingPreservesSafetyLimits();
   await testTemplateReplacement();
   console.log("computePortionedMeal tests passed");
 }
