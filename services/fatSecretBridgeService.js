@@ -93,6 +93,12 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function toNullableNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeFood(food = {}) {
   return {
     foodId: String(food.food_id || food.foodId || food.id || ""),
@@ -104,13 +110,18 @@ function normalizeFood(food = {}) {
       food.servingDescription ||
       food.serving_size ||
       "1 serving",
-    calories: Math.round(toNumber(food.calories)),
-    protein: toNumber(food.protein),
-    carbohydrate: toNumber(food.carbohydrate ?? food.carbs),
-    fat: toNumber(food.fat),
-    sodium: toNumber(food.sodium),
-    potassium: toNumber(food.potassium),
-    phosphorus: toNumber(food.phosphorus),
+    calories:
+      toNullableNumber(food.calories) === null
+        ? null
+        : Math.round(toNullableNumber(food.calories)),
+    protein: toNullableNumber(food.protein),
+    carbohydrate: toNullableNumber(
+      food.carbohydrate ?? food.carbohydrates ?? food.carbs,
+    ),
+    fat: toNullableNumber(food.fat),
+    sodium: toNullableNumber(food.sodium),
+    potassium: toNullableNumber(food.potassium),
+    phosphorus: toNullableNumber(food.phosphorus),
     source: food.source || "fatsecret",
     needsManualReview: Boolean(
       food.needs_manual_review ?? food.needsManualReview,

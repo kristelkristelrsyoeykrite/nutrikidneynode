@@ -2357,16 +2357,18 @@ async function computePortionedMeal(
         .slice(0, maxVariants);
       let selected = null;
       for (const variant of variants) {
-        const result = await adapters.searchFoods(variant, mealType, 0);
-        const candidates = (result.foods || []).slice(0, 8);
-        for (const candidate of candidates) {
-          const detailed = await adapters.resolveFood(candidate);
-          const text = componentFoodText(detailed);
-          if (!containsAny(text, [ingredient, variant])) continue;
-          if (containsAny(text, restrictions.avoid || [])) continue;
-          if (requiredNutritionPresent(role, detailed)) {
-            selected = { role, ingredient, variant, food: detailed };
-            break;
+        for (let page = 0; page < 2 && !selected; page += 1) {
+          const result = await adapters.searchFoods(variant, mealType, page);
+          const candidates = (result.foods || []).slice(0, 15);
+          for (const candidate of candidates) {
+            const detailed = await adapters.resolveFood(candidate);
+            const text = componentFoodText(detailed);
+            if (!containsAny(text, [ingredient, variant])) continue;
+            if (containsAny(text, restrictions.avoid || [])) continue;
+            if (requiredNutritionPresent(role, detailed)) {
+              selected = { role, ingredient, variant, food: detailed };
+              break;
+            }
           }
         }
         if (selected) break;
