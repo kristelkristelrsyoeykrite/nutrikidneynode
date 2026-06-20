@@ -11,6 +11,10 @@ const {
   enforceDailySafetyLimits,
   resolvePortionedMealFromTemplates,
   buildNutritionProfile,
+  buildIngredientRules,
+  guideFoodPool,
+  guideFoodTemplates,
+  portionTemplateCandidates,
 } = require("../services/mealPlanService");
 const { generateMealPortions } = require("../services/portionControlService");
 
@@ -482,6 +486,53 @@ async function testTemplateReplacement() {
   assert.strictEqual(unresolved, null);
 }
 
+async function testPhilippineGuideFoodListAndVariety() {
+  const rules = buildIngredientRules(
+    { potassiumStatus: "Normal", phosphorusStatus: "Normal" },
+    {},
+  );
+  assert.ok(guideFoodPool("carbs", rules).includes("unsweetened suman"));
+  assert.ok(guideFoodPool("proteins", rules).includes("lean beef lomo"));
+  assert.ok(guideFoodPool("proteins", rules).includes("cheese"));
+  assert.ok(guideFoodPool("vegetables", rules).includes("ampalaya"));
+  assert.ok(guideFoodPool("fruits", rules).includes("star apple"));
+  assert.ok(guideFoodPool("fruits", rules).includes("calamansi"));
+  assert.ok(guideFoodPool("fats", rules).includes("light mayonnaise"));
+
+  const guideTemplates = guideFoodTemplates("Lunch", rules);
+  assert.ok(guideTemplates.length > 10);
+  assert.ok(guideTemplates.every((template) => template.source === "psn_ckd_food_list_template"));
+
+  const selectedFats = new Set();
+  for (let seed = 0; seed < 40; seed += 1) {
+    const candidates = portionTemplateCandidates(
+      "Lunch",
+      {},
+      { avoid: [] },
+      seed,
+      seed,
+      {},
+      rules,
+      5,
+    );
+    candidates.forEach((candidate) => selectedFats.add(candidate.fat));
+  }
+  assert.ok(selectedFats.size > 3);
+
+  const highPotassiumRules = buildIngredientRules(
+    { potassiumStatus: "High", phosphorusStatus: "Normal" },
+    {},
+  );
+  assert.strictEqual(guideFoodPool("fruits", highPotassiumRules).includes("banana"), false);
+
+  const highPhosphorusRules = buildIngredientRules(
+    { potassiumStatus: "Normal", phosphorusStatus: "High" },
+    {},
+  );
+  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("cheese"), false);
+  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("beans"), false);
+}
+
 async function run() {
   await testProteinRules();
   await testLegacyPortionMetadataUsesManualServings();
@@ -495,6 +546,7 @@ async function run() {
   await testDailyCalorieBalancing();
   await testDailyBalancingPreservesSafetyLimits();
   await testTemplateReplacement();
+  await testPhilippineGuideFoodListAndVariety();
   console.log("computePortionedMeal tests passed");
 }
 

@@ -43,13 +43,13 @@ function categorizeIngredients(ingredients = []) {
     if (!text) continue;
     if (/(chicken|fish|beef|turkey|tofu|egg|pork|shrimp|seafood|tilapia|salmon|tuna)/.test(text)) {
       buckets.proteins.push(ingredient);
-    } else if (/(rice|bread|pasta|noodle|oat|corn|barley|couscous|cracker|toast|pandesal)/.test(text)) {
+    } else if (/(rice|bread|pasta|noodle|oat|corn|barley|couscous|cracker|toast|pandesal|cereal|potato|root crop|suman)/.test(text)) {
       buckets.carbs.push(ingredient);
-    } else if (/(cabbage|carrot|cauliflower|broccoli|lettuce|cucumber|pepper|spinach|okra|eggplant|asparagus|beans?)/.test(text)) {
+    } else if (/(cabbage|carrot|cauliflower|broccoli|lettuce|cucumber|pepper|spinach|okra|eggplant|asparagus|beans?|ampalaya|pumpkin|squash|beets?|celery|onions?)/.test(text)) {
       buckets.vegetables.push(ingredient);
-    } else if (/(apple|banana|pear|orange|grape|strawberry|berries|peach|mango|melon|plum)/.test(text)) {
+    } else if (/(apple|banana|pear|orange|grape|strawberry|berries|peach|mango|melon|plum|pineapple|avocado|chico)/.test(text)) {
       buckets.fruits.push(ingredient);
-    } else if (/(olive oil|canola oil|vegetable oil|corn oil|sunflower oil|butter|margarine)/.test(text)) {
+    } else if (/(oil|butter|margarine|mayonnaise)/.test(text)) {
       buckets.fats = buckets.fats || [];
       buckets.fats.push(ingredient);
     } else {

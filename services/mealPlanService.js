@@ -54,13 +54,17 @@ const FOOD_DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FOOD_DETAIL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
 const foodDetailCache = new Map();
 const SIMPLE_FAT_FOOD_NAMES = [
+  "oil",
   "olive oil",
   "canola oil",
   "vegetable oil",
   "corn oil",
   "sunflower oil",
   "butter",
+  "unsalted butter",
   "margarine",
+  "mayonnaise",
+  "light mayonnaise",
 ];
 
 function ingredientVariants() {
@@ -68,6 +72,125 @@ function ingredientVariants() {
 }
 
 const CKD_INGREDIENT_GUIDE = {
+  // Food pools combine the existing choices with foods explicitly listed in
+  // the Philippine CKD nutrition manual. Profile restrictions are applied
+  // before any of these foods can become a meal component.
+  proteins: [
+    "beans",
+    "cheese",
+    "chicken",
+    "chicken breast",
+    "chicken tenderloin",
+    "egg",
+    "egg white",
+    "fish",
+    "lean beef",
+    "lean beef lomo",
+    "lean beef sirloin",
+    "milkfish",
+    "salmon",
+    "seafood",
+    "shrimp",
+    "tilapia",
+    "tofu",
+    "tuna",
+    "turkey",
+  ],
+  carbs: [
+    "barley",
+    "bread",
+    "cassava",
+    "cereals",
+    "corn",
+    "couscous",
+    "crackers",
+    "noodles",
+    "oatmeal",
+    "pandesal",
+    "pasta",
+    "potato",
+    "rice",
+    "root crops",
+    "rolled oats",
+    "unsweetened suman",
+    "white bread",
+    "whole wheat bread",
+    "wild rice",
+  ],
+  vegetables: [
+    "ampalaya",
+    "asparagus",
+    "bamboo shoots",
+    "beets",
+    "bell pepper",
+    "broccoli",
+    "cabbage",
+    "carrot",
+    "cauliflower",
+    "celery",
+    "corn",
+    "chili pepper",
+    "chinese cabbage",
+    "cucumber",
+    "eggplant",
+    "green beans",
+    "green peas",
+    "lettuce",
+    "mushroom",
+    "okra",
+    "onion",
+    "pumpkin",
+    "radish",
+    "raw spinach",
+    "spinach",
+    "squash",
+    "watercress",
+    "zucchini",
+  ],
+  fruits: [
+    "apple",
+    "apricot",
+    "avocado",
+    "banana",
+    "banana saba",
+    "berries",
+    "blueberries",
+    "calamansi",
+    "chico",
+    "grapes",
+    "mango",
+    "melon",
+    "orange",
+    "pear",
+    "peach",
+    "pineapple",
+    "plum",
+    "raspberries",
+    "star apple",
+    "strawberries",
+    "watermelon",
+  ],
+  fats: [
+    "oil",
+    "olive oil",
+    "canola oil",
+    "vegetable oil",
+    "corn oil",
+    "sunflower oil",
+    "butter",
+    "unsalted butter",
+    "margarine",
+    "mayonnaise",
+    "light mayonnaise",
+  ],
+  snacks: [
+    "banana saba",
+    "unsweetened suman",
+    "crackers",
+    "noodles",
+    "pasta",
+  ],
+  beverages: ["water", "coffee", "tea", "milk", "fresh juice"],
   // Low potassium - safe for all CKD stages
   lowPotassium: [
     "apple",
@@ -82,6 +205,7 @@ const CKD_INGREDIENT_GUIDE = {
     "carrot",
     "cauliflower",
     "celery",
+    "corn",
     "chinese cabbage",
     "cucumber",
     "daikon radish",
@@ -102,18 +226,23 @@ const CKD_INGREDIENT_GUIDE = {
     "plum",
     "radish",
     "raspberries",
+    "raw spinach",
     "rice",
     "brown rice",
     "white rice",
     "jasmine rice",
     "basmati rice",
     "strawberries",
+    "squash",
     "watercress",
     "zucchini",
   ],
   // High potassium - RESTRICT in CKD
   highPotassium: [
+    "baked potato",
+    "bamboo shoots",
     "banana",
+    "banana saba",
     "plantain",
     "bitter melon",
     "bok choy",
@@ -123,9 +252,11 @@ const CKD_INGREDIENT_GUIDE = {
     "honeydew melon",
     "kiwi",
     "mango",
+    "melon",
     "mandarin orange",
     "orange",
     "papaya",
+    "potato chips",
     "prunes",
     "raisins",
     "spinach",
@@ -135,6 +266,20 @@ const CKD_INGREDIENT_GUIDE = {
     "tomato",
     "watermelon",
     "yam",
+  ],
+  mediumPotassium: [
+    "asparagus",
+    "avocado",
+    "beets",
+    "celery",
+    "chili pepper",
+    "okra",
+    "potato",
+    "pumpkin",
+    "tomato",
+    "tomato paste",
+    "tomato puree",
+    "tomato sauce",
   ],
   // Lower phosphorus - preferred proteins
   lowerPhosphorus: [
@@ -169,8 +314,10 @@ const CKD_INGREDIENT_GUIDE = {
   highPhosphorus: [
     "almonds",
     "black beans",
+    "beans",
     "cashews",
     "cheddar cheese",
+    "cheese",
     "chicken thigh",
     "chickpeas",
     "cottage cheese",
@@ -197,6 +344,9 @@ const CKD_INGREDIENT_GUIDE = {
     "canned foods",
     "processed cheese",
     "processed meats",
+    "processed food",
+    "sauces",
+    "condiments",
     "sardines",
   ],
   // Base allowed - safe generic ingredients for meal building
@@ -226,19 +376,25 @@ const CKD_INGREDIENT_GUIDE = {
     "bread",
     "cassava",
     "corn",
+    "cereals",
+    "crackers",
     "couscous",
     "jasmine rice",
     "noodles",
     "oatmeal",
+    "pandesal",
     "pasta",
+    "root crops",
     "rice",
     "rolled oats",
     "steel cut oats",
     "white bread",
     "whole wheat bread",
     "wild rice",
+    "unsweetened suman",
     // Vegetables (low potassium)
     "asparagus",
+    "ampalaya",
     "bamboo shoots",
     "bell pepper",
     "broccoli",
@@ -246,6 +402,7 @@ const CKD_INGREDIENT_GUIDE = {
     "carrot",
     "cauliflower",
     "celery",
+    "chili pepper",
     "chinese cabbage",
     "cucumber",
     "daikon radish",
@@ -257,8 +414,10 @@ const CKD_INGREDIENT_GUIDE = {
     "mushroom",
     "okra",
     "onion",
+    "pumpkin",
     "radish",
     "watercress",
+    "squash",
     "zucchini",
     // Fruits (low potassium)
     "apple",
@@ -270,23 +429,50 @@ const CKD_INGREDIENT_GUIDE = {
     "lime",
     "pear",
     "peach",
+    "pineapple",
     "plum",
     "raspberries",
     "strawberries",
+    "star apple",
+    "chico",
     // Oils & Fats
     "butter",
     "canola oil",
     "corn oil",
     "margarine",
     "mayonnaise",
+    "light mayonnaise",
     "olive oil",
     "sunflower oil",
     "vegetable oil",
+    "oil",
+    "unsalted butter",
     // Low-fat Dairy (limit portion)
     "low fat milk",
     "skim milk",
     "yogurt",
   ],
+  kidneyStoneHighPurine: [
+    "alcohol",
+    "nuts",
+    "red meat",
+    "organ meat",
+    "shellfish",
+    "fish sauce",
+    "small fish",
+  ],
+  kidneyStoneHighOxalate: [
+    "spinach",
+    "potato",
+    "okra",
+    "nuts",
+    "cashew",
+    "seeds",
+    "grains",
+    "legumes",
+    "tea",
+  ],
+  kidneyStoneCitrusRecommended: ["calamansi", "lemon"],
 };
 
 function cleanObject(obj) {
@@ -633,7 +819,15 @@ function ingredientTokensFromText(value) {
   const text = normalizeTextToken(value);
   if (!text) return [];
   const knownIngredients = new Set([
+    ...CKD_INGREDIENT_GUIDE.proteins,
+    ...CKD_INGREDIENT_GUIDE.carbs,
+    ...CKD_INGREDIENT_GUIDE.vegetables,
+    ...CKD_INGREDIENT_GUIDE.fruits,
+    ...CKD_INGREDIENT_GUIDE.fats,
+    ...CKD_INGREDIENT_GUIDE.snacks,
+    ...CKD_INGREDIENT_GUIDE.beverages,
     ...CKD_INGREDIENT_GUIDE.lowPotassium,
+    ...CKD_INGREDIENT_GUIDE.mediumPotassium,
     ...CKD_INGREDIENT_GUIDE.highPotassium,
     ...CKD_INGREDIENT_GUIDE.lowerPhosphorus,
     ...CKD_INGREDIENT_GUIDE.highPhosphorus,
@@ -656,6 +850,9 @@ function buildIngredientRules(profile = {}, childContext = {}) {
 
   addUnique(allowed, CKD_INGREDIENT_GUIDE.lowPotassium);
   addUnique(allowed, CKD_INGREDIENT_GUIDE.lowerPhosphorus);
+  for (const category of ["proteins", "carbs", "vegetables", "fruits", "fats", "snacks"]) {
+    addUnique(allowed, CKD_INGREDIENT_GUIDE[category]);
+  }
 
   if (profile.potassiumStatus === "High") {
     addUnique(blocked, CKD_INGREDIENT_GUIDE.highPotassium);
@@ -896,6 +1093,11 @@ function buildFoodRestrictions(profile) {
   }
   if (profile.diabetesRisk) {
     ["dessert", "sweetened", "candy", "cake", "soda"].forEach((item) => avoid.add(item));
+  }
+  if (normalizeTextToken(profile.ckdType).includes("stone")) {
+    CKD_INGREDIENT_GUIDE.kidneyStoneHighPurine.forEach((item) => avoid.add(item));
+    CKD_INGREDIENT_GUIDE.kidneyStoneHighOxalate.forEach((item) => avoid.add(item));
+    CKD_INGREDIENT_GUIDE.kidneyStoneCitrusRecommended.forEach((item) => prefer.add(item));
   }
 
   return {
@@ -1154,11 +1356,6 @@ function scoreMealCandidate(food, mealType, profile, restrictions) {
   if (targets.sodium && sodium > targets.sodium) {
     score -= Math.min(35, Math.ceil((sodium - targets.sodium) / 40));
   }
-  if (normalizeTextToken(profile.ckdType).includes("stone")) {
-    ["organ meat", "shellfish", "small fish", "fish sauce", "alcohol", "processed meat"].forEach(
-      (item) => avoid.add(item),
-    );
-  }
   if (targets.potassium && potassium > targets.potassium) score -= 24;
   if (targets.phosphorus && phosphorus > targets.phosphorus) score -= 24;
   if (profile.potassiumStatus === "High" && potassium > 500) score -= 20;
@@ -1230,6 +1427,56 @@ function recipeDrivenTemplates(mealType, history = {}, ingredientRules = {}) {
   return templates;
 }
 
+function guideFoodPool(category, ingredientRules = {}) {
+  const blocked = ingredientRules.blockedIngredients || [];
+  return [...new Set(CKD_INGREDIENT_GUIDE[category] || [])]
+    .filter((ingredient) => !containsAny(ingredient, blocked));
+}
+
+function guideFoodTemplates(mealType, ingredientRules = {}) {
+  const proteins = guideFoodPool("proteins", ingredientRules);
+  const carbs = guideFoodPool("carbs", ingredientRules);
+  const vegetables = guideFoodPool("vegetables", ingredientRules);
+  const fruits = guideFoodPool("fruits", ingredientRules);
+  const snacks = guideFoodPool("snacks", ingredientRules);
+  const templates = [];
+
+  if (mealType.includes("Snack")) {
+    const snackCount = Math.max(fruits.length, vegetables.length, snacks.length);
+    for (let index = 0; index < snackCount; index += 1) {
+      if (index % 3 === 0 && fruits.length) {
+        templates.push({ fruit: fruits[index % fruits.length] });
+      } else if (index % 3 === 1 && snacks.length) {
+        const snack = snacks[index % snacks.length];
+        templates.push(CKD_INGREDIENT_GUIDE.fruits.includes(snack)
+          ? { fruit: snack }
+          : { carb: snack });
+      } else if (vegetables.length) {
+        templates.push({ vegetable: vegetables[index % vegetables.length] });
+      }
+    }
+  } else if (proteins.length && carbs.length && vegetables.length) {
+    const count = Math.max(proteins.length, carbs.length, vegetables.length, fruits.length);
+    for (let index = 0; index < count; index += 1) {
+      templates.push({
+        protein: proteins[index % proteins.length],
+        carb: carbs[(index * 3 + 1) % carbs.length],
+        vegetable: vegetables[(index * 5 + 2) % vegetables.length],
+        ...(mealType === "Breakfast" && fruits.length
+          ? { fruit: fruits[(index * 7 + 3) % fruits.length] }
+          : {}),
+      });
+    }
+  }
+
+  return templates.map((template) => ({
+    ...template,
+    target: mealType.includes("Snack") ? 150 : mealType === "Breakfast" ? 300 : 420,
+    mealType,
+    source: "psn_ckd_food_list_template",
+  }));
+}
+
 function mealTemplateBank(profile, history = {}, ingredientRules = {}) {
   const bank = {
     Breakfast: [
@@ -1299,6 +1546,10 @@ function mealTemplateBank(profile, history = {}, ingredientRules = {}) {
       { protein: "seafood", carb: "rice", vegetable: "watercress", target: 410, mealType: "Dinner" },
     ],
   };
+
+  Object.keys(bank).forEach((mealType) => {
+    bank[mealType].push(...guideFoodTemplates(mealType, ingredientRules));
+  });
 
   if (profile.phosphorusStatus === "High") {
     Object.values(bank).forEach((templates) => {
@@ -1388,13 +1639,20 @@ function portionTemplateCandidates(
   );
   if (!templates.length) return [];
   const start = Math.abs(seed + mealIndex * 7) % templates.length;
-  const fruitChoices = ["apple", "grapes", "pear", "strawberries"];
-  const vegetableChoices = ["cabbage", "cauliflower", "cucumber", "lettuce"];
+  const fruitChoices = guideFoodPool("fruits", ingredientRules).length
+    ? guideFoodPool("fruits", ingredientRules)
+    : ["apple"];
+  const vegetableChoices = guideFoodPool("vegetables", ingredientRules).length
+    ? guideFoodPool("vegetables", ingredientRules)
+    : ["cabbage"];
+  const fatChoices = guideFoodPool("fats", ingredientRules).length
+    ? guideFoodPool("fats", ingredientRules)
+    : ["oil"];
 
   return Array.from({ length: Math.min(limit, templates.length) }, (_, offset) => {
     const template = templates[(start + offset) % templates.length];
     if (mealType.includes("Snack")) {
-      return { mealType, ...template, source: "ckd_guide_rule_template" };
+      return { mealType, ...template, source: template.source || "ckd_guide_rule_template" };
     }
     return {
       mealType,
@@ -1402,8 +1660,8 @@ function portionTemplateCandidates(
       vegetable:
         template.vegetable || vegetableChoices[(start + offset) % vegetableChoices.length],
       fruit: template.fruit || fruitChoices[(start + offset) % fruitChoices.length],
-      fat: template.fat || "olive oil",
-      source: "ckd_guide_rule_template",
+      fat: template.fat || fatChoices[(start + offset) % fatChoices.length],
+      source: template.source || "ckd_guide_rule_template",
     };
   });
 }
@@ -3088,7 +3346,8 @@ async function generateMealPlan(body = {}) {
   const planDate = dateKeyFromBody(body);
   const requestedDays = Number(body.days || body.planDays || body.durationDays || 7);
   const planDays = Math.min(7, Math.max(1, Number.isFinite(requestedDays) ? requestedDays : 7));
-  const seed = hashString(`${requestedProfileId}:${planDate}`);
+  const generationSeed = body.seed ?? `${Date.now()}:${Math.random()}`;
+  const seed = hashString(`${requestedProfileId}:${planDate}:${generationSeed}`);
   if (!userId) {
     const error = new Error("userId is required");
     error.statusCode = 400;
@@ -3382,7 +3641,7 @@ async function getRecipeReplacements(selectedRecipe, nutritionProfile, restricti
  * Call this on app startup to populate cache and avoid first-request delays
  */
 async function prewarmMealPlanCache() {
-  const allIngredients = [
+  const allIngredients = [...new Set([
     // Common proteins
     "chicken", "fish", "turkey", "beef", "tilapia", "egg", "tofu", "shrimp", "seafood",
     // Common carbs
@@ -3391,7 +3650,13 @@ async function prewarmMealPlanCache() {
     "cabbage", "carrot", "cauliflower", "broccoli", "asparagus", "green beans", "cucumber", "lettuce", "bell pepper", "onion",
     // Common fruits
     "apple", "pear", "berries", "grapes", "peach", "strawberries",
-  ];
+    ...CKD_INGREDIENT_GUIDE.proteins,
+    ...CKD_INGREDIENT_GUIDE.carbs,
+    ...CKD_INGREDIENT_GUIDE.vegetables,
+    ...CKD_INGREDIENT_GUIDE.fruits,
+    ...CKD_INGREDIENT_GUIDE.fats,
+    ...CKD_INGREDIENT_GUIDE.snacks,
+  ])];
 
   try {
     const results = await ingredientExpansionService.prewarmCache(allIngredients);
@@ -3418,4 +3683,8 @@ module.exports = {
   enforceDailySafetyLimits,
   resolvePortionedMealFromTemplates,
   buildNutritionProfile,
+  buildIngredientRules,
+  guideFoodPool,
+  guideFoodTemplates,
+  portionTemplateCandidates,
 };
