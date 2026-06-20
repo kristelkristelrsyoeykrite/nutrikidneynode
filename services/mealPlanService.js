@@ -50,6 +50,9 @@ const RECIPE_CACHE_COLLECTION = "recipes";
 const RECIPE_SEARCH_CACHE_COLLECTION = "recipeSearchCache";
 const RECIPE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 14;
 const MAX_CACHED_RECIPE_RESULTS = 50;
+const FOOD_DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const FOOD_DETAIL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
+const foodDetailCache = new Map();
 
 function ingredientVariants() {
   return require("./ingredientVariantService");
@@ -340,6 +343,7 @@ function seededPick(items, seed, offset = 0) {
 }
 
 function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -1648,44 +1652,48 @@ async function enrichCandidate(item) {
 async function resolveFoodDetails(food) {
   if (!food?.foodId) return food;
   if (usefulNutrition(food) && food.needsManualReview !== true) return food;
-  try {
-    const details = await fatSecretBridge.getFoodDetails(food.foodId);
-    const detailedFood = details.food || {};
-    
-    // Merge details with original food, ensuring all nutrient fields are included
-    const merged = {
-      ...food,
-      ...detailedFood,
-      // Explicitly ensure all nutrient fields are present
-      calories: detailedFood.calories ?? food.calories ?? 0,
-      protein: detailedFood.protein ?? food.protein ?? 0,
-      carbohydrate: detailedFood.carbohydrate ?? food.carbohydrate ?? 0,
-      fat: detailedFood.fat ?? food.fat ?? 0,
-      sodium: detailedFood.sodium ?? food.sodium ?? 0,
-      potassium: detailedFood.potassium ?? food.potassium ?? 0,
-      phosphorus: detailedFood.phosphorus ?? food.phosphorus ?? 0,
-      raw: {
-        ...(food.raw || {}),
-        foodDetails: details.raw || details.food,
-      },
-    };
-    
-    console.log("FOOD_DETAILS_MERGED:", {
-      foodId: food.foodId,
-      originalHasProtein: food.protein !== undefined && food.protein !== 0,
-      detailsHasProtein: detailedFood.protein !== undefined && detailedFood.protein !== 0,
-      mergedProtein: merged.protein,
-      isUseful: usefulNutrition(merged),
-    });
-    
-    return merged;
-  } catch (error) {
-    console.error("MEAL_PLAN_FOOD_DETAILS_ERROR:", {
-      foodId: food.foodId,
-      error: error.message,
-    });
-    return food;
-  }
+  const cacheKey = String(food.foodId);
+  const cached = foodDetailCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  const promise = (async () => {
+    try {
+      const details = await fatSecretBridge.getFoodDetails(food.foodId);
+      const detailedFood = details.food || {};
+      const merged = {
+        ...food,
+        ...detailedFood,
+        calories: detailedFood.calories ?? food.calories ?? null,
+        protein: detailedFood.protein ?? food.protein ?? null,
+        carbohydrate: detailedFood.carbohydrate ?? food.carbohydrate ?? null,
+        fat: detailedFood.fat ?? food.fat ?? null,
+        sodium: detailedFood.sodium ?? food.sodium ?? null,
+        potassium: detailedFood.potassium ?? food.potassium ?? null,
+        phosphorus: detailedFood.phosphorus ?? food.phosphorus ?? null,
+        raw: {
+          ...(food.raw || {}),
+          foodDetails: details.raw || details.food,
+        },
+      };
+      const entry = foodDetailCache.get(cacheKey);
+      if (entry) entry.expiresAt = Date.now() + FOOD_DETAIL_CACHE_TTL_MS;
+      return merged;
+    } catch (error) {
+      console.error("MEAL_PLAN_FOOD_DETAILS_ERROR:", {
+        foodId: food.foodId,
+        error: error.message,
+      });
+      const entry = foodDetailCache.get(cacheKey);
+      if (entry) entry.expiresAt = Date.now() + FOOD_DETAIL_FAILURE_CACHE_TTL_MS;
+      return food;
+    }
+  })();
+
+  foodDetailCache.set(cacheKey, {
+    expiresAt: Date.now() + FOOD_DETAIL_FAILURE_CACHE_TTL_MS,
+    promise,
+  });
+  return promise;
 }
 
 function nutrientTotals(items = []) {
@@ -2352,26 +2360,39 @@ async function computePortionedMeal(
   for (const [role, ingredient] of Object.entries(components)) {
     if (!ingredient) continue;
     try {
-      const expanded = await adapters.expandIngredient(ingredient);
-      const variants = [...new Set([ingredient, ...(Array.isArray(expanded) ? expanded : [])])]
-        .slice(0, maxVariants);
+      let variants = [ingredient];
       let selected = null;
-      for (const variant of variants) {
-        for (let page = 0; page < 2 && !selected; page += 1) {
-          const result = await adapters.searchFoods(variant, mealType, page);
-          const candidates = (result.foods || []).slice(0, 15);
-          for (const candidate of candidates) {
-            const detailed = await adapters.resolveFood(candidate);
-            const text = componentFoodText(detailed);
-            if (!containsAny(text, [ingredient, variant])) continue;
-            if (containsAny(text, restrictions.avoid || [])) continue;
-            if (requiredNutritionPresent(role, detailed)) {
-              selected = { role, ingredient, variant, food: detailed };
-              break;
-            }
+      let detailLookupUsed = false;
+      for (let variantIndex = 0; variantIndex < variants.length && !selected; variantIndex += 1) {
+        const variant = variants[variantIndex];
+        const result = await adapters.searchFoods(variant, mealType, 0);
+        const candidates = (result.foods || []).slice(0, 10).filter((candidate) => {
+          const text = componentFoodText(candidate);
+          return containsAny(text, [ingredient, variant]) &&
+            !containsAny(text, restrictions.avoid || []);
+        });
+
+        const fixedServing = candidates.find((candidate) =>
+          requiredNutritionPresent(role, candidate),
+        );
+        if (fixedServing) {
+          selected = { role, ingredient, variant, food: fixedServing };
+          break;
+        }
+
+        if (!detailLookupUsed && candidates[0]) {
+          detailLookupUsed = true;
+          const detailed = await adapters.resolveFood(candidates[0]);
+          if (requiredNutritionPresent(role, detailed)) {
+            selected = { role, ingredient, variant, food: detailed };
           }
         }
-        if (selected) break;
+
+        if (!selected && variants.length === 1 && maxVariants > 1) {
+          const expanded = await adapters.expandIngredient(ingredient);
+          variants = [...new Set([ingredient, ...(Array.isArray(expanded) ? expanded : [])])]
+            .slice(0, maxVariants);
+        }
       }
       if (!selected) return null;
       picked.push(selected);

@@ -165,6 +165,56 @@ async function testVariantRetryAndFailure() {
   assert.strictEqual(unresolved, null);
 }
 
+async function testUsesOneFixedReferenceServing() {
+  let detailCalls = 0;
+  const meal = await computePortionedMeal(
+    { mealType: "Lunch", protein: "chicken" },
+    { protein: 48, sodium: 2000 },
+    null,
+    {},
+    {
+      adapters: adapters({
+        resolveFood: async (candidate) => {
+          detailCalls += 1;
+          return candidate;
+        },
+      }),
+    },
+  );
+  assert.ok(meal);
+  assert.strictEqual(detailCalls, 0);
+  assert.ok(meal.components[0].servings > 0);
+
+  const incompleteFoods = Array.from({ length: 10 }, (_, index) => ({
+    foodId: `bread-${index}`,
+    name: "Bread",
+    servingDescription: "1 slice",
+    calories: null,
+    protein: null,
+    carbohydrate: null,
+    sodium: null,
+  }));
+  detailCalls = 0;
+  const unresolved = await computePortionedMeal(
+    { mealType: "AM Snack", carb: "bread" },
+    { sodium: 2000 },
+    null,
+    {},
+    {
+      adapters: {
+        expandIngredient: async () => ["bread"],
+        searchFoods: async () => ({ foods: incompleteFoods }),
+        resolveFood: async (candidate) => {
+          detailCalls += 1;
+          return candidate;
+        },
+      },
+    },
+  );
+  assert.strictEqual(unresolved, null);
+  assert.strictEqual(detailCalls, 1);
+}
+
 async function testDailySafetyValidation() {
   const status = dailyConstraintStatus(
     { calories: 1700, protein: 48, sodium: 1900, potassium: 2900, phosphorus: 900 },
@@ -291,6 +341,7 @@ async function run() {
   await testProfileTargetsTakePrecedence();
   await testManualPortionsAndProteinSplit();
   await testVariantRetryAndFailure();
+  await testUsesOneFixedReferenceServing();
   await testDailySafetyValidation();
   await testDailyCalorieBalancing();
   await testTemplateReplacement();
