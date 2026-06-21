@@ -1,6 +1,7 @@
 process.env.SKIP_FIREBASE_ADMIN_INIT = "true";
 process.env.FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "local-test";
 process.env.FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL || "test@test.local";
+process.env.MEAL_PLAN_DEBUG_LOGS = "false";
 
 const assert = require("assert");
 const {

@@ -69,6 +69,45 @@ const SIMPLE_FAT_FOOD_NAMES = [
   "light mayonnaise",
 ];
 
+const MEAL_PLAN_DEBUG_LOGS = process.env.MEAL_PLAN_DEBUG_LOGS !== "false";
+
+function mealPlanDebug(event, payload = {}) {
+  if (!MEAL_PLAN_DEBUG_LOGS) return;
+  const seen = new WeakSet();
+  const json = JSON.stringify(payload, (key, value) => {
+    if (key === "raw" || key === "raw_serving") return undefined;
+    if (value instanceof Error) {
+      return { name: value.name, message: value.message, stack: value.stack };
+    }
+    if (value && typeof value === "object") {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+    }
+    return value;
+  }, 2);
+  console.log(`[MEAL_PLAN_DEBUG] ${event}\n${json}`);
+}
+
+function mealPlanFoodDiagnostic(food = {}) {
+  return {
+    foodId: food.foodId,
+    name: food.name,
+    servingId: food.servingId,
+    servingDescription: food.servingDescription,
+    calories: food.calories,
+    protein: food.protein,
+    carbohydrate: food.carbohydrate,
+    fat: food.fat,
+    sodium: food.sodium,
+    potassium: food.potassium,
+    phosphorus: food.phosphorus,
+    missingNutrients: food.missingNutrients,
+    estimatedNutrients: food.estimatedNutrients,
+    nutrientSources: food.nutrientSources,
+    needsManualReview: food.needsManualReview,
+  };
+}
+
 function ingredientVariants() {
   return require("./ingredientVariantService");
 }
@@ -2027,11 +2066,35 @@ function foodFromFirstServing(food, details = {}) {
 
 async function resolveMealPlanFirstServing(food) {
   const embedded = foodFromFirstServing(food);
-  if (embedded) return embedded;
+  if (embedded) {
+    mealPlanDebug("FIRST_SERVING_FROM_EMBEDDED_DATA", {
+      food: mealPlanFoodDiagnostic(food),
+      selected: mealPlanFoodDiagnostic(embedded),
+      firstServing: embedded.firstServing,
+    });
+    return embedded;
+  }
   if (!food?.foodId) return null;
   try {
     const details = await fatSecretBridge.mealLoggingFoodDetails(food.foodId);
-    return foodFromFirstServing(food, details);
+    const resolved = foodFromFirstServing(food, details);
+    mealPlanDebug("FIRST_SERVING_FROM_FATSECRET", {
+      food: mealPlanFoodDiagnostic(food),
+      servingCount: Array.isArray(details.servings) ? details.servings.length : 0,
+      servingOptions: (details.servings || []).map((serving) => ({
+        servingId: serving.serving_id || serving.servingId,
+        servingDescription:
+          serving.serving_description || serving.servingDescription,
+        displayText: serving.display_text || serving.displayText,
+        metricServingAmount:
+          serving.metric_serving_amount || serving.metricServingAmount,
+        metricServingUnit:
+          serving.metric_serving_unit || serving.metricServingUnit,
+        nutrients: serving.nutrients || serving,
+      })),
+      selected: resolved ? mealPlanFoodDiagnostic(resolved) : null,
+    });
+    return resolved;
   } catch (error) {
     console.error("MEAL_PLAN_FIRST_SERVING_ERROR:", {
       foodId: food.foodId,
@@ -2594,6 +2657,21 @@ async function computePortionedMeal(
     fruit: mealTemplate.fruit || null,
     fat: mealTemplate.fat || null,
   };
+  mealPlanDebug("COMPUTE_START", {
+    mealType,
+    template: mealTemplate,
+    components,
+    mealTargets,
+    nutrientBudgets: options.nutrientBudgets || {},
+    restrictions: {
+      avoid: restrictions.avoid || [],
+      dailySodiumLimitMg: restrictions.dailySodiumLimitMg,
+      dailyPotassiumLimitMg: restrictions.dailyPotassiumLimitMg,
+      dailyPhosphorusLimitMg: restrictions.dailyPhosphorusLimitMg,
+    },
+    maxIterations,
+    maxVariants,
+  });
 
   function initialServingPortion(role, food) {
     const description = food.servingDescription || food.servingSize || "";
@@ -2613,7 +2691,8 @@ async function computePortionedMeal(
     };
   }
 
-  function requiredNutritionPresent(role, food) {
+  function requiredNutritionIssues(role, food) {
+    const issues = [];
     function nutrientProvided(nutrient) {
       const value = numberOrNull(food?.[nutrient]);
       if (value === null) return false;
@@ -2627,14 +2706,29 @@ async function computePortionedMeal(
       return rawValues.some((rawValue) => rawValue !== undefined && rawValue !== null && rawValue !== "");
     }
 
-    if (!food || (numberOrNull(food.calories) || 0) <= 0) return false;
-    if (role === "protein" && (numberOrNull(food.protein) || 0) <= 0) return false;
-    if (role === "carb" && (numberOrNull(food.carbohydrate) || 0) <= 0) return false;
-    if (role === "fat" && (numberOrNull(food.fat) || 0) <= 0) return false;
-    if (!nutrientProvided("sodium")) return false;
-    if (mealTargets.potassium && !nutrientProvided("potassium")) return false;
-    if (mealTargets.phosphorus && !nutrientProvided("phosphorus")) return false;
-    return true;
+    if (!food) return ["food_missing"];
+    if ((numberOrNull(food.calories) || 0) <= 0) issues.push("calories_missing_or_zero");
+    if (role === "protein" && (numberOrNull(food.protein) || 0) <= 0) {
+      issues.push("protein_missing_or_zero");
+    }
+    if (role === "carb" && (numberOrNull(food.carbohydrate) || 0) <= 0) {
+      issues.push("carbohydrate_missing_or_zero");
+    }
+    if (role === "fat" && (numberOrNull(food.fat) || 0) <= 0) {
+      issues.push("fat_missing_or_zero");
+    }
+    if (!nutrientProvided("sodium")) issues.push("sodium_missing");
+    if (mealTargets.potassium && !nutrientProvided("potassium")) {
+      issues.push("potassium_required_but_missing");
+    }
+    if (mealTargets.phosphorus && !nutrientProvided("phosphorus")) {
+      issues.push("phosphorus_required_but_missing");
+    }
+    return issues;
+  }
+
+  function requiredNutritionPresent(role, food) {
+    return requiredNutritionIssues(role, food).length === 0;
   }
 
   function applyRiskBasedNutrientFallbacks(role, ingredient, food) {
@@ -2701,16 +2795,42 @@ async function computePortionedMeal(
       for (let variantIndex = 0; variantIndex < variants.length && !selected; variantIndex += 1) {
         const variant = variants[variantIndex];
         const result = await adapters.searchFoods(variant, mealType, 0);
-        const candidates = (result.foods || []).slice(0, 10).filter((candidate) => {
+        const searchedCandidates = (result.foods || []).slice(0, 10);
+        const candidates = searchedCandidates.filter((candidate) => {
           const text = componentFoodText(candidate);
           return containsAny(text, [ingredient, variant]) &&
             !containsAny(text, restrictions.avoid || []);
         }).map((candidate) => applyRiskBasedNutrientFallbacks(role, ingredient, candidate));
+        mealPlanDebug("CANDIDATE_SEARCH", {
+          mealType,
+          role,
+          ingredient,
+          variant,
+          resultCount: result.foods?.length || 0,
+          candidates: searchedCandidates.map((candidate) => ({
+            ...mealPlanFoodDiagnostic(candidate),
+            textMatched: containsAny(componentFoodText(candidate), [ingredient, variant]),
+            restrictionMatched: containsAny(
+              componentFoodText(candidate),
+              restrictions.avoid || [],
+            ),
+            requiredNutritionIssues: requiredNutritionIssues(
+              role,
+              applyRiskBasedNutrientFallbacks(role, ingredient, candidate),
+            ),
+          })),
+        });
 
         const fixedServing = candidates.find((candidate) =>
           requiredNutritionPresent(role, candidate),
         );
         if (fixedServing) {
+          mealPlanDebug("CANDIDATE_ACCEPTED_FROM_SEARCH", {
+            role,
+            ingredient,
+            variant,
+            food: mealPlanFoodDiagnostic(fixedServing),
+          });
           selected = { role, ingredient, variant, food: fixedServing };
           break;
         }
@@ -2723,7 +2843,21 @@ async function computePortionedMeal(
             await adapters.resolveFood(candidates[0]),
           );
           if (requiredNutritionPresent(role, detailed)) {
+            mealPlanDebug("CANDIDATE_ACCEPTED_AFTER_DETAIL_LOOKUP", {
+              role,
+              ingredient,
+              variant,
+              food: mealPlanFoodDiagnostic(detailed),
+            });
             selected = { role, ingredient, variant, food: detailed };
+          } else {
+            mealPlanDebug("CANDIDATE_DETAIL_REJECTED", {
+              role,
+              ingredient,
+              variant,
+              food: mealPlanFoodDiagnostic(detailed),
+              issues: requiredNutritionIssues(role, detailed),
+            });
           }
         }
 
@@ -2733,7 +2867,10 @@ async function computePortionedMeal(
             .slice(0, maxVariants);
         }
       }
-      if (!selected) return null;
+      if (!selected) {
+        mealPlanDebug("COMPONENT_UNRESOLVED", { mealType, role, ingredient, variants });
+        return null;
+      }
       const servingFood = await adapters.resolveFirstServing(selected.food);
       if (!servingFood) {
         console.warn("MEAL_PLAN_FIRST_SERVING_MISSING:", {
@@ -2747,7 +2884,24 @@ async function computePortionedMeal(
         ingredient,
         servingFood,
       );
-      if (!requiredNutritionPresent(role, selected.food)) return null;
+      const firstServingIssues = requiredNutritionIssues(role, selected.food);
+      if (firstServingIssues.length) {
+        mealPlanDebug("FIRST_SERVING_REJECTED", {
+          mealType,
+          role,
+          ingredient,
+          food: mealPlanFoodDiagnostic(selected.food),
+          issues: firstServingIssues,
+        });
+        return null;
+      }
+      mealPlanDebug("COMPONENT_RESOLVED", {
+        mealType,
+        role,
+        ingredient,
+        variant: selected.variant,
+        food: mealPlanFoodDiagnostic(selected.food),
+      });
       picked.push(selected);
     } catch (err) {
       console.error("COMPUTE_PORTIONED_MEAL_FETCH_ERROR:", { role, ingredient, error: err.message });
@@ -2783,7 +2937,29 @@ async function computePortionedMeal(
       nutrients,
     };
   });
-  if (componentsPortions.some((part) => !part)) return null;
+  if (componentsPortions.some((part) => !part)) {
+    mealPlanDebug("PORTION_INITIALIZATION_FAILED", {
+      mealType,
+      picked: picked.map((entry) => ({
+        role: entry.role,
+        ingredient: entry.ingredient,
+        food: mealPlanFoodDiagnostic(entry.food),
+      })),
+    });
+    return null;
+  }
+  mealPlanDebug("INITIAL_PORTIONS", {
+    mealType,
+    portions: componentsPortions.map((part) => ({
+      role: part.role,
+      ingredient: part.ingredient,
+      foodId: part.food?.foodId,
+      servingId: part.food?.servingId,
+      servingDescription: part.food?.servingDescription,
+      numberOfServings: part.portion.servings,
+      nutrients: part.nutrients,
+    })),
+  });
 
   // STEP 6: Recalculate totals
   function totalsFromParts(parts) {
@@ -2814,6 +2990,19 @@ async function computePortionedMeal(
 
   while (iter < maxIterations) {
     const status = checkConstraints(totals, mealTargets);
+    mealPlanDebug("CONSTRAINT_ITERATION", {
+      mealType,
+      iteration: iter,
+      totals,
+      targets: mealTargets,
+      status,
+      portions: parts.map((part) => ({
+        role: part.role,
+        ingredient: part.ingredient,
+        numberOfServings: part.portion.servings,
+        nutrients: part.nutrients,
+      })),
+    });
     if (status.allOk) break;
 
     // Protein adjustments
@@ -2860,6 +3049,21 @@ async function computePortionedMeal(
   }
 
   totals = totalsFromParts(parts);
+  mealPlanDebug("COMPUTE_COMPLETE", {
+    mealType,
+    totals,
+    targets: mealTargets,
+    validation: checkConstraints(totals, mealTargets),
+    iterations: iter,
+    components: parts.map((part) => ({
+      role: part.role,
+      ingredient: part.ingredient,
+      variant: part.variant,
+      food: mealPlanFoodDiagnostic(part.food),
+      numberOfServings: part.portion.servings,
+      nutrients: part.nutrients,
+    })),
+  });
 
   // STEP 10: Return structured meal
   const meal = {
@@ -3151,7 +3355,15 @@ async function resolvePortionedMealFromTemplates({
   date,
   compute = computePortionedMeal,
 }) {
-  for (const template of templates) {
+  for (const [templateIndex, template] of templates.entries()) {
+    mealPlanDebug("TEMPLATE_ATTEMPT", {
+      date,
+      templateIndex,
+      templateCount: templates.length,
+      template,
+      nutrientBudgets,
+      existingMealSignatures: existingMeals.map(mealSignature),
+    });
     const portioned = await compute(
       template,
       {},
@@ -3159,12 +3371,59 @@ async function resolvePortionedMealFromTemplates({
       restrictions,
       { maxIterations: 8, maxVariants: 3, nutrientBudgets },
     );
-    if (!portioned?.satisfied) continue;
+    if (!portioned) {
+      mealPlanDebug("TEMPLATE_REJECTED_UNRESOLVED", {
+        date,
+        templateIndex,
+        template,
+      });
+      continue;
+    }
+    if (!portioned.satisfied) {
+      mealPlanDebug("TEMPLATE_REJECTED_CONSTRAINTS", {
+        date,
+        templateIndex,
+        template,
+        totals: portioned.totals,
+        targets: portioned.mealTargets,
+        validation: portioned.validation,
+        components: portioned.components,
+      });
+      continue;
+    }
     const candidate = mealFromPortionResult(portioned, date);
     const signature = mealSignature(candidate);
-    if (!signature || existingMeals.some((meal) => mealSignature(meal) === signature)) continue;
+    if (!signature) {
+      mealPlanDebug("TEMPLATE_REJECTED_EMPTY_SIGNATURE", {
+        date,
+        templateIndex,
+        candidate,
+      });
+      continue;
+    }
+    if (existingMeals.some((meal) => mealSignature(meal) === signature)) {
+      mealPlanDebug("TEMPLATE_REJECTED_DUPLICATE", {
+        date,
+        templateIndex,
+        signature,
+        candidate,
+      });
+      continue;
+    }
+    mealPlanDebug("TEMPLATE_ACCEPTED", {
+      date,
+      templateIndex,
+      signature,
+      candidate,
+    });
     return candidate;
   }
+  mealPlanDebug("ALL_TEMPLATES_REJECTED", {
+    date,
+    templateCount: templates.length,
+    templates,
+    nutrientBudgets,
+  });
   return null;
 }
 
@@ -3466,6 +3725,14 @@ async function generateMealPlan(body = {}) {
     history,
   );
   const mealTypes = ["Breakfast", "AM Snack", "Lunch", "PM Snack", "Dinner"];
+  mealPlanDebug("GENERATION_START", {
+    planDate,
+    planDays,
+    nutritionProfile,
+    restrictions,
+    ingredientRules,
+    mealTypes,
+  });
 
   const days = [];
   for (let dayIndex = 0; dayIndex < planDays; dayIndex += 1) {
@@ -3496,6 +3763,15 @@ async function generateMealPlan(body = {}) {
         ingredientRules,
         5,
       );
+      mealPlanDebug("MEAL_RESOLUTION_START", {
+        date: currentDate,
+        dayIndex,
+        mealIndex,
+        mealType,
+        totalsSoFar,
+        nutrientBudgets,
+        templates,
+      });
       const mealObject = await resolvePortionedMealFromTemplates({
         templates,
         nutritionProfile,
@@ -3506,6 +3782,15 @@ async function generateMealPlan(body = {}) {
       });
 
       if (!mealObject) {
+        mealPlanDebug("MEAL_RESOLUTION_FAILED", {
+          date: currentDate,
+          dayIndex,
+          mealIndex,
+          mealType,
+          totalsSoFar,
+          nutrientBudgets,
+          templates,
+        });
         const error = new Error(
           `Unable to resolve a complete, profile-safe ${mealType.toLowerCase()} after trying replacement meals.`,
         );
@@ -3551,6 +3836,14 @@ async function generateMealPlan(body = {}) {
       error.failedDailyLimits = failedDailyLimits;
       throw error;
     }
+    mealPlanDebug("DAY_BALANCE_COMPLETE", {
+      date: currentDate,
+      calorieBalanceIterations: calorieBalance.iterations,
+      safetyBalanceIterations: safetyBalance.iterations,
+      totals: dayTotals,
+      validation: dayValidation,
+      meals,
+    });
     const dayWaterMl = await enrichMealsWithFluidContributions({
       meals,
       userId,

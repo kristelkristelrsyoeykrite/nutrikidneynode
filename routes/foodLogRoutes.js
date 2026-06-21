@@ -1137,7 +1137,17 @@ router.post("/meal-plan/generate", async (req, res) => {
       mealPlan,
     });
   } catch (error) {
-    console.error("MEAL_PLAN_GENERATE ERROR:", error.message);
+    console.error("MEAL_PLAN_GENERATE ERROR:\n" + JSON.stringify({
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      statusCode: error.statusCode,
+      failedDailyLimits: error.failedDailyLimits,
+      totals: error.totals,
+      validation: error.validation,
+      details: error.data,
+      stack: error.stack,
+    }, null, 2));
     return res.status(error.statusCode || 500).json({
       success: false,
       error: error.message || "Failed to generate meal plan",
