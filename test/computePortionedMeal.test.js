@@ -187,6 +187,10 @@ async function testManualPortionsAndProteinSplit() {
     0.5,
   );
   assert.strictEqual(
+    meal.components.find((item) => item.role === "carb").portion,
+    "50 g",
+  );
+  assert.strictEqual(
     meal.components.find((item) => item.role === "carb").portionControl.fatSecretServingMultiplier,
     0.5,
   );
@@ -378,6 +382,88 @@ async function testNonProteinUsesOneFirstServing() {
   assert.strictEqual(meal.components[0].servingId, "olive-oil-serving-1");
   assert.strictEqual(meal.totals.calories, 119);
   assert.strictEqual(meal.totals.fat, 13.5);
+}
+
+async function testVegetableAndFruitGuidelineConversions() {
+  const cabbage100g = food("Cabbage", {
+    servingDescription: "100 g",
+    calories: 25,
+    protein: 1.3,
+    carbohydrate: 6,
+  });
+  cabbage100g.servings[0] = {
+    ...cabbage100g.servings[0],
+    serving_description: "100 g",
+    number_of_units: 100,
+    measurement_description: "g",
+    metric_serving_amount: 100,
+    metric_serving_unit: "g",
+  };
+  cabbage100g.servings.push({
+    serving_id: "cabbage-cup",
+    serving_description: "1 cup cooked",
+    number_of_units: 1,
+    measurement_description: "cup",
+    metric_serving_amount: 150,
+    metric_serving_unit: "g",
+    nutrients: {
+      calories: 38,
+      protein: 2,
+      carbohydrate: 9,
+      fat: 0,
+      sodium: 15,
+      potassium: 60,
+      phosphorus: 30,
+    },
+  });
+  const vegetableMeal = await computePortionedMeal(
+    { mealType: "Lunch", vegetable: "cabbage" },
+    { sodium: 2000 },
+    null,
+    {},
+    {
+      adapters: {
+        expandIngredient: async (ingredient) => [ingredient],
+        searchFoods: async () => ({ foods: [cabbage100g] }),
+        resolveFood: async (candidate) => candidate,
+      },
+    },
+  );
+  assert.ok(vegetableMeal);
+  assert.strictEqual(vegetableMeal.components[0].servingId, "cabbage-cup");
+  assert.strictEqual(vegetableMeal.components[0].numberOfServings, 1);
+  assert.strictEqual(vegetableMeal.components[0].portion, "1 cup (150 g)");
+
+  const apple100g = food("Apple", {
+    servingDescription: "100 g",
+    calories: 52,
+    protein: 0.3,
+    carbohydrate: 14,
+  });
+  apple100g.servings[0] = {
+    ...apple100g.servings[0],
+    serving_description: "100 g",
+    number_of_units: 100,
+    measurement_description: "g",
+    metric_serving_amount: 100,
+    metric_serving_unit: "g",
+  };
+  const fruitMeal = await computePortionedMeal(
+    { mealType: "AM Snack", fruit: "apple" },
+    { sodium: 2000 },
+    null,
+    {},
+    {
+      adapters: {
+        expandIngredient: async (ingredient) => [ingredient],
+        searchFoods: async () => ({ foods: [apple100g] }),
+        resolveFood: async (candidate) => candidate,
+      },
+    },
+  );
+  assert.ok(fruitMeal);
+  assert.strictEqual(fruitMeal.components[0].numberOfServings, 0.75);
+  assert.strictEqual(fruitMeal.components[0].portion, "75 g");
 }
 
 async function testMealPlanUsesFoodLogWaterPreview() {
@@ -635,6 +721,7 @@ async function run() {
   await testUsesOneFixedReferenceServing();
   await testRiskBasedMissingNutrients();
   await testNonProteinUsesOneFirstServing();
+  await testVegetableAndFruitGuidelineConversions();
   await testMealPlanUsesFoodLogWaterPreview();
   await testDailySafetyValidation();
   await testDailyCalorieBalancing();

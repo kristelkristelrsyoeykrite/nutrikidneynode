@@ -951,7 +951,18 @@ function registerProfileRoutes(router, deps) {
           step4?.sodium ||
           step4?.sodium_status ||
           step4?.sodiumStatus ||
-          step4?.calcium,
+          step4?.calcium ||
+          step4?.rbc ||
+          step4?.wbc ||
+          step4?.glucose ||
+          step4?.urineCreatinine ||
+          step4?.urine_creatinine ||
+          step4?.urineAlbumin ||
+          step4?.urine_albumin ||
+          step4?.hba1c ||
+          step4?.hemoglobin ||
+          step4?.hematocrit ||
+          step4?.platelets,
       );
       let labResultDoc = null;
       if (hasLabResultData) {
@@ -971,6 +982,20 @@ function registerProfileRoutes(router, deps) {
           hemoglobin: parseFloat(step4?.hemoglobin) || null,
           hemoglobin_status:
             step4?.hemoglobin_status ?? step4?.hemoglobinStatus ?? null,
+          hematocrit: parseFloat(step4?.hematocrit) || null,
+          rbc: parseFloat(step4?.rbc) || null,
+          wbc: parseFloat(step4?.wbc) || null,
+          platelets: parseFloat(step4?.platelets) || null,
+          glucose: parseFloat(step4?.glucose) || null,
+          hba1c: parseFloat(step4?.hba1c ?? step4?.HbA1c) || null,
+          urineCreatinine:
+            parseFloat(step4?.urineCreatinine ?? step4?.urine_creatinine) || null,
+          urine_creatinine:
+            parseFloat(step4?.urineCreatinine ?? step4?.urine_creatinine) || null,
+          urineAlbumin:
+            parseFloat(step4?.urineAlbumin ?? step4?.urine_albumin) || null,
+          urine_albumin:
+            parseFloat(step4?.urineAlbumin ?? step4?.urine_albumin) || null,
           creatinine: parseFloat(step4?.creatinine) || null,
           potassium: parseFloat(step4?.potassium) || null,
           potassium_status:

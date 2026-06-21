@@ -2034,12 +2034,33 @@ function embeddedServingOptions(food = {}) {
   return [];
 }
 
-function foodFromFirstServing(food, details = {}) {
+function preferredGuidelineServing(servings, role) {
+  if (!Array.isArray(servings) || servings.length === 0) return null;
+  const servingText = (serving) => String(
+    serving.measurement_description ||
+      serving.measurementDescription ||
+      serving.serving_description ||
+      serving.servingDescription ||
+      "",
+  ).toLowerCase();
+  if (role === "vegetable") {
+    return servings.find((serving) => /\bcups?\b/.test(servingText(serving))) ||
+      servings[0];
+  }
+  if (role === "fruit") {
+    return servings.find((serving) => /\bsmall\b/.test(servingText(serving))) ||
+      servings.find((serving) => /\bcups?\b/.test(servingText(serving))) ||
+      servings[0];
+  }
+  return servings[0];
+}
+
+function foodFromFirstServing(food, details = {}, role = null) {
   const servings = embeddedServingOptions({
     ...food,
     servings: details.servings || details.food?.servings || food.servings,
   });
-  const firstServing = servings[0];
+  const firstServing = preferredGuidelineServing(servings, role);
   if (!firstServing) return null;
   const nutrients = firstServing.nutrients || firstServing;
   const servingId = firstServing.serving_id || firstServing.servingId;
@@ -2067,8 +2088,8 @@ function foodFromFirstServing(food, details = {}) {
   };
 }
 
-async function resolveMealPlanFirstServing(food) {
-  const embedded = foodFromFirstServing(food);
+async function resolveMealPlanFirstServing(food, role = null) {
+  const embedded = foodFromFirstServing(food, {}, role);
   if (embedded) {
     mealPlanDebug("FIRST_SERVING_FROM_EMBEDDED_DATA", {
       food: mealPlanFoodDiagnostic(food),
@@ -2080,7 +2101,7 @@ async function resolveMealPlanFirstServing(food) {
   if (!food?.foodId) return null;
   try {
     const details = await fatSecretBridge.mealLoggingFoodDetails(food.foodId);
-    const resolved = foodFromFirstServing(food, details);
+    const resolved = foodFromFirstServing(food, details, role);
     mealPlanDebug("FIRST_SERVING_FROM_FATSECRET", {
       food: mealPlanFoodDiagnostic(food),
       servingCount: Array.isArray(details.servings) ? details.servings.length : 0,
@@ -2105,6 +2126,103 @@ async function resolveMealPlanFirstServing(food) {
     });
     return null;
   }
+}
+
+const COOKED_VEGETABLE_CUP_GRAMS = 150;
+const FRUIT_HALF_CUP_GRAMS = 75;
+
+function referenceServingMetadata(food = {}) {
+  const serving = food.firstServing || {};
+  const existing = food.servingMetadata || {};
+  return {
+    numberOfUnits: numberOrNull(
+      existing.numberOfUnits ?? serving.number_of_units ?? serving.numberOfUnits,
+    ) || 1,
+    measurementDescription: String(
+      existing.measurementDescription ??
+        serving.measurement_description ??
+        serving.measurementDescription ??
+        "",
+    ).trim(),
+    metricServingAmount: numberOrNull(
+      existing.metricServingAmount ??
+        serving.metric_serving_amount ??
+        serving.metricServingAmount,
+    ),
+    metricServingUnit: String(
+      existing.metricServingUnit ??
+        serving.metric_serving_unit ??
+        serving.metricServingUnit ??
+        "",
+    ).trim(),
+  };
+}
+
+function guidelineServingMultiplier(role, food, mealType, fallback) {
+  const metadata = referenceServingMetadata(food);
+  const measurement = metadata.measurementDescription.toLowerCase();
+  const metricUnit = metadata.metricServingUnit.toLowerCase();
+  const isCup = /\bcups?\b/.test(measurement);
+
+  if (role === "vegetable") {
+    const targetCups = String(mealType).toLowerCase().includes("snack") ? 0.5 : 1;
+    if (isCup) return targetCups / metadata.numberOfUnits;
+    if (metadata.metricServingAmount && ["g", "gram", "grams"].includes(metricUnit)) {
+      const targetGrams = COOKED_VEGETABLE_CUP_GRAMS * targetCups;
+      return targetGrams / metadata.metricServingAmount;
+    }
+  }
+
+  if (role === "fruit") {
+    if (isCup) return 0.5 / metadata.numberOfUnits;
+    const isWholeFruitUnit = measurement &&
+      !/\b(g|gram|grams|kg|ml|oz|ounce|serving)\b/.test(measurement);
+    if (isWholeFruitUnit) return 1 / metadata.numberOfUnits;
+    if (metadata.metricServingAmount && ["g", "gram", "grams"].includes(metricUnit)) {
+      return FRUIT_HALF_CUP_GRAMS / metadata.metricServingAmount;
+    }
+  }
+
+  return fallback;
+}
+
+function calculatedServingText(food, servings) {
+  const metadata = referenceServingMetadata(food);
+  const description = food.servingDescription || food.servingSize || "1 serving";
+  const quantity = Number(servings);
+  const parts = [];
+
+  const parsedMeasurement = metadata.measurementDescription.match(
+    /^\s*(\d+(?:\.\d+)?)\s+(.+)$/,
+  );
+  const measurementAmount = parsedMeasurement
+    ? Number(parsedMeasurement[1])
+    : metadata.numberOfUnits;
+  const measurementUnit = parsedMeasurement
+    ? parsedMeasurement[2].trim()
+    : metadata.measurementDescription;
+  const measurementIsMetric = /^(g|gram|grams|kg|ml|milliliters?)$/i.test(
+    measurementUnit,
+  );
+  if (measurementUnit && !measurementIsMetric) {
+    const amount = measurementAmount * quantity;
+    parts.push(`${Number(amount.toFixed(2))} ${measurementUnit}`);
+  }
+  if (metadata.metricServingAmount && metadata.metricServingUnit) {
+    const metricAmount = metadata.metricServingAmount * quantity;
+    parts.push(`${Number(metricAmount.toFixed(1))} ${metadata.metricServingUnit}`);
+  }
+  if (!parts.length) {
+    const metricDescription = String(description).match(
+      /^\s*(\d+(?:\.\d+)?)\s*(g|gram|grams|kg|ml|milliliters?)\s*$/i,
+    );
+    if (metricDescription) {
+      const amount = Number(metricDescription[1]) * quantity;
+      return `${Number(amount.toFixed(2))} ${metricDescription[2]}`;
+    }
+  }
+  if (parts.length) return parts.join(" (") + (parts.length > 1 ? ")" : "");
+  return `${Number(quantity.toFixed(6))} × ${description}`;
 }
 
 function nutrientTotals(items = []) {
@@ -2716,11 +2834,13 @@ async function computePortionedMeal(
           : mealTargets.protein;
       if (!targetProtein || proteinPerServing <= 0) return null;
       servings = targetProtein / proteinPerServing;
+    } else {
+      servings = guidelineServingMultiplier(role, food, mealType, servings);
     }
 
     const roundedServings = Number(servings.toFixed(6));
     return {
-      text: `${roundedServings} × ${description || "1 serving"}`,
+      text: calculatedServingText(food, roundedServings),
       servings: roundedServings,
       manualServing: description || "1 serving",
       portionControl: portionRule || null,
@@ -2907,7 +3027,7 @@ async function computePortionedMeal(
         mealPlanDebug("COMPONENT_UNRESOLVED", { mealType, role, ingredient, variants });
         return null;
       }
-      const servingFood = await adapters.resolveFirstServing(selected.food);
+      const servingFood = await adapters.resolveFirstServing(selected.food, role);
       if (!servingFood) {
         console.warn("MEAL_PLAN_FIRST_SERVING_MISSING:", {
           ingredient,
@@ -3056,7 +3176,10 @@ async function computePortionedMeal(
           proteinPart.portion.servings = Number(
             (proteinPart.portion.servings * ratio).toFixed(6),
           );
-          proteinPart.portion.text = `${proteinPart.portion.servings} × ${proteinPart.food?.servingDescription || "1 serving"}`;
+          proteinPart.portion.text = calculatedServingText(
+            proteinPart.food || {},
+            proteinPart.portion.servings,
+          );
           const scale = proteinPart.portion.servings;
           proteinPart.nutrients = scaleNutrients(proteinPart.food || {}, scale);
         }
@@ -3079,7 +3202,10 @@ async function computePortionedMeal(
       if (!culprit || culprit.portion.servings <= 0.5) break;
       culprit.portion.servings = Math.max(0.5, culprit.portion.servings * 0.85);
       culprit.portion.servings = Number(culprit.portion.servings.toFixed(6));
-      culprit.portion.text = `${culprit.portion.servings} × ${culprit.food?.servingDescription || "1 serving"}`;
+      culprit.portion.text = calculatedServingText(
+        culprit.food || {},
+        culprit.portion.servings,
+      );
       culprit.nutrients = scaleNutrients(culprit.food || {}, culprit.portion.servings);
     }
 
@@ -3121,6 +3247,7 @@ async function computePortionedMeal(
       foodId: p.food?.foodId || null,
       servingId: p.food?.servingId || null,
       servingDescription: p.food?.servingDescription || "1 serving",
+      servingMetadata: referenceServingMetadata(p.food || {}),
       portion: p.portion.text,
       numberOfServings: p.portion.servings,
       servings: p.portion.servings,
@@ -3344,6 +3471,7 @@ function mealFromPortionResult(portioned, date) {
       servingId: component.servingId || null,
       servingDescription: component.servingDescription || "1 serving",
       servingLabel: component.servingDescription || "1 serving",
+      servingMetadata: component.servingMetadata || {},
       numberOfServings: component.numberOfServings,
       servingNutrients: component.servingNutrients,
       baseIngredient: component.ingredient,
@@ -3517,7 +3645,7 @@ function scaleComponentNutrients(component, ratio) {
   ) || 1;
   component.numberOfServings = Number((oldServings * ratio).toFixed(6));
   component.servings = component.numberOfServings;
-  component.portion = `${component.numberOfServings} × ${component.servingDescription || component.servingLabel || "1 serving"}`;
+  component.portion = calculatedServingText(component, component.numberOfServings);
   component.displayAmount = component.portion;
   const scaled = {};
   for (const nutrient of [
