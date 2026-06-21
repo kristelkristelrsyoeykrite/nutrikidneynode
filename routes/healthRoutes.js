@@ -1580,6 +1580,15 @@ function serializeIntakeLog(doc) {
     mealType: data.mealType,
     date: data.date,
     name: data.name ?? data.foodName ?? data.food_name ?? null,
+    foodId: data.foodId ?? data.food_id ?? null,
+    servingId:
+      data.servingId ?? data.selectedServingId ?? data.serving_id ?? null,
+    numberOfServings: numberOrZero(
+      data.numberOfServings ?? data.selectedQuantity ?? data.quantity ?? 1,
+    ),
+    quantity: numberOrZero(
+      data.numberOfServings ?? data.selectedQuantity ?? data.quantity ?? 1,
+    ),
     portion:
       data.portion ??
       data.selectedServingDescription ??
@@ -1587,6 +1596,9 @@ function serializeIntakeLog(doc) {
       null,
     waterMl: numberOrZero(data.waterMl ?? data.water_ml),
     ...nutrients,
+    finalNutrients: nutrients,
+    source: data.source,
+    needsManualReview: data.needsManualReview === true,
     loggedAt:
       typeof data.loggedAt?.toDate === "function"
         ? data.loggedAt.toDate().toISOString()

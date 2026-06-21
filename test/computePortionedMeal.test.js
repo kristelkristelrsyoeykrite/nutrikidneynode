@@ -183,6 +183,7 @@ async function testManualPortionsAndProteinSplit() {
   assert.ok(Math.abs(meal.totals.protein - 16) <= 1);
   assert.strictEqual(meal.components.every((item) => item.servingId), true);
   assert.strictEqual(meal.components.every((item) => item.servingDescription), true);
+  assert.strictEqual(meal.components.every((item) => item.servingNutrients), true);
 
   const snack = await computePortionedMeal(
     { mealType: "AM Snack", fruit: "apple" },

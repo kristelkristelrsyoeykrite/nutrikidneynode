@@ -1641,7 +1641,9 @@ router.post("/logs/add", async (req, res) => {
       brandName: raw?.brand_name || raw?.brandName,
       foodType: raw?.food_type || raw?.foodType,
       selectedServingId,
+      servingId: selectedServingId,
       selectedServingDescription: portion || "1 serving",
+      servingDescription: portion || "1 serving",
       selectedQuantity,
       quantity: selectedQuantity,
       numberOfServings: selectedQuantity,
@@ -1827,6 +1829,10 @@ router.post("/logs/update", async (req, res) => {
       portion: portion || existing.portion,
       selectedServingDescription: portion || existing.selectedServingDescription,
       selectedServingId: selectedServingId || existing.selectedServingId,
+      servingId:
+        selectedServingId || existing.servingId || existing.selectedServingId,
+      servingDescription:
+        portion || existing.servingDescription || existing.selectedServingDescription,
       selectedQuantity: hasSelectedQuantity
         ? selectedQuantity
         : existing.selectedQuantity,
