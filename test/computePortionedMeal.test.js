@@ -16,7 +16,11 @@ const {
   guideFoodTemplates,
   portionTemplateCandidates,
 } = require("../services/mealPlanService");
-const { generateMealPortions } = require("../services/portionControlService");
+const {
+  generateMealPortions,
+  buildMealTitle,
+  buildIngredientList,
+} = require("../services/portionControlService");
 
 function food(name, nutrients = {}) {
   return {
@@ -93,6 +97,25 @@ async function testLegacyPortionMetadataUsesManualServings() {
     ingredientList: ["apple"],
   });
   assert.strictEqual(snack.mealProteinTarget, 0);
+}
+
+async function testDisplayRulesUseCategoriesNotExampleFoodNames() {
+  const foods = [
+    { name: "New starch", category: "carb" },
+    { name: "New herb", category: "seasoning" },
+    { name: "New produce", category: "vegetable" },
+    { name: "New protein", category: "protein" },
+    { name: "New oil", category: "fat" },
+  ];
+
+  assert.strictEqual(
+    buildMealTitle({ foods }),
+    "New Protein with New Starch and New Produce",
+  );
+  assert.deepStrictEqual(
+    buildIngredientList({ foods }).map((item) => item.category),
+    ["protein", "vegetable", "fat", "seasoning", "carb"],
+  );
 }
 
 async function testProfileTargetsTakePrecedence() {
@@ -536,6 +559,7 @@ async function testPhilippineGuideFoodListAndVariety() {
 async function run() {
   await testProteinRules();
   await testLegacyPortionMetadataUsesManualServings();
+  await testDisplayRulesUseCategoriesNotExampleFoodNames();
   await testProfileTargetsTakePrecedence();
   await testManualPortionsAndProteinSplit();
   await testVariantRetryAndFailure();

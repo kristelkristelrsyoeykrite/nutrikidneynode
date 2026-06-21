@@ -38,6 +38,8 @@
  * ✓ CKD validation at ingredient level (each ingredient checked against restrictions)
  */
 
+const { buildMealTitle } = require("./portionControlService");
+
 const { db } = require("../firebase/admin");
 const fatSecretBridge = require("./fatSecretBridgeService");
 const ingredientExpansionService = require("./ingredientExpansionService");
@@ -2417,9 +2419,9 @@ async function resolveIngredientBasedMeal(
   });
 
   // Build meal name from actual selected variants
-  const mealName = Object.values(selectedFoods)
-    .filter(Boolean)
-    .join(" with ");
+  const mealName = buildMealTitle({
+    foods: Object.entries(selectedFoods).map(([category, name]) => ({ category, name })),
+  });
 
   const result = {
     foodId: foodDetails.map((f) => f.foodId).filter(Boolean).join(","),
@@ -2939,10 +2941,12 @@ async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrict
   const componentBreakdown = componentBreakdownFromFoods(componentFoods);
   
   // Build meal name from actual FatSecret food names for uniqueness
-  const mealNameFromFoods = componentFoods
-    .map((food) => food.name)
-    .filter(Boolean)
-    .join(" with ");
+  const mealNameFromFoods = buildMealTitle({
+    foods: componentFoods.map((food) => ({
+      ...food,
+      category: food.role || food.category || food.component,
+    })),
+  });
   
   return {
     foodId: componentFoods.map((food) => food.foodId).filter(Boolean).join(","),
