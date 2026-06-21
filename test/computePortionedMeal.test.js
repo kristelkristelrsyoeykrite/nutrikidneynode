@@ -182,6 +182,14 @@ async function testManualPortionsAndProteinSplit() {
   assert.ok(
     meal.components.find((item) => item.role === "protein").numberOfServings > 0,
   );
+  assert.strictEqual(
+    meal.components.find((item) => item.role === "carb").numberOfServings,
+    0.5,
+  );
+  assert.strictEqual(
+    meal.components.find((item) => item.role === "carb").portionControl.fatSecretServingMultiplier,
+    0.5,
+  );
   assert.ok(Math.abs(meal.totals.protein - 16) <= 1);
   assert.strictEqual(meal.components.every((item) => item.servingId), true);
   assert.strictEqual(meal.components.every((item) => item.servingDescription), true);

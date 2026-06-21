@@ -185,12 +185,14 @@ function buildIngredientPortion(item, category, targetProtein, mealType) {
   let estimatedPortion = "1 serving";
   let manualServing = "1 serving";
   let targetProteinForItem = 0;
+  let fatSecretServingMultiplier = 1;
 
   if (category === "protein") {
     targetProteinForItem = Math.max(0, Number(targetProtein.toFixed(1)));
     const matchboxes = targetProteinForItem / 8;
     estimatedPortion = `about ${matchboxes.toFixed(1)} matchbox-sized portions`;
     manualServing = "1 matchbox is approximately 1 oz or 8 g protein";
+    fatSecretServingMultiplier = null;
   } else if (category === "carb") {
     estimatedPortion = normalizedName.includes("rice")
       ? "1/2 cup rice"
@@ -200,15 +202,19 @@ function buildIngredientPortion(item, category, targetProtein, mealType) {
           ? "3 pandesal"
           : "2 slices bread";
     manualServing = estimatedPortion;
+    fatSecretServingMultiplier = normalizedName.includes("rice") ? 0.5 : 1;
   } else if (category === "vegetable") {
     estimatedPortion = isSnack ? "1/2 cup cooked vegetables" : "1 cup cooked vegetables";
     manualServing = "1 vegetable serving is 1/2 cup cooked";
+    fatSecretServingMultiplier = isSnack ? 0.5 : 1;
   } else if (category === "fruit") {
     estimatedPortion = "1/2 cup or 1 small fruit";
     manualServing = estimatedPortion;
+    fatSecretServingMultiplier = 1;
   } else if (category === "fat") {
     estimatedPortion = "1 tsp-1 tbsp";
     manualServing = estimatedPortion;
+    fatSecretServingMultiplier = 1;
   }
 
 
@@ -226,6 +232,7 @@ function buildIngredientPortion(item, category, targetProtein, mealType) {
     matchboxes: category === "protein" ? Number((targetProteinForItem / 8).toFixed(1)) : null,
     estimatedPortion,
     manualServing,
+    fatSecretServingMultiplier,
     handMeasure: category === "protein" ? "1 matchbox" : handMeasureForCategory(category),
     referenceNutrients: {
       calories: baseCalories,
@@ -259,13 +266,19 @@ function generateMealPortions({
   calorieTarget,
   ckdStage,
   dialysisStatus,
+  prescribedProtein,
   mealType,
   ingredientList = [],
   ingredientNutrients = [],
   restrictions = {},
 }) {
-  const dailyProtein = getDailyProtein(weightKg, dialysisStatus || ckdStage);
-  const mealProteinForMeal = mealProteinTarget(weightKg, dialysisStatus || ckdStage, mealType);
+  const explicitProtein = numberOrNull(prescribedProtein);
+  const dailyProtein = explicitProtein !== null && explicitProtein > 0
+    ? explicitProtein
+    : getDailyProtein(weightKg, dialysisStatus || ckdStage);
+  const mealProteinForMeal = normalizeText(mealType).includes("snack")
+    ? 0
+    : Number((dailyProtein / 3).toFixed(1));
   const categorized = categorizeIngredients(ingredientList);
   const categoriesInOrder = [
     ["protein", categorized.proteins],

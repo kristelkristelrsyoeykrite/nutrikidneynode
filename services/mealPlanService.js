@@ -38,7 +38,10 @@
  * ✓ CKD validation at ingredient level (each ingredient checked against restrictions)
  */
 
-const { buildMealTitle } = require("./portionControlService");
+const {
+  buildMealTitle,
+  generateMealPortions,
+} = require("./portionControlService");
 
 const { db } = require("../firebase/admin");
 const fatSecretBridge = require("./fatSecretBridgeService");
@@ -2657,11 +2660,37 @@ async function computePortionedMeal(
     fruit: mealTemplate.fruit || null,
     fat: mealTemplate.fat || null,
   };
+  const portionControlPlan = generateMealPortions({
+    weightKg: nutritionProfile?.weightKg || nutritionProfile?.weight_kg,
+    calorieTarget: nutritionProfile?.calorieTarget || dailyTargets.calories,
+    ckdStage: nutritionProfile?.ckdStage || nutritionProfile?.ckd_stage,
+    dialysisStatus:
+      nutritionProfile?.dialysisStatus ||
+      nutritionProfile?.dialysis_status ||
+      nutritionProfile?.ckdType ||
+      nutritionProfile?.ckd_type,
+    prescribedProtein: nutritionProfile?.proteinTarget || dailyTargets.protein,
+    mealType,
+    ingredientList: Object.entries(components)
+      .filter(([, ingredient]) => ingredient)
+      .map(([role, ingredient]) => ({
+        name: ingredient,
+        category: role,
+      })),
+    restrictions,
+  });
+  const portionRulesByRole = new Map(
+    (portionControlPlan.portions || []).map((portion) => [
+      portion.category,
+      portion,
+    ]),
+  );
   mealPlanDebug("COMPUTE_START", {
     mealType,
     template: mealTemplate,
     components,
     mealTargets,
+    portionControl: portionControlPlan,
     nutrientBudgets: options.nutrientBudgets || {},
     restrictions: {
       avoid: restrictions.avoid || [],
@@ -2673,14 +2702,20 @@ async function computePortionedMeal(
     maxVariants,
   });
 
-  function initialServingPortion(role, food) {
+  function initialServingPortion(role, food, portionRule) {
     const description = food.servingDescription || food.servingSize || "";
-    let servings = 1;
+    let servings = numberOrNull(portionRule?.fatSecretServingMultiplier);
+    if (servings === null || servings <= 0) servings = 1;
 
     if (role === "protein") {
       const proteinPerServing = numberOrNull(food.protein) || 0;
-      if (!mealTargets.protein || proteinPerServing <= 0) return null;
-      servings = mealTargets.protein / proteinPerServing;
+      const portionProteinTarget = numberOrNull(portionRule?.targetProtein);
+      const targetProtein =
+        portionProteinTarget !== null && portionProteinTarget > 0
+          ? portionProteinTarget
+          : mealTargets.protein;
+      if (!targetProtein || proteinPerServing <= 0) return null;
+      servings = targetProtein / proteinPerServing;
     }
 
     const roundedServings = Number(servings.toFixed(6));
@@ -2688,6 +2723,7 @@ async function computePortionedMeal(
       text: `${roundedServings} × ${description || "1 serving"}`,
       servings: roundedServings,
       manualServing: description || "1 serving",
+      portionControl: portionRule || null,
     };
   }
 
@@ -2924,7 +2960,11 @@ async function computePortionedMeal(
   }
 
   const componentsPortions = picked.map((entry) => {
-    const portion = initialServingPortion(entry.role, entry.food);
+    const portion = initialServingPortion(
+      entry.role,
+      entry.food,
+      portionRulesByRole.get(entry.role),
+    );
     if (!portion) return null;
     const nutrients = scaleNutrients(entry.food, portion.servings);
 
@@ -3094,6 +3134,7 @@ async function computePortionedMeal(
         phosphorus: numberOrNull(p.food?.phosphorus) || 0,
       },
       manualServing: p.portion.manualServing,
+      portionControl: p.portion.portionControl,
       nutrients: p.nutrients,
       source: p.food?.source || "fatsecret",
       isEstimated: p.food?.isEstimated === true,
@@ -3310,6 +3351,7 @@ function mealFromPortionResult(portioned, date) {
       displayAmount: component.portion,
       servings: component.servings,
       manualServing: component.manualServing,
+      portionControl: component.portionControl,
       nutrients: roundNutrients(component.nutrients),
       source: component.source,
       isEstimated: component.isEstimated,
