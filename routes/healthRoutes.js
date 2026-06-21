@@ -3,6 +3,7 @@ const router = express.Router();
 const { admin, db } = require("../firebase/admin");
 const { generateProfileTargets } = require("../services/profileTargetGenerator");
 const { generatePhase2DecisionSupport } = require("../services/phase2DecisionSupport");
+const { normalizeNutrients } = require("../services/nutrientNormalizer");
 const prescriptionOcrBridge = require("../services/prescriptionOcrBridgeService");
 const { registerSummaryRoutes } = require("./health/registerSummaryRoutes");
 const { registerRecordRoutes } = require("./health/registerRecordRoutes");
@@ -1571,6 +1572,7 @@ function numberOrZero(value) {
 
 function serializeIntakeLog(doc) {
   const data = doc.data() || {};
+  const nutrients = normalizeNutrients(data).nutrients;
   return {
     id: doc.id,
     userId: data.userId,
@@ -1584,13 +1586,7 @@ function serializeIntakeLog(doc) {
       data.selected_serving_description ??
       null,
     waterMl: numberOrZero(data.waterMl ?? data.water_ml),
-    calories: numberOrZero(data.calories),
-    protein: numberOrZero(data.protein),
-    carbohydrate: numberOrZero(data.carbohydrate),
-    fat: numberOrZero(data.fat),
-    sodium: numberOrZero(data.sodium),
-    potassium: numberOrZero(data.potassium),
-    phosphorus: numberOrZero(data.phosphorus),
+    ...nutrients,
     loggedAt:
       typeof data.loggedAt?.toDate === "function"
         ? data.loggedAt.toDate().toISOString()
@@ -1812,7 +1808,7 @@ async function getDailyIntakeData(userId, requestedDate, user = {}) {
     mealCount += 1;
     waterMl += extractWaterMlFromLog(data);
     foodLogs.push(serializeIntakeLog(doc));
-    const nutrients = data.finalNutrients || data.final_nutrients || data;
+    const nutrients = normalizeNutrients(data).nutrients;
     for (const nutrient of Object.keys(totals)) {
       totals[nutrient] += numberOrZero(nutrients[nutrient]);
     }
@@ -1882,94 +1878,87 @@ async function getDailyIntakeSummariesForRange(userId, user, startDate, endDate)
   let selectedProfileId = candidateProfileIds[0] || userId;
   let summaries = [];
 
-  // First try to get pre-computed daily summaries
   for (const childProfileId of candidateProfileIds) {
-    const snapshot = await db
-      .collection("dailyIntakeSummaries")
-      .where("childProfileId", "==", childProfileId)
-      .limit(400)
-      .get();
-
-    const candidateSummaries = snapshot.docs
+    const [summarySnapshot, logDocs] = await Promise.all([
+      db
+        .collection("dailyIntakeSummaries")
+        .where("childProfileId", "==", childProfileId)
+        .limit(400)
+        .get(),
+      getFoodLogDocsForProfileRange(childProfileId, startDate, endDate),
+    ]);
+    const candidateSummaries = summarySnapshot.docs
       .map((doc) => ({ id: doc.id, ...doc.data() }))
       .filter((summary) => isDateWithinRange(summary.date, startDate, endDate))
       .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+    if (!candidateSummaries.length && !logDocs.length) continue;
 
-    if (candidateSummaries.length > 0) {
-      selectedProfileId = childProfileId;
-      summaries = candidateSummaries;
-      break;
+    selectedProfileId = childProfileId;
+    const summariesByDate = new Map(
+      candidateSummaries.map((summary) => [summary.date, summary]),
+    );
+    const logsByDate = new Map();
+    for (const doc of logDocs) {
+      const data = doc.data() || {};
+      const date = data.date;
+      if (!date || !isDateWithinRange(date, startDate, endDate)) continue;
+      if (!logsByDate.has(date)) logsByDate.set(date, []);
+      if (!data.deletedAt) logsByDate.get(date).push(data);
     }
-  }
 
-  // If no pre-computed summaries found, build from food logs
-  if (summaries.length === 0) {
-    console.log(`No dailyIntakeSummaries found for range ${startDate}-${endDate}, building from food logs`);
-    for (const childProfileId of candidateProfileIds) {
-      const logDocs = await getFoodLogDocsForProfileRange(
-        childProfileId,
-        startDate,
-        endDate,
-      );
-
-      const logsByDate = {};
-      logDocs.forEach((doc) => {
-        const data = doc.data();
-        if (!data.deletedAt) {
-          const date = data.date || "";
-          if (!logsByDate[date]) {
-            logsByDate[date] = [];
-          }
-          logsByDate[date].push(data);
+    const repairs = [];
+    for (const [date, logs] of logsByDate.entries()) {
+      const existing = summariesByDate.get(date) || {};
+      const totals = {
+        calories: 0,
+        protein: 0,
+        carbohydrate: 0,
+        fat: 0,
+        sodium: 0,
+        potassium: 0,
+        phosphorus: 0,
+      };
+      let foodWaterMl = 0;
+      for (const log of logs) {
+        const nutrients = normalizeNutrients(log).nutrients;
+        for (const nutrient of Object.keys(totals)) {
+          totals[nutrient] += numberOrZero(nutrients[nutrient]);
         }
-      });
-
-      // Build summaries from food logs
-      for (const date in logsByDate) {
-        const logs = logsByDate[date];
-        const summary = {
+        foodWaterMl += extractWaterMlFromLog(log);
+      }
+      const existingWaterMl = numberOrZero(
+        existing.waterMl ?? existing.water_ml ?? existing.fluid_ml,
+      );
+      const waterMl = Math.max(existingWaterMl, foodWaterMl);
+      const repaired = {
+        ...existing,
+        childProfileId,
+        date,
+        mealCount: logs.length,
+        waterMl,
+        water_ml: waterMl,
+        fluid_ml: waterMl,
+        totals,
+      };
+      summariesByDate.set(date, repaired);
+      repairs.push(
+        db.collection("dailyIntakeSummaries").doc(`${childProfileId}_${date}`).set({
           childProfileId,
           date,
           mealCount: logs.length,
-          waterMl: 0,
-          water_ml: 0,
-          fluid_ml: 0,
-          totals: {
-            calories: 0,
-            protein: 0,
-            carbohydrate: 0,
-            fat: 0,
-            sodium: 0,
-            potassium: 0,
-            phosphorus: 0,
-          },
-        };
-
-        logs.forEach((log) => {
-          const nutrients = log.finalNutrients || log;
-          summary.totals.calories += numberOrZero(nutrients.calories);
-          summary.totals.protein += numberOrZero(nutrients.protein);
-          summary.totals.carbohydrate += numberOrZero(nutrients.carbohydrate);
-          summary.totals.fat += numberOrZero(nutrients.fat);
-          summary.totals.sodium += numberOrZero(nutrients.sodium);
-          summary.totals.potassium += numberOrZero(nutrients.potassium);
-          summary.totals.phosphorus += numberOrZero(nutrients.phosphorus);
-          
-          // Extract water from drink logs
-          const waterMl = extractWaterMlFromLog(log);
-          summary.waterMl += waterMl;
-          summary.water_ml += waterMl;
-          summary.fluid_ml += waterMl;
-        });
-
-        summaries.push(summary);
-      }
-
-      if (summaries.length > 0) {
-        selectedProfileId = childProfileId;
-        break;
-      }
+          waterMl,
+          water_ml: waterMl,
+          fluid_ml: waterMl,
+          totals,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true }),
+      );
     }
+    if (repairs.length) await Promise.all(repairs);
+    summaries = [...summariesByDate.values()]
+      .filter((summary) => isDateWithinRange(summary.date, startDate, endDate))
+      .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+    break;
   }
 
   return {

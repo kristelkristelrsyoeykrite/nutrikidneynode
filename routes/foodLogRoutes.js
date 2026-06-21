@@ -8,6 +8,10 @@ const {
 const { generatePhase2DecisionSupport } = require("../services/phase2DecisionSupport");
 const { generateMealPlan } = require("../services/mealPlanService");
 const {
+  normalizeNutrients,
+  isWaterLog,
+} = require("../services/nutrientNormalizer");
+const {
   decryptHealthDocument,
   decryptHealthProfile,
 } = require("../utils/encryption");
@@ -205,6 +209,7 @@ function serializeTimestamp(value) {
 function serializeFoodLog(doc) {
   const data = doc.data() || {};
   const createdAt = serializeTimestamp(data.createdAt);
+  const normalized = normalizeNutrients(data);
   return {
     id: doc.id,
     ...data,
@@ -215,6 +220,11 @@ function serializeFoodLog(doc) {
     // may have been stored with an ambiguous timezone.
     loggedAt: createdAt,
     deletedAt: serializeTimestamp(data.deletedAt),
+    ...normalized.nutrients,
+    finalNutrients: normalized.nutrients,
+    needsManualReview:
+      data.needsManualReview === true ||
+      (normalized.isAllZero && !isWaterLog(data)),
   };
 }
 
@@ -279,6 +289,19 @@ function phosphorusValueFromGuide(guide) {
 
 function resolvedPhosphorusValue(phosphorus, raw) {
   return numberOrNull(phosphorus) ?? phosphorusValueFromGuide(phosphorusGuideFromRaw(raw)) ?? 0;
+}
+
+function normalizedFinalNutrients(payload = {}) {
+  const normalized = normalizeNutrients(payload);
+  if (normalized.nutrients.phosphorus === 0) {
+    normalized.nutrients.phosphorus = resolvedPhosphorusValue(
+      payload.phosphorus,
+      payload.raw,
+    );
+    normalized.hasNutrition ||= normalized.nutrients.phosphorus !== 0;
+    normalized.isAllZero = !normalized.hasNutrition;
+  }
+  return normalized;
 }
 
 function inferredFoodCategory(payload = {}, body = {}) {
@@ -672,7 +695,7 @@ async function recomputeDailySummary(childProfileId, date) {
     if (data.deletedAt) return;
     count += 1;
     waterMl += extractWaterMlFromLog(data);
-    const nutrients = data.finalNutrients || {};
+    const nutrients = normalizeNutrients(data).nutrients;
     for (const key of Object.keys(totals)) {
       const value = numberOrNull(nutrients[key]);
       if (value !== null) totals[key] += value;
@@ -1404,15 +1427,12 @@ router.post("/logs/add", async (req, res) => {
       const logDate = date || logDateKey(loggedAtDate);
       const now = admin.firestore.FieldValue.serverTimestamp();
       const fluidFields = fluidContributionFromBody(req.body);
-      const finalNutrients = {
-        calories: Number(calories) || 0,
-        protein: Number(protein) || 0,
-        carbohydrate: Number(carbohydrate) || 0,
-        fat: Number(fat) || 0,
-        sodium: Number(sodium) || 0,
-        potassium: Number(potassium) || 0,
-        phosphorus: resolvedPhosphorusValue(phosphorus, raw),
-      };
+      const normalized = normalizedFinalNutrients(req.body);
+      const finalNutrients = normalized.nutrients;
+      const requiresNutrientReview = normalized.isAllZero && !isWaterLog(req.body);
+      if (requiresNutrientReview) {
+        console.warn("FOOD_LOG_ZERO_NUTRIENTS:", { name, source, hasRaw: Boolean(raw) });
+      }
       const phosphorusGuide = phosphorusGuideFromRaw(raw);
       const candidatePayload = cleanObject({
         childProfileId: childProfileId || profileUserId || userId,
@@ -1470,7 +1490,7 @@ router.post("/logs/add", async (req, res) => {
         finalNutrients,
         phosphorusGuide,
         source: source || "manual_entry",
-        needsManualReview: needsManualReview === true,
+        needsManualReview: needsManualReview === true || requiresNutrientReview,
         raw,
         version: 1,
         previousValues: [],
@@ -1575,15 +1595,12 @@ router.post("/logs/add", async (req, res) => {
       });
     }
 
-    const finalNutrients = {
-      calories: Number(calories) || 0,
-      protein: Number(protein) || 0,
-      carbohydrate: Number(carbohydrate) || 0,
-      fat: Number(fat) || 0,
-      sodium: Number(sodium) || 0,
-      potassium: Number(potassium) || 0,
-      phosphorus: resolvedPhosphorusValue(phosphorus, raw),
-    };
+    const normalized = normalizedFinalNutrients(req.body);
+    const finalNutrients = normalized.nutrients;
+    const requiresNutrientReview = normalized.isAllZero && !isWaterLog(req.body);
+    if (requiresNutrientReview) {
+      console.warn("FOOD_LOG_ZERO_NUTRIENTS:", { name, source, hasRaw: Boolean(raw) });
+    }
     const phosphorusGuide = phosphorusGuideFromRaw(raw);
     const now = admin.firestore.FieldValue.serverTimestamp();
     const targetChildProfileId = childProfileId || profileUserId || userId;
@@ -1651,7 +1668,7 @@ router.post("/logs/add", async (req, res) => {
       safetyFlags: [],
       insights: [],
       source: source || "fatsecret",
-      needsManualReview: needsManualReview === true,
+      needsManualReview: needsManualReview === true || requiresNutrientReview,
       userNotes,
       raw,
       version: 1,
@@ -1773,15 +1790,14 @@ router.post("/logs/update", async (req, res) => {
       });
     }
 
-    const finalNutrients = {
-      calories: Number(calories) || 0,
-      protein: Number(protein) || 0,
-      carbohydrate: Number(carbohydrate) || 0,
-      fat: Number(fat) || 0,
-      sodium: Number(sodium) || 0,
-      potassium: Number(potassium) || 0,
-      phosphorus: resolvedPhosphorusValue(phosphorus, raw || existing.raw),
-    };
+    const normalized = normalizedFinalNutrients({
+      ...existing,
+      ...req.body,
+      raw: raw || existing.raw,
+    });
+    const finalNutrients = normalized.nutrients;
+    const requiresNutrientReview = normalized.isAllZero &&
+      !isWaterLog({ ...existing, ...req.body });
     const phosphorusGuide =
       phosphorusGuideFromRaw(raw) || existing.phosphorusGuide;
     const selectedQuantity = Number(quantity);
@@ -1820,6 +1836,8 @@ router.post("/logs/update", async (req, res) => {
       potassium: finalNutrients.potassium,
       phosphorus: finalNutrients.phosphorus,
       finalNutrients,
+      needsManualReview:
+        req.body.needsManualReview === true || requiresNutrientReview,
       phosphorusGuide,
       raw: raw || existing.raw,
       previousValues,
