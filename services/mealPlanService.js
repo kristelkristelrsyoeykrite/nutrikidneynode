@@ -3351,6 +3351,68 @@ function enforceDailySafetyLimits(
   };
 }
 
+async function enrichMealsWithFluidContributions({
+  meals,
+  userId,
+  childProfileId,
+  childContext,
+  date,
+  previewFood = fatSecretBridge.mealLoggingPreview,
+}) {
+  let dailyWaterMl = 0;
+  for (const meal of meals) {
+    let mealWaterMl = 0;
+    for (const component of meal.componentBreakdown || []) {
+      const foodId = component.foodId;
+      const servingId = component.servingId;
+      const quantity = numberOrNull(
+        component.numberOfServings ?? component.servings,
+      );
+      if (!foodId || !servingId || quantity === null || quantity <= 0) continue;
+
+      try {
+        const previewContext = {
+          ...childContext,
+          targets: {
+            ...(childContext?.targets || {}),
+            currentDailyFluidConsumedMl: dailyWaterMl,
+          },
+        };
+        const preview = await previewFood({
+          user_id: String(userId),
+          child_profile_id: String(childProfileId),
+          food_id: String(foodId),
+          serving_id: String(servingId),
+          quantity,
+          meal_type: meal.mealType || "Meal",
+          logged_at: `${date}T12:00:00+08:00`,
+          child_context: previewContext,
+        });
+        const fluidContribution =
+          preview.fluid_contribution || preview.fluidContribution || {};
+        const waterMl = numberOrNull(
+          fluidContribution.total_fluid_contribution_ml ??
+            fluidContribution.totalFluidContributionMl ??
+            fluidContribution.water_content_ml ??
+            fluidContribution.waterContentMl,
+        ) || 0;
+        component.fluidContribution = fluidContribution;
+        component.waterMl = waterMl;
+        mealWaterMl += waterMl;
+        dailyWaterMl += waterMl;
+      } catch (error) {
+        console.warn("MEAL_PLAN_WATER_PREVIEW_UNAVAILABLE:", {
+          foodId,
+          servingId,
+          error: error.message,
+        });
+      }
+    }
+    meal.waterMl = Number(mealWaterMl.toFixed(2));
+  }
+  return Number(dailyWaterMl.toFixed(2));
+}
+
 async function generateMealPlan(body = {}) {
   const userId = body.userId || body.uid;
   const requestedProfileId = body.childProfileId || body.profileUserId || userId;
@@ -3489,6 +3551,14 @@ async function generateMealPlan(body = {}) {
       error.failedDailyLimits = failedDailyLimits;
       throw error;
     }
+    const dayWaterMl = await enrichMealsWithFluidContributions({
+      meals,
+      userId,
+      childProfileId: requestedProfileId,
+      childContext,
+      date: currentDate,
+    });
+    dayTotals.waterMl = dayWaterMl;
     days.push({
       date: currentDate,
       meals,
@@ -3501,6 +3571,10 @@ async function generateMealPlan(body = {}) {
   const totals = days[0]?.totals || roundNutrients({});
   const weeklyTotals = roundNutrients(
     nutrientTotals(days.flatMap((day) => day.meals || [])),
+  );
+  weeklyTotals.waterMl = Number(
+    days.reduce((sum, day) => sum + (numberOrNull(day.totals?.waterMl) || 0), 0)
+      .toFixed(2),
   );
 
   return {
@@ -3698,4 +3772,5 @@ module.exports = {
   guideFoodPool,
   guideFoodTemplates,
   portionTemplateCandidates,
+  enrichMealsWithFluidContributions,
 };

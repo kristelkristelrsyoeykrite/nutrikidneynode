@@ -15,6 +15,7 @@ const {
   guideFoodPool,
   guideFoodTemplates,
   portionTemplateCandidates,
+  enrichMealsWithFluidContributions,
 } = require("../services/mealPlanService");
 const {
   generateMealPortions,
@@ -370,6 +371,40 @@ async function testNonProteinUsesOneFirstServing() {
   assert.strictEqual(meal.totals.fat, 13.5);
 }
 
+async function testMealPlanUsesFoodLogWaterPreview() {
+  const meals = [{
+    mealType: "AM Snack",
+    componentBreakdown: [{
+      foodId: "strawberries",
+      servingId: "strawberries-serving-1",
+      numberOfServings: 0.6,
+    }],
+  }];
+  let previewPayload = null;
+  const waterMl = await enrichMealsWithFluidContributions({
+    meals,
+    userId: "user-1",
+    childProfileId: "child-1",
+    childContext: { targets: { dailyFluidLimitMl: 1000 } },
+    date: "2026-06-21",
+    previewFood: async (payload) => {
+      previewPayload = payload;
+      return {
+        fluid_contribution: {
+          water_data_available: true,
+          total_fluid_contribution_ml: 42.5,
+        },
+      };
+    },
+  });
+  assert.strictEqual(previewPayload.food_id, "strawberries");
+  assert.strictEqual(previewPayload.serving_id, "strawberries-serving-1");
+  assert.strictEqual(previewPayload.quantity, 0.6);
+  assert.strictEqual(waterMl, 42.5);
+  assert.strictEqual(meals[0].waterMl, 42.5);
+  assert.strictEqual(meals[0].componentBreakdown[0].waterMl, 42.5);
+}
+
 async function testDailySafetyValidation() {
   const status = dailyConstraintStatus(
     { calories: 1700, protein: 48, sodium: 1900, potassium: 2900, phosphorus: 900 },
@@ -591,6 +626,7 @@ async function run() {
   await testUsesOneFixedReferenceServing();
   await testRiskBasedMissingNutrients();
   await testNonProteinUsesOneFirstServing();
+  await testMealPlanUsesFoodLogWaterPreview();
   await testDailySafetyValidation();
   await testDailyCalorieBalancing();
   await testDailyBalancingPreservesSafetyLimits();
