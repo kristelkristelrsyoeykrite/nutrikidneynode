@@ -1568,6 +1568,7 @@ router.post("/logs/add", async (req, res) => {
       potassium,
       phosphorus,
       quantity,
+      numberOfServings,
       source,
       needsManualReview,
       raw,
@@ -1585,7 +1586,7 @@ router.post("/logs/add", async (req, res) => {
     const selectedServingId = servingId || serving_id;
     const loggedAtDate = parseLogDateTime(loggedAt || new Date().toISOString());
     const logDate = date || logDateKey(loggedAtDate);
-    const selectedQuantity = Number(quantity) || 1;
+    const selectedQuantity = Number(numberOfServings ?? quantity) || 1;
     const fluidFields = fluidContributionFromBody(req.body);
 
     if (!Number.isFinite(selectedQuantity) || selectedQuantity <= 0 || selectedQuantity > 20) {
@@ -1643,6 +1644,7 @@ router.post("/logs/add", async (req, res) => {
       selectedServingDescription: portion || "1 serving",
       selectedQuantity,
       quantity: selectedQuantity,
+      numberOfServings: selectedQuantity,
       portion: portion || "1 serving",
       waterMl:
         numberOrNull(fluidFields.totalFluidContributionMl) ??
@@ -1749,6 +1751,7 @@ router.post("/logs/update", async (req, res) => {
       servingId,
       serving_id,
       quantity,
+      numberOfServings,
       calories,
       protein,
       carbohydrate,
@@ -1800,7 +1803,7 @@ router.post("/logs/update", async (req, res) => {
       !isWaterLog({ ...existing, ...req.body });
     const phosphorusGuide =
       phosphorusGuideFromRaw(raw) || existing.phosphorusGuide;
-    const selectedQuantity = Number(quantity);
+    const selectedQuantity = Number(numberOfServings ?? quantity);
     const hasSelectedQuantity =
       Number.isFinite(selectedQuantity) && selectedQuantity > 0 && selectedQuantity <= 20;
     const selectedServingId = servingId || serving_id;
@@ -1828,6 +1831,9 @@ router.post("/logs/update", async (req, res) => {
         ? selectedQuantity
         : existing.selectedQuantity,
       quantity: hasSelectedQuantity ? selectedQuantity : existing.quantity,
+      numberOfServings: hasSelectedQuantity
+        ? selectedQuantity
+        : existing.numberOfServings ?? existing.quantity,
       calories: finalNutrients.calories,
       protein: finalNutrients.protein,
       carbohydrate: finalNutrients.carbohydrate,

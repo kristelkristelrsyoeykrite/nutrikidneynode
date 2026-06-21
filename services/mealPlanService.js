@@ -1974,6 +1974,73 @@ async function resolveFoodDetails(food) {
   return promise;
 }
 
+function embeddedServingOptions(food = {}) {
+  const candidates = [
+    food.servings,
+    food.raw?.servings,
+    food.raw?.food?.servings,
+    food.raw?.foodDetails?.servings,
+    food.raw?.foodDetails?.food?.servings,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+    if (Array.isArray(candidate?.serving)) return candidate.serving;
+    if (candidate?.serving && typeof candidate.serving === "object") {
+      return [candidate.serving];
+    }
+  }
+  return [];
+}
+
+function foodFromFirstServing(food, details = {}) {
+  const servings = embeddedServingOptions({
+    ...food,
+    servings: details.servings || details.food?.servings || food.servings,
+  });
+  const firstServing = servings[0];
+  if (!firstServing) return null;
+  const nutrients = firstServing.nutrients || firstServing;
+  const servingId = firstServing.serving_id || firstServing.servingId;
+  if (!servingId) return null;
+
+  return {
+    ...food,
+    servingId: String(servingId),
+    servingDescription:
+      firstServing.serving_description ||
+      firstServing.servingDescription ||
+      firstServing.display_text ||
+      firstServing.displayText ||
+      "1 serving",
+    calories: numberOrNull(nutrients.calories),
+    protein: numberOrNull(nutrients.protein),
+    carbohydrate: numberOrNull(
+      nutrients.carbohydrate ?? nutrients.carbohydrates ?? nutrients.carbs,
+    ),
+    fat: numberOrNull(nutrients.fat),
+    sodium: numberOrNull(nutrients.sodium),
+    potassium: numberOrNull(nutrients.potassium),
+    phosphorus: numberOrNull(nutrients.phosphorus ?? nutrients.phosphorous),
+    firstServing,
+  };
+}
+
+async function resolveMealPlanFirstServing(food) {
+  const embedded = foodFromFirstServing(food);
+  if (embedded) return embedded;
+  if (!food?.foodId) return null;
+  try {
+    const details = await fatSecretBridge.mealLoggingFoodDetails(food.foodId);
+    return foodFromFirstServing(food, details);
+  } catch (error) {
+    console.error("MEAL_PLAN_FIRST_SERVING_ERROR:", {
+      foodId: food.foodId,
+      error: error.message,
+    });
+    return null;
+  }
+}
+
 function nutrientTotals(items = []) {
   return items.reduce(
     (sum, item) => ({
@@ -2420,7 +2487,7 @@ async function resolveIngredientBasedMeal(
 
   // Build meal name from actual selected variants
   const mealName = buildMealTitle({
-    foods: Object.entries(selectedFoods).map(([category, name]) => ({ category, name })),
+    foods: Object.entries(ingredients).map(([category, name]) => ({ category, name })),
   });
 
   const result = {
@@ -2432,6 +2499,8 @@ async function resolveIngredientBasedMeal(
     componentBreakdown: foodDetails.map((food) => ({
       component: food.role,
       matchedName: food.selectedVariant,
+      sourceName: food.selectedVariant,
+      displayName: food.baseIngredient,
       foodId: food.foodId,
       baseIngredient: food.baseIngredient,
       portion: food.servingDescription || food.servingSize || "1 serving",
@@ -2468,7 +2537,7 @@ async function resolveIngredientBasedMeal(
  * Compute a portioned meal from a simple template following the user's 10-step flow.
  * - Calculates per-meal nutrient targets (from daily targets or profile)
  * - Picks FatSecret variants for each ingredient
- * - Computes initial portions (grams / servings) from protein/carbohydrate primary nutrient
+ * - Computes decimal FatSecret serving quantities from nutrient targets
  * - Recalculates totals and adjusts portions / substitutes to satisfy CKD constraints
  */
 async function computePortionedMeal(
@@ -2487,6 +2556,8 @@ async function computePortionedMeal(
       options.adapters?.expandIngredient || ingredientExpansionService.expandIngredient,
     searchFoods: options.adapters?.searchFoods || searchMealPlanFoods,
     resolveFood: options.adapters?.resolveFood || resolveFoodDetails,
+    resolveFirstServing:
+      options.adapters?.resolveFirstServing || resolveMealPlanFirstServing,
   };
 
   // Protein is split only across the three main meals. Electrolyte caps are
@@ -2524,100 +2595,21 @@ async function computePortionedMeal(
     fat: mealTemplate.fat || null,
   };
 
-  function parseServingGrams(desc) {
-    if (!desc || typeof desc !== "string") return null;
-    const m = desc.match(/([\d.,]+)\s*(g|gram|grams)\b/i);
-    if (m) return Number(String(m[1]).replace(/,/g, ""));
-    // Some descriptions have formats like "1 cup (150 g)" - try to extract parenthesized grams
-    const p = desc.match(/\((?:[^)]*?)\s*([\d.,]+)\s*(g|gram|grams)\)/i);
-    if (p) return Number(String(p[1]).replace(/,/g, ""));
-    return null;
-  }
-
-  function servingMeasurement(desc) {
-    const text = String(desc || "").toLowerCase();
-    const match = text.match(/([\d.]+|one|half)\s*(cup|cups|slice|slices|piece|pieces|small|teaspoon|teaspoons|tsp|tablespoon|tablespoons|tbsp)\b/);
-    if (!match) return null;
-    const quantity = match[1] === "one" ? 1 : match[1] === "half" ? 0.5 : Number(match[1]);
-    return Number.isFinite(quantity) ? { quantity, unit: match[2] } : null;
-  }
-
-  function manualPortion(role, ingredient, food) {
+  function initialServingPortion(role, food) {
     const description = food.servingDescription || food.servingSize || "";
-    const gramsPerServing = parseServingGrams(description) || 100;
-    const measure = servingMeasurement(description);
-    const ingredientText = normalizeTextToken(ingredient);
-    let text = "1 serving";
     let servings = 1;
-    let desiredGrams = null;
 
     if (role === "protein") {
       const proteinPerServing = numberOrNull(food.protein) || 0;
       if (!mealTargets.protein || proteinPerServing <= 0) return null;
       servings = mealTargets.protein / proteinPerServing;
-      const grams = Math.max(10, Math.round(servings * gramsPerServing));
-      const matchboxes = mealTargets.protein / 8;
-      return {
-        text: `${grams} g (${matchboxes.toFixed(1)} matchbox portions)`,
-        grams,
-        servings,
-        manualServing: "1 matchbox is approximately 1 oz or 8 g protein",
-      };
     }
 
-    if (role === "vegetable") {
-      text = isSnack ? "1/2 cup cooked" : "1 cup cooked";
-      const cups = isSnack ? 0.5 : 1;
-      if (measure?.unit.startsWith("cup")) servings = cups / measure.quantity;
-      else desiredGrams = isSnack ? 75 : 150;
-    } else if (role === "fruit") {
-      text = "1 small fruit or 1/2 cup";
-      if (measure?.unit.startsWith("cup")) servings = 0.5 / measure.quantity;
-      else if (measure?.unit === "small" || measure?.unit.startsWith("piece")) {
-        servings = 1 / measure.quantity;
-      } else desiredGrams = 100;
-    } else if (role === "carb") {
-      if (ingredientText.includes("rice")) {
-        text = "1/2 cup rice";
-        if (measure?.unit.startsWith("cup")) servings = 0.5 / measure.quantity;
-        else desiredGrams = 79;
-      } else if (/(noodle|oatmeal|pasta)/.test(ingredientText)) {
-        text = "1 cup";
-        if (measure?.unit.startsWith("cup")) servings = 1 / measure.quantity;
-        else desiredGrams = ingredientText.includes("oatmeal") ? 117 : 125;
-      } else if (ingredientText.includes("pandesal")) {
-        text = "3 pandesal";
-        if (measure?.unit.startsWith("piece")) servings = 3 / measure.quantity;
-        else desiredGrams = 150;
-      } else if (/(bread|toast)/.test(ingredientText)) {
-        text = "2 slices bread";
-        if (measure?.unit.startsWith("slice")) servings = 2 / measure.quantity;
-        else desiredGrams = 60;
-      }
-    } else if (role === "fat") {
-      text = "1 tsp";
-      if (["tablespoon", "tablespoons", "tbsp"].includes(measure?.unit)) {
-        servings = (1 / 3) / measure.quantity;
-      } else if (["teaspoon", "teaspoons", "tsp"].includes(measure?.unit)) {
-        servings = 1 / measure.quantity;
-      } else {
-        servings = 5 / gramsPerServing;
-      }
-      return {
-        text,
-        grams: 5,
-        servings,
-        manualServing: text,
-      };
-    }
-
-    if (desiredGrams !== null) servings = desiredGrams / gramsPerServing;
-
+    const roundedServings = Number(servings.toFixed(6));
     return {
-      text,
-      grams: Math.max(1, Math.round(desiredGrams ?? gramsPerServing * servings)),
-      servings,
-      manualServing: text,
+      text: `${roundedServings} × ${description || "1 serving"}`,
+      servings: roundedServings,
+      manualServing: description || "1 serving",
     };
   }
 
@@ -2649,11 +2641,8 @@ async function computePortionedMeal(
     if (!food) return food;
     const name = normalizeTextToken(food.name || ingredient);
     const traceCategory = SIMPLE_FAT_FOOD_NAMES.some((item) => name.includes(item));
-    const plannedGrams = role === "fat" ? 5 : null;
     const fatRoleTracePortion =
       role === "fat" &&
-      plannedGrams !== null &&
-      plannedGrams <= 15 &&
       (traceCategory || /\b(oil|butter|margarine)\b/.test(name));
     if (!fatRoleTracePortion) return food;
 
@@ -2696,7 +2685,7 @@ async function computePortionedMeal(
       }
       resolved.nutrientSources[nutrient] = "fat_trace_assumption";
       resolved.nutrientEstimateNotes[nutrient] =
-        `Estimated as trace for a ${plannedGrams} g planned portion.`;
+        "Estimated as trace for the selected FatSecret serving.";
     }
     resolved.isEstimated = resolved.estimatedNutrients.length > 0;
     return resolved;
@@ -2745,6 +2734,20 @@ async function computePortionedMeal(
         }
       }
       if (!selected) return null;
+      const servingFood = await adapters.resolveFirstServing(selected.food);
+      if (!servingFood) {
+        console.warn("MEAL_PLAN_FIRST_SERVING_MISSING:", {
+          ingredient,
+          foodId: selected.food?.foodId,
+        });
+        return null;
+      }
+      selected.food = applyRiskBasedNutrientFallbacks(
+        role,
+        ingredient,
+        servingFood,
+      );
+      if (!requiredNutritionPresent(role, selected.food)) return null;
       picked.push(selected);
     } catch (err) {
       console.error("COMPUTE_PORTIONED_MEAL_FETCH_ERROR:", { role, ingredient, error: err.message });
@@ -2767,7 +2770,7 @@ async function computePortionedMeal(
   }
 
   const componentsPortions = picked.map((entry) => {
-    const portion = manualPortion(entry.role, entry.ingredient, entry.food);
+    const portion = initialServingPortion(entry.role, entry.food);
     if (!portion) return null;
     const nutrients = scaleNutrients(entry.food, portion.servings);
 
@@ -2816,19 +2819,15 @@ async function computePortionedMeal(
     // Protein adjustments
     if (!status.proteinOk) {
       const proteinPart = parts.find((p) => p.role === "protein");
-      if (proteinPart && proteinPart.portion && proteinPart.portion.grams) {
+      if (proteinPart?.portion) {
         const currentProtein = totals.protein || 0;
         const wanted = mealTargets.protein || 0;
         if (currentProtein > 0 && wanted >= 0) {
           const ratio = wanted / currentProtein;
-          const newGrams = Math.max(10, Math.round((proteinPart.portion.grams || 0) * ratio));
-          proteinPart.portion.grams = newGrams;
-          proteinPart.portion.servings = newGrams / (
-            parseServingGrams(proteinPart.food?.servingDescription) ||
-            parseServingGrams(proteinPart.food?.servingSize) ||
-            100
+          proteinPart.portion.servings = Number(
+            (proteinPart.portion.servings * ratio).toFixed(6),
           );
-          proteinPart.portion.text = `${newGrams} g (${(wanted / 8).toFixed(1)} matchbox portions)`;
+          proteinPart.portion.text = `${proteinPart.portion.servings} × ${proteinPart.food?.servingDescription || "1 serving"}`;
           const scale = proteinPart.portion.servings;
           proteinPart.nutrients = scaleNutrients(proteinPart.food || {}, scale);
         }
@@ -2850,12 +2849,8 @@ async function computePortionedMeal(
         .sort((a, b) => (b.nutrients[failingNutrient] || 0) - (a.nutrients[failingNutrient] || 0))[0];
       if (!culprit || culprit.portion.servings <= 0.5) break;
       culprit.portion.servings = Math.max(0.5, culprit.portion.servings * 0.85);
-      const gramsPerServing =
-        parseServingGrams(culprit.food?.servingDescription) ||
-        parseServingGrams(culprit.food?.servingSize) ||
-        100;
-      culprit.portion.grams = Math.max(1, Math.round(gramsPerServing * culprit.portion.servings));
-      culprit.portion.text = `${culprit.portion.grams} g`;
+      culprit.portion.servings = Number(culprit.portion.servings.toFixed(6));
+      culprit.portion.text = `${culprit.portion.servings} × ${culprit.food?.servingDescription || "1 serving"}`;
       culprit.nutrients = scaleNutrients(culprit.food || {}, culprit.portion.servings);
     }
 
@@ -2876,10 +2871,15 @@ async function computePortionedMeal(
       ingredient: p.ingredient,
       variant: p.variant,
       name: p.food?.name || String(p.variant || p.ingredient || ""),
+      sourceName: p.food?.name || String(p.variant || ""),
+      displayName: String(p.ingredient || p.variant || p.food?.name || ""),
+      genericName: String(p.ingredient || ""),
       foodId: p.food?.foodId || null,
-      portion: p.portion.text || (p.portion.grams ? `${p.portion.grams} g` : "1 serving"),
-      grams: p.portion.grams || null,
-      servings: Number((p.portion.servings || 1).toFixed(2)),
+      servingId: p.food?.servingId || null,
+      servingDescription: p.food?.servingDescription || "1 serving",
+      portion: p.portion.text,
+      numberOfServings: p.portion.servings,
+      servings: p.portion.servings,
       manualServing: p.portion.manualServing,
       nutrients: p.nutrients,
       source: p.food?.source || "fatsecret",
@@ -3064,7 +3064,13 @@ async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, s
 
 function mealFromPortionResult(portioned, date) {
   const nutrients = roundNutrients(portioned.totals);
-  const name = portioned.components.map((component) => component.name).filter(Boolean).join(" with ");
+  const name = buildMealTitle({
+    foods: portioned.components.map((component) => ({
+      category: component.role,
+      displayName: component.displayName || component.ingredient,
+      sourceName: component.sourceName || component.name,
+    })),
+  });
   return {
     date,
     mealType: portioned.mealType,
@@ -3077,11 +3083,17 @@ function mealFromPortionResult(portioned, date) {
     componentBreakdown: portioned.components.map((component) => ({
       component: component.role,
       matchedName: component.name,
+      sourceName: component.sourceName || component.name,
+      displayName: component.displayName || component.ingredient,
+      genericName: component.genericName || component.ingredient,
       foodId: component.foodId || null,
+      servingId: component.servingId || null,
+      servingDescription: component.servingDescription || "1 serving",
+      servingLabel: component.servingDescription || "1 serving",
+      numberOfServings: component.numberOfServings,
       baseIngredient: component.ingredient,
       portion: component.portion,
-      grams: component.grams,
-      manualGrams: component.grams,
+      displayAmount: component.portion,
       servings: component.servings,
       manualServing: component.manualServing,
       nutrients: roundNutrients(component.nutrients),
@@ -3189,13 +3201,13 @@ function refreshMealNutrients(meals, adjustmentFlag) {
 }
 
 function scaleComponentNutrients(component, ratio) {
-  const oldServings = numberOrNull(component.servings) || 1;
-  const oldGrams = numberOrNull(component.grams);
-  component.servings = Number((oldServings * ratio).toFixed(3));
-  if (oldGrams) {
-    component.grams = Math.max(1, Math.round(oldGrams * ratio));
-    component.portion = `${component.grams} g`;
-  }
+  const oldServings = numberOrNull(
+    component.numberOfServings ?? component.servings,
+  ) || 1;
+  component.numberOfServings = Number((oldServings * ratio).toFixed(6));
+  component.servings = component.numberOfServings;
+  component.portion = `${component.numberOfServings} × ${component.servingDescription || component.servingLabel || "1 serving"}`;
+  component.displayAmount = component.portion;
   const scaled = {};
   for (const nutrient of [
     "calories",
@@ -3271,18 +3283,7 @@ function balanceDailyCalories(
     if (Math.abs(ratio - 1) < 0.01) break;
 
     for (const { component } of adjustable) {
-      const oldServings = numberOrNull(component.servings) || 1;
-      const oldGrams = numberOrNull(component.grams);
-      let appliedRatio = ratio;
-      if (oldGrams) {
-        const manualGrams = numberOrNull(component.manualGrams) || oldGrams;
-        const maximum = manualGrams * (component.component === "fat" ? 3 : 2);
-        const minimum = manualGrams * 0.5;
-        const nextGrams = Math.min(maximum, Math.max(minimum, oldGrams * ratio));
-        appliedRatio = nextGrams / oldGrams;
-      }
-      component.servings = oldServings;
-      scaleComponentNutrients(component, appliedRatio);
+      scaleComponentNutrients(component, ratio);
     }
 
     refreshMealNutrients(meals, "calorieBalanced");
@@ -3322,11 +3323,7 @@ function enforceDailySafetyLimits(
     if (!culprit) break;
 
     const contribution = numberOrNull(culprit.nutrients?.[failingNutrient]) || 0;
-    const currentGrams = numberOrNull(culprit.grams);
-    const manualGrams = numberOrNull(culprit.manualGrams) || currentGrams;
-    const minimumRatio = currentGrams && manualGrams
-      ? Math.min(1, (manualGrams * 0.5) / currentGrams)
-      : 0.5;
+    const minimumRatio = 0.5;
     const neededRatio = Math.max(0, (contribution - excess - 0.5) / contribution);
     const ratio = Math.max(minimumRatio, Math.min(0.95, neededRatio));
     if (ratio >= 0.999) break;

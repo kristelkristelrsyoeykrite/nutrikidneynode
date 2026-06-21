@@ -23,7 +23,7 @@ const {
 } = require("../services/portionControlService");
 
 function food(name, nutrients = {}) {
-  return {
+  const result = {
     foodId: name.toLowerCase().replace(/\s+/g, "-"),
     name,
     servingDescription: "100 g",
@@ -37,6 +37,20 @@ function food(name, nutrients = {}) {
     source: "fatsecret_test",
     ...nutrients,
   };
+  result.servings = [{
+    serving_id: `${result.foodId}-serving-1`,
+    serving_description: result.servingDescription,
+    nutrients: {
+      calories: result.calories,
+      protein: result.protein,
+      carbohydrate: result.carbohydrate,
+      fat: result.fat,
+      sodium: result.sodium,
+      potassium: result.potassium,
+      phosphorus: result.phosphorus,
+    },
+  }];
+  return result;
 }
 
 const foods = {
@@ -163,12 +177,12 @@ async function testManualPortionsAndProteinSplit() {
   assert.ok(meal);
   assert.strictEqual(meal.satisfied, true);
   assert.strictEqual(meal.mealTargets.protein, 16);
-  assert.match(meal.components.find((item) => item.role === "protein").portion, /^\d+ g \(2\.0 matchbox/);
+  assert.ok(
+    meal.components.find((item) => item.role === "protein").numberOfServings > 0,
+  );
   assert.ok(Math.abs(meal.totals.protein - 16) <= 1);
-  assert.strictEqual(meal.components.find((item) => item.role === "carb").manualServing, "1/2 cup rice");
-  assert.strictEqual(meal.components.find((item) => item.role === "vegetable").manualServing, "1 cup cooked");
-  assert.strictEqual(meal.components.find((item) => item.role === "fruit").manualServing, "1 small fruit or 1/2 cup");
-  assert.strictEqual(meal.components.find((item) => item.role === "fat").manualServing, "1 tsp");
+  assert.strictEqual(meal.components.every((item) => item.servingId), true);
+  assert.strictEqual(meal.components.every((item) => item.servingDescription), true);
 
   const snack = await computePortionedMeal(
     { mealType: "AM Snack", fruit: "apple" },
@@ -236,7 +250,10 @@ async function testUsesOneFixedReferenceServing() {
   );
   assert.ok(meal);
   assert.strictEqual(detailCalls, 0);
-  assert.ok(meal.components[0].servings > 0);
+  assert.strictEqual(meal.components[0].numberOfServings, 0.8);
+  assert.strictEqual(meal.components[0].servings, 0.8);
+  assert.strictEqual(meal.components[0].nutrients.protein, 16);
+  assert.strictEqual(meal.components[0].servingId, "chicken-serving-1");
 
   const incompleteFoods = Array.from({ length: 10 }, (_, index) => ({
     foodId: `bread-${index}`,
@@ -314,7 +331,7 @@ async function testRiskBasedMissingNutrients() {
   assert.strictEqual(riskyMeal, null);
 }
 
-async function testTablespoonFatServingConversion() {
+async function testNonProteinUsesOneFirstServing() {
   const tablespoonOil = food("Olive Oil", {
     servingDescription: "1 tbsp",
     calories: 119,
@@ -324,6 +341,11 @@ async function testTablespoonFatServingConversion() {
     sodium: 0,
     potassium: 0,
     phosphorus: null,
+  });
+  tablespoonOil.servings.push({
+    serving_id: "olive-oil-serving-2",
+    serving_description: "100 g",
+    nutrients: { calories: 900, fat: 100, sodium: 0 },
   });
   const meal = await computePortionedMeal(
     { mealType: "AM Snack", fat: "olive oil" },
@@ -339,10 +361,12 @@ async function testTablespoonFatServingConversion() {
     },
   );
   assert.ok(meal);
-  assert.strictEqual(meal.components[0].grams, 5);
-  assert.ok(Math.abs(meal.components[0].servings - (1 / 3)) < 0.01);
-  assert.strictEqual(meal.totals.calories, 40);
-  assert.strictEqual(meal.totals.fat, 4.5);
+  assert.strictEqual("grams" in meal.components[0], false);
+  assert.strictEqual(meal.components[0].numberOfServings, 1);
+  assert.strictEqual(meal.components[0].servings, 1);
+  assert.strictEqual(meal.components[0].servingId, "olive-oil-serving-1");
+  assert.strictEqual(meal.totals.calories, 119);
+  assert.strictEqual(meal.totals.fat, 13.5);
 }
 
 async function testDailySafetyValidation() {
@@ -494,7 +518,7 @@ async function testTemplateReplacement() {
     },
   });
   assert.deepStrictEqual(attempted, ["missing", "chicken"]);
-  assert.strictEqual(replacement.name, "Chicken Breast");
+  assert.strictEqual(replacement.name, "Chicken");
   assert.notStrictEqual(replacement.name, "Food");
   assert.strictEqual(replacement.matchConfidence, "profile_portioned");
 
@@ -565,7 +589,7 @@ async function run() {
   await testVariantRetryAndFailure();
   await testUsesOneFixedReferenceServing();
   await testRiskBasedMissingNutrients();
-  await testTablespoonFatServingConversion();
+  await testNonProteinUsesOneFirstServing();
   await testDailySafetyValidation();
   await testDailyCalorieBalancing();
   await testDailyBalancingPreservesSafetyLimits();
