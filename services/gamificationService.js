@@ -268,6 +268,18 @@ async function countBackCompleteDays(db, userId, date) {
   return count;
 }
 
+async function countActiveStreak(db, userId, date) {
+  const throughDate = await countBackCompleteDays(db, userId, date);
+  if (throughDate > 0) return throughDate;
+
+  // Today remains eligible until it ends. If it is not complete yet, retain
+  // only the genuinely consecutive streak ending yesterday.
+  if (date === todayDateKey()) {
+    return countBackCompleteDays(db, userId, addDays(date, -1));
+  }
+  return 0;
+}
+
 async function unlockAward({ admin, db, userId, awardId, unlockedAwards }) {
   if (unlockedAwards.includes(awardId)) return;
   const award = AWARDS[awardId];
@@ -302,7 +314,11 @@ async function recomputeGamificationForDate({ admin, db, userId, date }) {
     .map((doc) => ({ id: doc.id, ...doc.data() }))
     .sort((a, b) => String(a.date || a.id).localeCompare(String(b.date || b.id)));
 
-  const currentStreak = await countBackCompleteDays(db, userId, date);
+  const currentStreak = await countActiveStreak(
+    db,
+    userId,
+    todayDateKey(),
+  );
   const waterGoalMetCount = statuses.filter((day) => day.metWaterGoal === true).length;
   const points = statuses.reduce((sum, day) => sum + numberOrZero(day.points), 0);
   const previousStatusDoc = await userRef.collection("gamification").doc("status").get();
@@ -346,11 +362,12 @@ async function getGamificationSummary({ db, userId, date }) {
   const awardsSnapshot = await userRef.collection("awards").get();
 
   // Recalculate current streak on-demand to ensure accuracy
-  const currentStreak = await countBackCompleteDays(db, userId, date);
+  const currentStreak = await countActiveStreak(db, userId, date);
   const cachedStatus = statusDoc.exists ? statusDoc.data() || {} : {};
   
-  // Use recalculated streak, fallback to longest streak if current is 0
-  const displayStreak = currentStreak > 0 ? currentStreak : numberOrZero(cachedStatus.longestStreak);
+  // An expired streak must display as zero. `longestStreak` is the historical
+  // best and is returned separately; it is not a fallback for the active streak.
+  const displayStreak = currentStreak;
 
   return {
     status: {

@@ -1281,7 +1281,7 @@ router.post("/meal-plan/save", async (req, res) => {
 
 router.post("/meal-plan/today", async (req, res) => {
   try {
-    const { userId, childProfileId, profileUserId } = req.body;
+    const { userId, childProfileId, profileUserId, date } = req.body;
 
     if (!userId) {
       return res.status(400).json({
@@ -1291,27 +1291,63 @@ router.post("/meal-plan/today", async (req, res) => {
     }
 
     const requestedProfileId = childProfileId || profileUserId || userId;
-    const today = new Date().toISOString().slice(0, 10);
-    const documentId = `${requestedProfileId}_${today}`;
+    const requestedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))
+      ? String(date)
+      : new Date().toISOString().slice(0, 10);
+    const documentId = `${requestedProfileId}_${requestedDate}`;
 
-    // Get today's saved meal plan by direct document access (no query needed)
-    const doc = await db.collection("mealPlan").doc(documentId).get();
+    // A multi-day plan is stored under its starting date. Try that predictable
+    // ID first, then find a saved plan whose `days` include the requested date.
+    let doc = await db.collection("mealPlan").doc(documentId).get();
+    if (!doc.exists) {
+      const profilePlans = await db
+        .collection("mealPlan")
+        .where("childProfileId", "==", requestedProfileId)
+        .get();
+
+      const matchingDocs = profilePlans.docs.filter((candidate) => {
+        const days = candidate.data()?.mealPlan?.days;
+        return Array.isArray(days) && days.some(
+          (day) => String(day?.date || "") === requestedDate,
+        );
+      });
+
+      matchingDocs.sort((a, b) => {
+        const aUpdated = a.data()?.updatedAt?.toMillis?.() || 0;
+        const bUpdated = b.data()?.updatedAt?.toMillis?.() || 0;
+        return bUpdated - aUpdated;
+      });
+      if (matchingDocs.length > 0) [doc] = matchingDocs;
+    }
 
     if (!doc.exists) {
       return res.status(200).json({
         success: true,
         todaysMealPlan: null,
-        message: "No meal plan saved for today",
+        message: `No meal plan saved for ${requestedDate}`,
       });
     }
 
-    const mealPlan = doc.data();
+    const savedPlan = doc.data()?.mealPlan || {};
+    const requestedDay = Array.isArray(savedPlan.days)
+      ? savedPlan.days.find(
+        (day) => String(day?.date || "") === requestedDate,
+      )
+      : null;
 
     return res.status(200).json({
       success: true,
       todaysMealPlan: {
         id: doc.id,
-        ...mealPlan.mealPlan,
+        ...savedPlan,
+        // Keep the complete plan in `days`, but expose the requested day's
+        // values at the top level for existing dashboard and food-log clients.
+        ...(requestedDay ? {
+          meals: requestedDay.meals || [],
+          totals: requestedDay.totals || {},
+          validation: requestedDay.validation || savedPlan.validation,
+        } : {}),
+        selectedDate: requestedDate,
       },
     });
   } catch (error) {
@@ -1942,7 +1978,7 @@ router.post("/logs/update", async (req, res) => {
           existing.date,
           summary,
         );
-        await recomputeGamification(userId, existing.date);
+        await recomputeGamification(existing.childProfileId, existing.date);
       }
       if (
         updatedLog.childProfileId &&
@@ -1959,7 +1995,7 @@ router.post("/logs/update", async (req, res) => {
           updatedLog.date,
           summary,
         );
-        await recomputeGamification(userId, updatedLog.date);
+        await recomputeGamification(updatedLog.childProfileId, updatedLog.date);
       }
     } catch (summaryError) {
       console.error("FOOD_LOG_SUMMARY ERROR:", summaryError.message);
@@ -2028,7 +2064,7 @@ router.post("/logs/delete", async (req, res) => {
 
     if (existing.childProfileId && existing.date) {
       await recomputeDailySummary(existing.childProfileId, existing.date);
-      await recomputeGamification(userId, existing.date);
+      await recomputeGamification(existing.childProfileId, existing.date);
     }
 
     return res.status(200).json({
