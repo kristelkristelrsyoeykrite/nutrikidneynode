@@ -1024,6 +1024,11 @@ function buildIngredientRules(profile = {}, childContext = {}) {
   return {
     allowedIngredients: [...allowed].sort(),
     blockedIngredients: [...blocked].sort(),
+    lowerPhosphorusProteinsOnly: profile.phosphorusStatus === "High",
+    allowedProteinIngredients:
+      profile.phosphorusStatus === "High"
+        ? [...new Set(CKD_INGREDIENT_GUIDE.lowerPhosphorus.map(normalizeTextToken))]
+        : null,
   };
 }
 
@@ -1709,7 +1714,15 @@ function recipeDrivenTemplates(mealType, history = {}, ingredientRules = {}) {
 function guideFoodPool(category, ingredientRules = {}) {
   const blocked = ingredientRules.blockedIngredients || [];
   return [...new Set(CKD_INGREDIENT_GUIDE[category] || [])]
-    .filter((ingredient) => !containsAny(ingredient, blocked));
+    .filter((ingredient) => !containsAny(ingredient, blocked))
+    .filter((ingredient) => {
+      if (category !== "proteins" || !ingredientRules.lowerPhosphorusProteinsOnly) {
+        return true;
+      }
+      return (ingredientRules.allowedProteinIngredients || []).includes(
+        normalizeTextToken(ingredient),
+      );
+    });
 }
 
 function guideFoodTemplates(mealType, ingredientRules = {}) {
@@ -1875,7 +1888,14 @@ function safeMealTemplates(mealType, profile, restrictions, history, ingredientR
     ]
       .filter(Boolean)
       .join(" ");
+    const proteinAllowed =
+      !ingredientRules?.lowerPhosphorusProteinsOnly ||
+      !template.protein ||
+      (ingredientRules.allowedProteinIngredients || []).includes(
+        normalizeTextToken(template.protein),
+      );
     return (
+      proteinAllowed &&
       !containsAny(text, restrictions.avoid) &&
       !containsAny(text, ingredientRules?.blockedIngredients || [])
     );
@@ -2482,6 +2502,31 @@ function nutrientTotals(items = []) {
       phosphorus: sum.phosphorus + (numberOrNull(item.phosphorus) || 0),
     }),
     { calories: 0, protein: 0, carbohydrate: 0, fat: 0, sodium: 0, potassium: 0, phosphorus: 0 },
+  );
+}
+
+function mealBudgetWeight(mealType) {
+  return String(mealType || "").includes("Snack") ? 0.35 : 1;
+}
+
+function reservedNutrientBudget({
+  dailyLimit,
+  consumed = 0,
+  mealType,
+  remainingMealTypes = [],
+}) {
+  const limit = numberOrNull(dailyLimit);
+  if (limit === null) return null;
+  const remaining = Math.max(0, limit - (numberOrNull(consumed) || 0));
+  const currentWeight = mealBudgetWeight(mealType);
+  const totalRemainingWeight = (remainingMealTypes.length
+    ? remainingMealTypes
+    : [mealType]
+  ).reduce((sum, type) => sum + mealBudgetWeight(type), 0);
+  if (totalRemainingWeight <= 0) return Math.round(remaining);
+  return Math.max(
+    0,
+    Math.round(remaining * currentWeight / totalRemainingWeight),
   );
 }
 
@@ -4345,6 +4390,7 @@ async function generateMealPlan(body = {}) {
     const meals = [];
     for (const [mealIndex, mealType] of mealTypes.entries()) {
       const totalsSoFar = nutrientTotals(meals);
+      const remainingMealTypes = mealTypes.slice(mealIndex);
       const nutrientBudgets = {};
       for (const [nutrient, dailyLimit] of [
         ["sodium", restrictions.dailySodiumLimitMg],
@@ -4353,7 +4399,12 @@ async function generateMealPlan(body = {}) {
       ]) {
         const limit = numberOrNull(dailyLimit);
         if (limit !== null) {
-          nutrientBudgets[nutrient] = Math.max(0, limit - totalsSoFar[nutrient]);
+          nutrientBudgets[nutrient] = reservedNutrientBudget({
+            dailyLimit: limit,
+            consumed: totalsSoFar[nutrient],
+            mealType,
+            remainingMealTypes,
+          });
         }
       }
 
@@ -4668,4 +4719,5 @@ module.exports = {
   guideFoodTemplates,
   portionTemplateCandidates,
   enrichMealsWithFluidContributions,
+  reservedNutrientBudget,
 };

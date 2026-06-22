@@ -18,6 +18,7 @@ const {
   guideFoodTemplates,
   portionTemplateCandidates,
   enrichMealsWithFluidContributions,
+  reservedNutrientBudget,
 } = require("../services/mealPlanService");
 const {
   generateMealPortions,
@@ -986,6 +987,41 @@ async function testTemplateReplacement() {
   assert.strictEqual(unresolved, null);
 }
 
+function testRemainingMealBudgetReservation() {
+  const mealTypes = ["Breakfast", "AM Snack", "Lunch", "PM Snack", "Dinner"];
+  const breakfastBudget = reservedNutrientBudget({
+    dailyLimit: 2000,
+    consumed: 0,
+    mealType: "Breakfast",
+    remainingMealTypes: mealTypes,
+  });
+  assert.strictEqual(breakfastBudget, 541);
+
+  const dinnerBudget = reservedNutrientBudget({
+    dailyLimit: 2000,
+    consumed: 1200,
+    mealType: "Dinner",
+    remainingMealTypes: ["Dinner"],
+  });
+  assert.strictEqual(dinnerBudget, 800);
+
+  const snackBudget = reservedNutrientBudget({
+    dailyLimit: 1000,
+    consumed: 0,
+    mealType: "AM Snack",
+    remainingMealTypes: ["AM Snack", "Lunch", "PM Snack", "Dinner"],
+  });
+  assert.strictEqual(snackBudget, 130);
+  assert.strictEqual(
+    reservedNutrientBudget({
+      dailyLimit: null,
+      mealType: "Dinner",
+      remainingMealTypes: ["Dinner"],
+    }),
+    null,
+  );
+}
+
 async function testPhilippineGuideFoodListAndVariety() {
   const rules = buildIngredientRules(
     { potassiumStatus: "Normal", phosphorusStatus: "Normal" },
@@ -1031,6 +1067,15 @@ async function testPhilippineGuideFoodListAndVariety() {
   );
   assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("cheese"), false);
   assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("beans"), false);
+  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("lean beef"), false);
+  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("egg"), false);
+  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("egg white"), true);
+  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("chicken"), true);
+  assert.ok(
+    guideFoodTemplates("Breakfast", highPhosphorusRules).every((template) =>
+      highPhosphorusRules.allowedProteinIngredients.includes(template.protein),
+    ),
+  );
 }
 
 async function run() {
@@ -1053,6 +1098,7 @@ async function run() {
   await testDailyCalorieBalancing();
   await testDailyBalancingPreservesSafetyLimits();
   await testTemplateReplacement();
+  testRemainingMealBudgetReservation();
   await testPhilippineGuideFoodListAndVariety();
   console.log("computePortionedMeal tests passed");
 }
