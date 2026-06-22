@@ -25,6 +25,11 @@ const AWARDS = {
     description: "Saved a personalized meal plan.",
     adolescentOnly: true,
   },
+  first_meal_plan_completed: {
+    title: "Meal Plan Finisher",
+    description: "Completed every meal in a saved daily meal plan.",
+    adolescentOnly: true,
+  },
 };
 
 const FOOD_COLOR_KEYWORDS = [
@@ -321,7 +326,7 @@ function isAdolescentProfile(profile = {}) {
   return Number.isFinite(age) && age >= 13 && age <= 18;
 }
 
-async function unlockAdolescentMealPlanAward({ admin, db, userId }) {
+async function isAdolescentUser(db, userId) {
   const [userDoc, childProfileDoc] = await Promise.all([
     db.collection("users").doc(userId).get(),
     db.collection("childProfiles").doc(userId).get(),
@@ -331,7 +336,11 @@ async function unlockAdolescentMealPlanAward({ admin, db, userId }) {
     : childProfileDoc.exists
       ? decryptHealthDocument(childProfileDoc.data() || {})
       : {};
-  if (!isAdolescentProfile(profile)) return false;
+  return isAdolescentProfile(profile);
+}
+
+async function unlockAdolescentMealPlanAward({ admin, db, userId }) {
+  if (!await isAdolescentUser(db, userId)) return false;
 
   const statusRef = db
     .collection("users")
@@ -357,6 +366,49 @@ async function unlockAdolescentMealPlanAward({ admin, db, userId }) {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
   return true;
+}
+
+async function hasCompletedSavedMealPlan(db, userId, date) {
+  const plansSnapshot = await db
+    .collection("mealPlan")
+    .where("childProfileId", "==", userId)
+    .get();
+  const plannedMealTypeSets = plansSnapshot.docs
+    .map((doc) => doc.data()?.mealPlan?.days)
+    .filter(Array.isArray)
+    .flatMap((days) => days)
+    .filter((day) => String(day?.date || "") === date)
+    .map((day) => new Set(
+      (Array.isArray(day.meals) ? day.meals : [])
+        .map((meal) => normalizeMealType(meal?.mealType))
+        .filter(Boolean),
+    ))
+    .filter((mealTypes) => mealTypes.size > 0);
+  if (plannedMealTypeSets.length === 0) return false;
+
+  const [userLogs, childLogs] = await Promise.all([
+    db.collection("foodLogs")
+      .where("userId", "==", userId)
+      .where("date", "==", date)
+      .get(),
+    db.collection("foodLogs")
+      .where("childProfileId", "==", userId)
+      .where("date", "==", date)
+      .get(),
+  ]);
+  const logs = new Map();
+  [...userLogs.docs, ...childLogs.docs].forEach((doc) => logs.set(doc.id, doc));
+  const loggedMealTypes = new Set();
+  logs.forEach((doc) => {
+    const log = doc.data() || {};
+    if (log.deletedAt || String(log.source || "") !== "meal_plan") return;
+    const mealType = normalizeMealType(log.mealType || log.meal_type);
+    if (mealType) loggedMealTypes.add(mealType);
+  });
+
+  return plannedMealTypeSets.some((plannedTypes) =>
+    [...plannedTypes].every((mealType) => loggedMealTypes.has(mealType))
+  );
 }
 
 async function recomputeGamificationForDate({ admin, db, userId, date }) {
@@ -388,16 +440,30 @@ async function recomputeGamificationForDate({ admin, db, userId, date }) {
   const unlockedAwards = Array.isArray(previous.unlockedAwards)
     ? [...previous.unlockedAwards]
     : [];
+  const newlyUnlockedAwards = [];
 
-  if (currentStreak >= 7) await unlockAward({ admin, db, userId, awardId: "seven_day_streak", unlockedAwards });
-  if (currentStreak >= 14) await unlockAward({ admin, db, userId, awardId: "fourteen_day_streak", unlockedAwards });
-  if (waterGoalMetCount >= 10) await unlockAward({ admin, db, userId, awardId: "hydration_hero", unlockedAwards });
+  if (currentStreak >= 7 && await unlockAward({ admin, db, userId, awardId: "seven_day_streak", unlockedAwards })) newlyUnlockedAwards.push("seven_day_streak");
+  if (currentStreak >= 14 && await unlockAward({ admin, db, userId, awardId: "fourteen_day_streak", unlockedAwards })) newlyUnlockedAwards.push("fourteen_day_streak");
+  if (waterGoalMetCount >= 10 && await unlockAward({ admin, db, userId, awardId: "hydration_hero", unlockedAwards })) newlyUnlockedAwards.push("hydration_hero");
 
   const lastSeven = statuses.slice(-7);
   const nutrientsInRangeFor7Days =
     lastSeven.length === 7 && lastSeven.every((day) => day.nutrientsInRange === true);
   if (nutrientsInRangeFor7Days) {
-    await unlockAward({ admin, db, userId, awardId: "balanced_week", unlockedAwards });
+    if (await unlockAward({ admin, db, userId, awardId: "balanced_week", unlockedAwards })) newlyUnlockedAwards.push("balanced_week");
+  }
+  if (
+    await isAdolescentUser(db, userId) &&
+    await hasCompletedSavedMealPlan(db, userId, date) &&
+    await unlockAward({
+      admin,
+      db,
+      userId,
+      awardId: "first_meal_plan_completed",
+      unlockedAwards,
+    })
+  ) {
+    newlyUnlockedAwards.push("first_meal_plan_completed");
   }
 
   const longestStreak = Math.max(numberOrZero(previous.longestStreak), currentStreak);
@@ -414,7 +480,7 @@ async function recomputeGamificationForDate({ admin, db, userId, date }) {
   };
 
   await userRef.collection("gamification").doc("status").set(gamificationStatus, { merge: true });
-  return { dailyStatus: status, gamificationStatus };
+  return { dailyStatus: status, gamificationStatus, newlyUnlockedAwards };
 }
 
 async function getGamificationSummary({ db, userId, date }) {

@@ -1004,9 +1004,10 @@ async function notifyLinkedCaregiverForNutritionLimits(childProfileId, date, sum
 async function recomputeGamification(userId, date) {
   if (!userId || !date) return;
   try {
-    await recomputeGamificationForDate({ admin, db, userId, date });
+    return await recomputeGamificationForDate({ admin, db, userId, date });
   } catch (error) {
     console.error("GAMIFICATION_RECOMPUTE ERROR:", error.message);
+    return null;
   }
 }
 
@@ -1630,6 +1631,7 @@ router.post("/logs/add", async (req, res) => {
       });
 
       let dailySummaryStatus = "updated";
+      let gamificationAwardsUnlocked = [];
       try {
         const summary = await recomputeDailySummary(payload.childProfileId, logDate);
         await notifyLinkedCaregiverForNutritionLimits(
@@ -1637,7 +1639,12 @@ router.post("/logs/add", async (req, res) => {
           logDate,
           summary,
         );
-        await recomputeGamification(payload.childProfileId, logDate);
+        const gamificationResult = await recomputeGamification(
+          payload.childProfileId,
+          logDate,
+        );
+        gamificationAwardsUnlocked =
+          gamificationResult?.newlyUnlockedAwards || [];
       } catch (summaryError) {
         console.error("FOOD_LOG_SUMMARY ERROR:", summaryError.message);
         dailySummaryStatus = "queued_for_retry";
@@ -1648,6 +1655,7 @@ router.post("/logs/add", async (req, res) => {
         foodLogId: docRef.id,
         mealLogId: docRef.id,
         dailySummaryStatus,
+        gamificationAwardsUnlocked,
         allergyChecked: allergyCheck.allergyChecked,
         profileAllergies: allergyCheck.profileAllergies,
         allergyAlert: allergyCheck.allergyAlert,
@@ -1813,6 +1821,7 @@ router.post("/logs/add", async (req, res) => {
     });
 
     let dailySummaryStatus = "updated";
+    let gamificationAwardsUnlocked = [];
     try {
       const summary = await recomputeDailySummary(payload.childProfileId, logDate);
       await notifyLinkedCaregiverForNutritionLimits(
@@ -1820,7 +1829,12 @@ router.post("/logs/add", async (req, res) => {
         logDate,
         summary,
       );
-      await recomputeGamification(payload.childProfileId, logDate);
+      const gamificationResult = await recomputeGamification(
+        payload.childProfileId,
+        logDate,
+      );
+      gamificationAwardsUnlocked =
+        gamificationResult?.newlyUnlockedAwards || [];
     } catch (summaryError) {
       console.error("FOOD_LOG_SUMMARY ERROR:", summaryError.message);
       dailySummaryStatus = "queued_for_retry";
@@ -1831,6 +1845,7 @@ router.post("/logs/add", async (req, res) => {
       foodLogId: docRef.id,
       mealLogId: docRef.id,
       dailySummaryStatus,
+      gamificationAwardsUnlocked,
       allergyChecked: allergyCheck.allergyChecked,
       profileAllergies: allergyCheck.profileAllergies,
       allergyAlert: allergyCheck.allergyAlert,
