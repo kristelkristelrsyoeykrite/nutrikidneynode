@@ -3312,7 +3312,7 @@ async function computePortionedMeal(
   const picked = [];
   for (const [role, ingredient] of Object.entries(components)) {
     if (!ingredient) continue;
-    try {
+      try {
       let variants = [ingredient];
       let selected = null;
       const requiredNutrients = [
@@ -3320,6 +3320,41 @@ async function computePortionedMeal(
         ...(mealTargets.potassium ? ["potassium"] : []),
         ...(mealTargets.phosphorus ? ["phosphorus"] : []),
       ];
+
+      // If the user is phosphorus-restricted, only search for concrete foods
+      // present in the phosphorus guide for the ingredient category. This
+      // avoids searching generic terms (e.g. "chicken") which often lack
+      // phosphorus data in FatSecret and causes meal-plan resolution to fail.
+      try {
+        if (nutritionProfile?.phosphorusStatus === "High") {
+          const roleToCategory = {
+            protein: "proteins",
+            carb: "carbs",
+            grain: "carbs",
+            vegetable: "vegetables",
+            fruit: "fruits",
+            fat: "fats",
+            snack: "snacks",
+            snacks: "snacks",
+          };
+          const category = roleToCategory[role] || `${role}s`;
+          const guideList =
+            CKD_INGREDIENT_GUIDE.phosphorusGuideFoods &&
+            CKD_INGREDIENT_GUIDE.phosphorusGuideFoods[category]
+              ? CKD_INGREDIENT_GUIDE.phosphorusGuideFoods[category]
+              : null;
+          if (Array.isArray(guideList) && guideList.length) {
+            const matched = guideList.filter((g) =>
+              normalizeTextToken(g).includes(normalizeTextToken(ingredient)),
+            );
+            // Prefer matched guide entries, otherwise use the top guide items
+            const chosen = matched.length ? matched : guideList;
+            variants = chosen.slice(0, Math.max(1, maxVariants));
+          }
+        }
+      } catch (err) {
+        mealPlanDebug("PHOSPHORUS_GUIDE_VARIANT_LOOKUP_FAILED", { role, ingredient, error: err.message });
+      }
 
       async function usableServing(candidate, sourceEvent) {
         const servingFood = await adapters.resolveFirstServing(candidate, role);
