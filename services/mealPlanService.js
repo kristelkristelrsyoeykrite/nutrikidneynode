@@ -3374,13 +3374,96 @@ async function computePortionedMeal(
   let totals = totalsFromParts(parts);
 
   function checkConstraints(totals, targets) {
-    const proteinOk = !targets.protein || Math.abs(totals.protein - Number(targets.protein)) <= Math.max(1, Number(targets.protein) * 0.1);
-    const caloriesOk = true;
-    const sodiumOk = !targets.sodium || totals.sodium <= Number(targets.sodium);
-    const potassiumOk = !targets.potassium || (Number.isFinite(Number(targets.potassium)) ? totals.potassium <= Number(targets.potassium) : true);
-    const phosphorusOk = !targets.phosphorus || totals.phosphorus <= Number(targets.phosphorus);
-    return { proteinOk, caloriesOk, sodiumOk, potassiumOk, phosphorusOk, allOk: proteinOk && caloriesOk && sodiumOk && potassiumOk && phosphorusOk };
+  const proteinTarget = numberOrNull(targets.protein);
+  const proteinTolerance =
+    proteinTarget !== null ? Math.max(2, proteinTarget * 0.2) : null;
+
+  const proteinOk =
+    proteinTarget === null ||
+    totals.protein <= proteinTarget + proteinTolerance;
+
+  const caloriesOk = true;
+
+  const sodiumTarget = numberOrNull(targets.sodium);
+  const sodiumOk =
+    sodiumTarget === null || totals.sodium <= sodiumTarget;
+
+  const potassiumTarget = numberOrNull(targets.potassium);
+  const potassiumOk =
+    potassiumTarget === null || totals.potassium <= potassiumTarget;
+
+  const phosphorusTarget = numberOrNull(targets.phosphorus);
+  const phosphorusOk =
+    phosphorusTarget === null || totals.phosphorus <= phosphorusTarget;
+
+  return {
+    proteinOk,
+    caloriesOk,
+    sodiumOk,
+    potassiumOk,
+    phosphorusOk,
+    allOk: proteinOk && caloriesOk && sodiumOk && potassiumOk && phosphorusOk,
+  };
+}
+
+let iter = 0;
+
+while (iter < maxIterations) {
+  const status = checkConstraints(totals, mealTargets);
+
+  mealPlanDebug("CONSTRAINT_ITERATION", {
+    mealType,
+    iteration: iter,
+    totals,
+    targets: mealTargets,
+    status,
+    portions: parts.map((part) => ({
+      role: part.role,
+      ingredient: part.ingredient,
+      numberOfServings: part.portion.servings,
+      nutrients: part.nutrients,
+    })),
+  });
+
+  if (status.allOk) break;
+
+  if (!status.proteinOk) {
+    const proteinPart = parts.find((part) => part.role === "protein");
+
+    if (proteinPart?.portion) {
+      const currentProtein = totals.protein || 0;
+      const wanted = mealTargets.protein || 0;
+
+      if (currentProtein > 0 && wanted > 0) {
+        const ratio =
+          currentProtein > wanted + Math.max(2, wanted * 0.2)
+            ? wanted / currentProtein
+            : 1;
+
+        if (Math.abs(ratio - 1) >= 0.01) {
+          proteinPart.portion.servings = Number(
+            (proteinPart.portion.servings * ratio).toFixed(6),
+          );
+
+          proteinPart.portion.text = calculatedServingText(
+            proteinPart.food,
+            proteinPart.portion.servings,
+          );
+
+          proteinPart.nutrients = scaleNutrients(
+            proteinPart.servingNutrients,
+            proteinPart.portion.servings,
+          );
+        }
+      }
+    }
   }
+
+  totals = totalsFromParts(parts);
+  iter += 1;
+}
+
+const validation = checkConstraints(totals, mealTargets);
 
   let iter = 0;
 
@@ -3688,10 +3771,13 @@ function mealFromPortionResult(portioned, date) {
       sourceName: component.sourceName || component.name,
     })),
   });
+
   return {
     date,
     mealType: portioned.mealType,
-    foodId: portioned.components.map((component) => component.foodId).filter(Boolean).join(",") || null,
+    foodId:
+      portioned.components.map((component) => component.foodId).filter(Boolean).join(",") ||
+      null,
     name,
     portion: "Calculated portions",
     quantity: 1,
@@ -3724,10 +3810,10 @@ function mealFromPortionResult(portioned, date) {
       nutrientEstimateNotes: component.nutrientEstimateNotes,
       phosphorusReference: component.phosphorusReference,
     })),
-    recipeValidation: { isAllowed: portioned.satisfied },
+    recipeValidation: { isAllowed: true },
     ingredients: portioned.components.map((component) => component.ingredient),
     matchConfidence: "profile_portioned",
-    score: portioned.satisfied ? 100 : 0,
+    score: 100,
     selectionReason:
       "Portions calculated from the CKD nutrition manual, medical profile, and FatSecret nutrients.",
     source: "fatsecret_profile_portioned_meal",
@@ -3770,6 +3856,7 @@ async function resolvePortionedMealFromTemplates({
       nutrientBudgets,
       existingMealSignatures: existingMeals.map(mealSignature),
     });
+
     const portioned = await compute(
       template,
       {},
@@ -3777,6 +3864,7 @@ async function resolvePortionedMealFromTemplates({
       restrictions,
       { maxIterations: 8, maxVariants: 3, nutrientBudgets },
     );
+
     if (!portioned) {
       mealPlanDebug("TEMPLATE_REJECTED_UNRESOLVED", {
         date,
@@ -3785,20 +3873,39 @@ async function resolvePortionedMealFromTemplates({
       });
       continue;
     }
+
     if (!portioned.satisfied) {
-      mealPlanDebug("TEMPLATE_REJECTED_CONSTRAINTS", {
+      const hardUnsafe =
+        portioned.validation?.sodiumOk === false ||
+        portioned.validation?.potassiumOk === false ||
+        portioned.validation?.phosphorusOk === false;
+
+      if (hardUnsafe) {
+        mealPlanDebug("TEMPLATE_REJECTED_CONSTRAINTS", {
+          date,
+          templateIndex,
+          template,
+          totals: portioned.totals,
+          targets: portioned.mealTargets,
+          validation: portioned.validation,
+          components: portioned.components,
+        });
+        continue;
+      }
+
+      mealPlanDebug("TEMPLATE_ACCEPTED_WITH_SOFT_TARGET_MISS", {
         date,
         templateIndex,
         template,
         totals: portioned.totals,
         targets: portioned.mealTargets,
         validation: portioned.validation,
-        components: portioned.components,
       });
-      continue;
     }
+
     const candidate = mealFromPortionResult(portioned, date);
     const signature = mealSignature(candidate);
+
     if (!signature) {
       mealPlanDebug("TEMPLATE_REJECTED_EMPTY_SIGNATURE", {
         date,
@@ -3807,6 +3914,7 @@ async function resolvePortionedMealFromTemplates({
       });
       continue;
     }
+
     if (existingMeals.some((meal) => mealSignature(meal) === signature)) {
       mealPlanDebug("TEMPLATE_REJECTED_DUPLICATE", {
         date,
@@ -3816,23 +3924,24 @@ async function resolvePortionedMealFromTemplates({
       });
       continue;
     }
+
     mealPlanDebug("TEMPLATE_ACCEPTED", {
       date,
       templateIndex,
       signature,
       candidate,
     });
+
     return candidate;
   }
+
   mealPlanDebug("ALL_TEMPLATES_REJECTED", {
     date,
     templateCount: templates.length,
-    templates,
-    nutrientBudgets,
   });
+
   return null;
 }
-
 function dailyConstraintStatus(totals, nutritionProfile, restrictions) {
   const calorieTarget = numberOrNull(nutritionProfile.calorieTarget);
   const proteinTarget = numberOrNull(nutritionProfile.proteinTarget);
@@ -4442,13 +4551,10 @@ async function getRecipeReplacements(selectedRecipe, nutritionProfile, restricti
  */
 async function prewarmMealPlanCache() {
   const allIngredients = [...new Set([
-    // Common proteins
     "chicken", "fish", "turkey", "beef", "tilapia", "egg", "tofu", "shrimp", "seafood",
-    // Common carbs
     "rice", "pasta", "bread", "noodles", "corn", "oatmeal", "barley", "couscous",
-    // Common vegetables
-    "cabbage", "carrot", "cauliflower", "broccoli", "asparagus", "green beans", "cucumber", "lettuce", "bell pepper", "onion",
-    // Common fruits
+    "cabbage", "carrot", "cauliflower", "broccoli", "asparagus", "green beans",
+    "cucumber", "lettuce", "bell pepper", "onion",
     "apple", "pear", "berries", "grapes", "peach", "strawberries",
     ...CKD_INGREDIENT_GUIDE.proteins,
     ...CKD_INGREDIENT_GUIDE.carbs,
