@@ -1380,7 +1380,10 @@ function buildFoodRestrictions(profile) {
       ["Caution", "Danger"].includes(profile.potassiumControlLevel)
         ? profile.potassiumLimitMg || 3000
         : null,
-    dailyPhosphorusLimitMg: profile.phosphorusLimitMg || 1000,
+    dailyPhosphorusLimitMg:
+      profile.phosphorusStatus === "High"
+        ? profile.phosphorusLimitMg || 1000
+        : null,
     avoid: [...avoid],
     prefer: [...prefer],
   };
