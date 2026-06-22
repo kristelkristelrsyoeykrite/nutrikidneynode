@@ -2192,9 +2192,19 @@ async function enrichCandidate(item) {
   }
 }
 
-async function resolveFoodDetails(food) {
+async function resolveFoodDetails(food, options = {}) {
   if (!food?.foodId) return food;
-  if (usefulNutrition(food) && food.needsManualReview !== true) return food;
+  const requiredNutrients = Array.isArray(options.requiredNutrients)
+    ? options.requiredNutrients
+    : [];
+  const hasRequiredNutrients = requiredNutrients.every(
+    (nutrient) => numberOrNull(food[nutrient]) !== null,
+  );
+  if (
+    usefulNutrition(food) &&
+    food.needsManualReview !== true &&
+    hasRequiredNutrients
+  ) return food;
   const cacheKey = String(food.foodId);
   const cached = foodDetailCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
@@ -3184,6 +3194,44 @@ async function computePortionedMeal(
     try {
       let variants = [ingredient];
       let selected = null;
+      const requiredNutrients = [
+        "sodium",
+        ...(mealTargets.potassium ? ["potassium"] : []),
+        ...(mealTargets.phosphorus ? ["phosphorus"] : []),
+      ];
+
+      async function usableServing(candidate, sourceEvent) {
+        const servingFood = await adapters.resolveFirstServing(candidate, role);
+        if (!servingFood) {
+          mealPlanDebug("CANDIDATE_SERVING_MISSING", {
+            mealType,
+            role,
+            ingredient,
+            sourceEvent,
+            food: mealPlanFoodDiagnostic(candidate),
+          });
+          return null;
+        }
+        const resolvedServing = applyRiskBasedNutrientFallbacks(
+          role,
+          ingredient,
+          servingFood,
+        );
+        const issues = requiredNutritionIssues(role, resolvedServing);
+        if (issues.length) {
+          mealPlanDebug("CANDIDATE_SERVING_REJECTED", {
+            mealType,
+            role,
+            ingredient,
+            sourceEvent,
+            food: mealPlanFoodDiagnostic(resolvedServing),
+            issues,
+          });
+          return null;
+        }
+        return resolvedServing;
+      }
+
       for (let variantIndex = 0; variantIndex < variants.length && !selected; variantIndex += 1) {
         const variant = variants[variantIndex];
         const result = await adapters.searchFoods(variant, mealType, 0);
@@ -3213,10 +3261,10 @@ async function computePortionedMeal(
           })),
         });
 
-        const fixedServing = candidates.find((candidate) =>
-          requiredNutritionPresent(role, candidate),
-        );
-        if (fixedServing) {
+        for (const candidate of candidates.slice(0, MAX_DETAIL_CANDIDATES_PER_VARIANT)) {
+          if (!requiredNutritionPresent(role, candidate)) continue;
+          const fixedServing = await usableServing(candidate, "search");
+          if (!fixedServing) continue;
           mealPlanDebug("CANDIDATE_ACCEPTED_FROM_SEARCH", {
             role,
             ingredient,
@@ -3227,20 +3275,24 @@ async function computePortionedMeal(
           break;
         }
 
-        for (const candidate of candidates.slice(0, MAX_DETAIL_CANDIDATES_PER_VARIANT)) {
+        for (const candidate of selected
+          ? []
+          : candidates.slice(0, MAX_DETAIL_CANDIDATES_PER_VARIANT)) {
           const detailed = applyRiskBasedNutrientFallbacks(
             role,
             ingredient,
-            await adapters.resolveFood(candidate),
+            await adapters.resolveFood(candidate, { requiredNutrients }),
           );
           if (requiredNutritionPresent(role, detailed)) {
+            const detailedServing = await usableServing(detailed, "detail");
+            if (!detailedServing) continue;
             mealPlanDebug("CANDIDATE_ACCEPTED_AFTER_DETAIL_LOOKUP", {
               role,
               ingredient,
               variant,
-              food: mealPlanFoodDiagnostic(detailed),
+              food: mealPlanFoodDiagnostic(detailedServing),
             });
-            selected = { role, ingredient, variant, food: detailed };
+            selected = { role, ingredient, variant, food: detailedServing };
             break;
           } else {
             mealPlanDebug("CANDIDATE_DETAIL_REJECTED", {
@@ -3261,30 +3313,6 @@ async function computePortionedMeal(
       }
       if (!selected) {
         mealPlanDebug("COMPONENT_UNRESOLVED", { mealType, role, ingredient, variants });
-        return null;
-      }
-      const servingFood = await adapters.resolveFirstServing(selected.food, role);
-      if (!servingFood) {
-        console.warn("MEAL_PLAN_FIRST_SERVING_MISSING:", {
-          ingredient,
-          foodId: selected.food?.foodId,
-        });
-        return null;
-      }
-      selected.food = applyRiskBasedNutrientFallbacks(
-        role,
-        ingredient,
-        servingFood,
-      );
-      const firstServingIssues = requiredNutritionIssues(role, selected.food);
-      if (firstServingIssues.length) {
-        mealPlanDebug("FIRST_SERVING_REJECTED", {
-          mealType,
-          role,
-          ingredient,
-          food: mealPlanFoodDiagnostic(selected.food),
-          issues: firstServingIssues,
-        });
         return null;
       }
       mealPlanDebug("COMPONENT_RESOLVED", {

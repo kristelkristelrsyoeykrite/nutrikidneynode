@@ -629,6 +629,43 @@ async function testRiskBasedMissingNutrients() {
   assert.ok(fallbackMeal);
   assert.strictEqual(fallbackDetailCalls, 2);
   assert.strictEqual(fallbackMeal.components[0].nutrients.phosphorus, 144);
+
+  const incompleteServingChicken = food("Chicken Fillet", {
+    protein: 20,
+    phosphorus: 180,
+  });
+  const completeServingChicken = food("Cooked Chicken Breast", {
+    protein: 20,
+    phosphorus: 160,
+  });
+  let servingCandidateCalls = 0;
+  const servingFallbackMeal = await computePortionedMeal(
+    { mealType: "Lunch", protein: "chicken" },
+    { protein: 48, sodium: 2000, phosphorus: 1000 },
+    null,
+    {},
+    {
+      adapters: {
+        expandIngredient: async (ingredient) => [ingredient],
+        searchFoods: async () => ({
+          foods: [incompleteServingChicken, completeServingChicken],
+        }),
+        resolveFood: async (candidate) => candidate,
+        resolveFirstServing: async (candidate) => {
+          servingCandidateCalls += 1;
+          return candidate.foodId === incompleteServingChicken.foodId
+            ? { ...candidate, phosphorus: null }
+            : candidate;
+        },
+      },
+    },
+  );
+  assert.ok(servingFallbackMeal);
+  assert.strictEqual(servingCandidateCalls, 2);
+  assert.strictEqual(
+    servingFallbackMeal.components[0].foodId,
+    completeServingChicken.foodId,
+  );
 }
 
 async function testNonProteinUsesOneFirstServing() {
