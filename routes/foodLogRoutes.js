@@ -1446,27 +1446,20 @@ router.post("/logs/list", async (req, res) => {
     const requestedLimit = Number(limit) || 100;
     let logs = [];
 
-    const requestedProfileId = childProfileId || profileUserId;
-    let snapshots;
-    if (requestedProfileId) {
-      snapshots = await Promise.all([
-        db
-          .collection(FOOD_LOG_COLLECTION)
-          .where("childProfileId", "==", requestedProfileId)
-          .get(),
-        db
-          .collection(FOOD_LOG_COLLECTION)
-          .where("userId", "==", requestedProfileId)
-          .get(),
-      ]);
-    } else {
-      snapshots = [
-        await db
-          .collection(FOOD_LOG_COLLECTION)
-          .where("userId", "==", userId)
-          .get(),
-      ];
-    }
+    // `userId` identifies who created a log, while `childProfileId` identifies
+    // whose nutrition record it belongs to. An adolescent viewing their own
+    // account must therefore query both fields to see caregiver-created logs.
+    const requestedProfileId = childProfileId || profileUserId || userId;
+    const snapshots = await Promise.all([
+      db
+        .collection(FOOD_LOG_COLLECTION)
+        .where("childProfileId", "==", requestedProfileId)
+        .get(),
+      db
+        .collection(FOOD_LOG_COLLECTION)
+        .where("userId", "==", requestedProfileId)
+        .get(),
+    ]);
 
     const docsById = new Map();
     snapshots.forEach((snapshot) => {
@@ -1474,14 +1467,10 @@ router.post("/logs/list", async (req, res) => {
     });
 
     logs = [...docsById.values()].map(serializeFoodLog).filter((log) => {
-      if (requestedProfileId) {
-        if (
-          log.childProfileId !== requestedProfileId &&
-          log.userId !== requestedProfileId
-        ) {
-          return false;
-        }
-      } else if (log.userId !== userId) {
+      if (
+        log.childProfileId !== requestedProfileId &&
+        log.userId !== requestedProfileId
+      ) {
         return false;
       }
       if (date && log.date !== date) return false;
