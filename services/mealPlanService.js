@@ -57,6 +57,7 @@ const RECIPE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 14;
 const MAX_CACHED_RECIPE_RESULTS = 50;
 const FOOD_DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FOOD_DETAIL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_DETAIL_CANDIDATES_PER_VARIANT = 5;
 const foodDetailCache = new Map();
 const SIMPLE_FAT_FOOD_NAMES = [
   "oil",
@@ -3183,7 +3184,6 @@ async function computePortionedMeal(
     try {
       let variants = [ingredient];
       let selected = null;
-      let detailLookupUsed = false;
       for (let variantIndex = 0; variantIndex < variants.length && !selected; variantIndex += 1) {
         const variant = variants[variantIndex];
         const result = await adapters.searchFoods(variant, mealType, 0);
@@ -3227,12 +3227,11 @@ async function computePortionedMeal(
           break;
         }
 
-        if (!detailLookupUsed && candidates[0]) {
-          detailLookupUsed = true;
+        for (const candidate of candidates.slice(0, MAX_DETAIL_CANDIDATES_PER_VARIANT)) {
           const detailed = applyRiskBasedNutrientFallbacks(
             role,
             ingredient,
-            await adapters.resolveFood(candidates[0]),
+            await adapters.resolveFood(candidate),
           );
           if (requiredNutritionPresent(role, detailed)) {
             mealPlanDebug("CANDIDATE_ACCEPTED_AFTER_DETAIL_LOOKUP", {
@@ -3242,6 +3241,7 @@ async function computePortionedMeal(
               food: mealPlanFoodDiagnostic(detailed),
             });
             selected = { role, ingredient, variant, food: detailed };
+            break;
           } else {
             mealPlanDebug("CANDIDATE_DETAIL_REJECTED", {
               role,
@@ -3375,8 +3375,7 @@ async function computePortionedMeal(
 
   function checkConstraints(totals, targets) {
   const proteinTarget = numberOrNull(targets.protein);
-  const proteinTolerance =
-    proteinTarget !== null ? Math.max(2, proteinTarget * 0.2) : null;
+  const proteinTolerance = proteinTarget !== null ? 1 : null;
 
   const proteinOk =
     proteinTarget === null ||
@@ -3406,66 +3405,7 @@ async function computePortionedMeal(
   };
 }
 
-let iter = 0;
-
-while (iter < maxIterations) {
-  const status = checkConstraints(totals, mealTargets);
-
-  mealPlanDebug("CONSTRAINT_ITERATION", {
-    mealType,
-    iteration: iter,
-    totals,
-    targets: mealTargets,
-    status,
-    portions: parts.map((part) => ({
-      role: part.role,
-      ingredient: part.ingredient,
-      numberOfServings: part.portion.servings,
-      nutrients: part.nutrients,
-    })),
-  });
-
-  if (status.allOk) break;
-
-  if (!status.proteinOk) {
-    const proteinPart = parts.find((part) => part.role === "protein");
-
-    if (proteinPart?.portion) {
-      const currentProtein = totals.protein || 0;
-      const wanted = mealTargets.protein || 0;
-
-      if (currentProtein > 0 && wanted > 0) {
-        const ratio =
-          currentProtein > wanted + Math.max(2, wanted * 0.2)
-            ? wanted / currentProtein
-            : 1;
-
-        if (Math.abs(ratio - 1) >= 0.01) {
-          proteinPart.portion.servings = Number(
-            (proteinPart.portion.servings * ratio).toFixed(6),
-          );
-
-          proteinPart.portion.text = calculatedServingText(
-            proteinPart.food,
-            proteinPart.portion.servings,
-          );
-
-          proteinPart.nutrients = scaleNutrients(
-            proteinPart.servingNutrients,
-            proteinPart.portion.servings,
-          );
-        }
-      }
-    }
-  }
-
-  totals = totalsFromParts(parts);
-  iter += 1;
-}
-
-const validation = checkConstraints(totals, mealTargets);
-
-
+  let iter = 0;
   while (iter < maxIterations) {
     const status = checkConstraints(totals, mealTargets);
     mealPlanDebug("CONSTRAINT_ITERATION", {

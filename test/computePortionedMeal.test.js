@@ -548,7 +548,7 @@ async function testUsesOneFixedReferenceServing() {
     },
   );
   assert.strictEqual(unresolved, null);
-  assert.strictEqual(detailCalls, 1);
+  assert.strictEqual(detailCalls, 5);
 }
 
 async function testRiskBasedMissingNutrients() {
@@ -595,6 +595,40 @@ async function testRiskBasedMissingNutrients() {
     },
   );
   assert.strictEqual(riskyMeal, null);
+
+  const firstIncompleteChicken = food("Chicken Breast", {
+    protein: 20,
+    phosphorus: null,
+  });
+  const secondIncompleteChicken = food("Cooked Chicken", {
+    protein: 20,
+    phosphorus: null,
+  });
+  let fallbackDetailCalls = 0;
+  const fallbackMeal = await computePortionedMeal(
+    { mealType: "Lunch", protein: "chicken" },
+    { protein: 48, sodium: 2000, phosphorus: 1000 },
+    null,
+    {},
+    {
+      adapters: {
+        expandIngredient: async (ingredient) => [ingredient],
+        searchFoods: async () => ({
+          foods: [firstIncompleteChicken, secondIncompleteChicken],
+        }),
+        resolveFood: async (candidate) => {
+          fallbackDetailCalls += 1;
+          return candidate.foodId === secondIncompleteChicken.foodId
+            ? { ...candidate, phosphorus: 180 }
+            : candidate;
+        },
+        resolveFirstServing: async (candidate) => candidate,
+      },
+    },
+  );
+  assert.ok(fallbackMeal);
+  assert.strictEqual(fallbackDetailCalls, 2);
+  assert.strictEqual(fallbackMeal.components[0].nutrients.phosphorus, 144);
 }
 
 async function testNonProteinUsesOneFirstServing() {
