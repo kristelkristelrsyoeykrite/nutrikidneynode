@@ -324,7 +324,9 @@ function inferredFoodCategory(payload = {}, body = {}) {
   if (/(hotdog|hot dog|sausage|ham|bacon|salami|luncheon meat|corned beef)/.test(name)) {
     return "Processed Meat";
   }
-  if (/(instant|canned|chips|cracker|processed|fast food)/.test(name)) {
+  if (
+    /(instant|buldak|cup noodles?|instant noodles?|instant pasta|canned|chips|cracker|salted snack|frozen meal|microwave meal|processed|fast food)/.test(name)
+  ) {
     return "Processed Food";
   }
   return "";
@@ -591,28 +593,34 @@ async function buildChildContext(userId, requestedChildProfileId) {
         targets.sodium ??
           targets.sodiumLimitMg ??
           targets.sodium_limit_mg ??
-          targets.maxSodiumMg,
+          targets.maxSodiumMg ??
+          targets.sodium_target_mg,
       ),
       potassium: numberOrNull(
         targets.potassium ??
           targets.potassiumLimitMg ??
           targets.potassium_limit_mg ??
-          targets.maxPotassiumMg,
+          targets.maxPotassiumMg ??
+          targets.potassium_target_mg,
       ),
       phosphorus: numberOrNull(
         targets.phosphorus ??
           targets.phosphorusLimitMg ??
-          targets.phosphorus_limit_mg,
+          targets.phosphorus_limit_mg ??
+          targets.phosphorus_target_mg ??
+          targets.phosphate_target_mg,
       ),
       protein_min: numberOrNull(
-        targets.proteinMin ??
+          targets.proteinMin ??
           targets.protein_min ??
-          targets.minProteinG,
+          targets.minProteinG ??
+          targets.protein_target_min_g,
       ),
       protein_max: numberOrNull(
-        targets.proteinMax ??
+          targets.proteinMax ??
           targets.protein_max ??
-          targets.maxProteinG,
+          targets.maxProteinG ??
+          targets.protein_target_g,
       ),
       dailyFluidLimitMl,
     }),
@@ -668,7 +676,53 @@ async function buildPreviewRequest(body) {
 
 async function getMealPreview(body) {
   const previewRequest = await buildPreviewRequest(body);
-  return fatSecretBridge.mealLoggingPreview(previewRequest);
+  const preview = await fatSecretBridge.mealLoggingPreview(previewRequest);
+  return {
+    preview,
+    childContext: previewRequest.child_context,
+  };
+}
+
+function ckdSafetyAssessment(preview = {}, childContext = {}, body = {}) {
+  const normalized = normalizedFinalNutrients(preview).nutrients;
+  const payload = {
+    name: preview.food_name || preview.foodName || body.name || body.foodName,
+    foodName: preview.food_name || preview.foodName,
+    category:
+      preview.category || preview.food_category || preview.foodCategory,
+    finalNutrients: normalized,
+    raw: preview,
+  };
+  const foodItem = phase2FoodItemFromPayload(payload, body);
+  const category = String(foodItem.category || "");
+  const normalizedCategory = category.trim().toLowerCase();
+  const isProcessed =
+    normalizedCategory.includes("processed food") ||
+    normalizedCategory.includes("processed meat") ||
+    /(instant|canned|packaged snack|frozen meal|microwave meal|fast food)/.test(
+      normalizedCategory,
+    );
+  const isHighSodium = foodItem.isHighSodium === true;
+  const isRestricted = isProcessed || isHighSodium;
+
+  return {
+    category: category || null,
+    isProcessed,
+    isHighSodium,
+    isRestricted,
+    warning: isRestricted
+      ? "This food is restricted for CKD users because it is highly processed or contains excessive sodium. Frequent consumption may increase the risk of fluid retention, elevated blood pressure, and kidney strain."
+      : null,
+    nutrients: normalized,
+    targets: {
+      sodium: numberOrNull(childContext.targets?.sodium) || 2000,
+      potassium: numberOrNull(childContext.targets?.potassium),
+      phosphorus: numberOrNull(childContext.targets?.phosphorus),
+      protein:
+        numberOrNull(childContext.targets?.protein_max) ||
+        numberOrNull(childContext.targets?.protein_min),
+    },
+  };
 }
 
 async function recomputeDailySummary(childProfileId, date) {
@@ -1117,8 +1171,12 @@ router.post("/ai-usage/status", async (req, res) => {
 
 router.post("/preview", async (req, res) => {
   try {
-    const preview = await getMealPreview(req.body);
-    return res.status(200).json({ success: true, preview });
+    const { preview, childContext } = await getMealPreview(req.body);
+    return res.status(200).json({
+      success: true,
+      preview,
+      ckdSafety: ckdSafetyAssessment(preview, childContext, req.body),
+    });
   } catch (error) {
     console.error("FOOD_PREVIEW ERROR:", error.message);
     return res.status(error.statusCode || 500).json({
