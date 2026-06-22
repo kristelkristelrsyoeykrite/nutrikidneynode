@@ -345,8 +345,20 @@ async function getGamificationSummary({ db, userId, date }) {
   const dailyDoc = await userRef.collection("dailyLogStatus").doc(date).get();
   const awardsSnapshot = await userRef.collection("awards").get();
 
+  // Recalculate current streak on-demand to ensure accuracy
+  const currentStreak = await countBackCompleteDays(db, userId, date);
+  const cachedStatus = statusDoc.exists ? statusDoc.data() || {} : {};
+  
+  // Use recalculated streak, fallback to longest streak if current is 0
+  const displayStreak = currentStreak > 0 ? currentStreak : numberOrZero(cachedStatus.longestStreak);
+
   return {
-    status: statusDoc.exists ? statusDoc.data() : {},
+    status: {
+      ...cachedStatus,
+      currentStreak,
+      displayStreak,
+      updatedAt: cachedStatus.updatedAt || null,
+    },
     today: dailyDoc.exists ? dailyDoc.data() : {},
     awards: awardsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
     awardDefinitions: AWARDS,
