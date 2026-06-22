@@ -234,6 +234,14 @@ function registerProfileRoutes(router, deps) {
         bmi,
         dryWeight,
         dry_weight_kg,
+        weightChangeOneMonthPercent,
+        weight_change_1_month_percent,
+        weightChangeSixMonthsPercent,
+        weight_change_6_months_percent,
+        appetite,
+        appetiteStatus,
+        oralIntakePercent,
+        oral_intake_percent,
         ckdStage,
         ckd_stage,
         ckdType,
@@ -329,6 +337,12 @@ function registerProfileRoutes(router, deps) {
       const heightValue = height_cm ?? height;
       const weightValue = weight_kg ?? weight;
       const dryWeightValue = dryWeight ?? dry_weight_kg;
+      const weightChangeOneMonthValue =
+        weightChangeOneMonthPercent ?? weight_change_1_month_percent;
+      const weightChangeSixMonthsValue =
+        weightChangeSixMonthsPercent ?? weight_change_6_months_percent;
+      const appetiteValue = appetite ?? appetiteStatus;
+      const oralIntakeValue = oralIntakePercent ?? oral_intake_percent;
       const ckdStageValue = ckdStage ?? ckd_stage;
       const ckdTypeValue = ckdType ?? ckd_type ?? kidneyDiseaseType;
       const dietPatternValue = dietPattern ?? diet_pattern;
@@ -428,6 +442,12 @@ function registerProfileRoutes(router, deps) {
         onDialysis,
         dialysisType,
         treatmentFrequency,
+        appetite: appetiteValue,
+        appetiteStatus: appetiteValue,
+        oralIntakePercent:
+          oralIntakeValue === undefined ? undefined : Number(oralIntakeValue),
+        oral_intake_percent:
+          oralIntakeValue === undefined ? undefined : Number(oralIntakeValue),
         dietPattern: dietPatternValue,
         diet_pattern: dietPatternValue,
         processedFoodIntake: processedFoodValue,
@@ -497,6 +517,22 @@ function registerProfileRoutes(router, deps) {
           dryWeightValue === undefined ? undefined : Number(dryWeightValue),
         dry_weight_kg:
           dryWeightValue === undefined ? undefined : Number(dryWeightValue),
+        weightChangeOneMonthPercent:
+          weightChangeOneMonthValue === undefined
+            ? undefined
+            : Number(weightChangeOneMonthValue),
+        weight_change_1_month_percent:
+          weightChangeOneMonthValue === undefined
+            ? undefined
+            : Number(weightChangeOneMonthValue),
+        weightChangeSixMonthsPercent:
+          weightChangeSixMonthsValue === undefined
+            ? undefined
+            : Number(weightChangeSixMonthsValue),
+        weight_change_6_months_percent:
+          weightChangeSixMonthsValue === undefined
+            ? undefined
+            : Number(weightChangeSixMonthsValue),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
@@ -640,7 +676,15 @@ function registerProfileRoutes(router, deps) {
       const hasCalciumPhosphorusImbalance =
         step1?.has_calcium_phosphorus_imbalance ??
         step1?.hasCalciumPhosphorusImbalance;
-      const appetite = step3?.appetite ?? step3?.appetiteStatus ?? step2?.appetite;
+      const appetite =
+        step1?.appetite ??
+        step1?.appetiteStatus ??
+        step1?.appetite_status ??
+        step3?.appetite ??
+        step3?.appetiteStatus ??
+        step2?.appetite;
+      const oralIntakePercent =
+        step1?.oralIntakePercent ?? step1?.oral_intake_percent;
       const bmiStatus = step1?.bmi_status ?? step1?.bmiStatus;
       const muacStatus = step1?.muac_status ?? step1?.muacStatus;
       const ckdStage = step1?.ckdStage ?? step1?.ckd_stage;
@@ -831,6 +875,11 @@ function registerProfileRoutes(router, deps) {
       }
       if (appetite) {
         medicalProfilePayload.appetite = appetite;
+        medicalProfilePayload.appetiteStatus = appetite;
+      }
+      if (oralIntakePercent !== undefined && oralIntakePercent !== null) {
+        medicalProfilePayload.oralIntakePercent = Number(oralIntakePercent);
+        medicalProfilePayload.oral_intake_percent = Number(oralIntakePercent);
       }
       if (ckdType) {
         medicalProfilePayload.ckdType = ckdType;
@@ -931,7 +980,29 @@ function registerProfileRoutes(router, deps) {
         anthropometricPayload.weight = weightKg;
         anthropometricPayload.weight_kg = Number(weightKg);
       }
-      if (step1?.dryWeight) anthropometricPayload.dryWeight = step1.dryWeight;
+      const dryWeight = step1?.dryWeight ?? step1?.dry_weight_kg;
+      if (dryWeight !== undefined && dryWeight !== null) {
+        anthropometricPayload.dryWeight = Number(dryWeight);
+        anthropometricPayload.dry_weight_kg = Number(dryWeight);
+      }
+      const weightChangeOneMonth =
+        step1?.weightChangeOneMonthPercent ??
+        step1?.weight_change_1_month_percent;
+      if (weightChangeOneMonth !== undefined && weightChangeOneMonth !== null) {
+        anthropometricPayload.weightChangeOneMonthPercent =
+          Number(weightChangeOneMonth);
+        anthropometricPayload.weight_change_1_month_percent =
+          Number(weightChangeOneMonth);
+      }
+      const weightChangeSixMonths =
+        step1?.weightChangeSixMonthsPercent ??
+        step1?.weight_change_6_months_percent;
+      if (weightChangeSixMonths !== undefined && weightChangeSixMonths !== null) {
+        anthropometricPayload.weightChangeSixMonthsPercent =
+          Number(weightChangeSixMonths);
+        anthropometricPayload.weight_change_6_months_percent =
+          Number(weightChangeSixMonths);
+      }
       if (bmi) anthropometricPayload.bmi = Number(bmi);
       if (step1?.muac) anthropometricPayload.MUAC = step1.muac;
 

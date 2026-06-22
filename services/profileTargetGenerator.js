@@ -54,15 +54,37 @@ function normalizeCkdStage(value) {
   return match ? match[0] : "";
 }
 
+function isDialysisProfile(profile = {}) {
+  if (normalizeCkdStage(profile.ckd_stage ?? profile.ckdStage) === "5D") {
+    return true;
+  }
+  if (
+    isTruthy(
+      profile.isDialysis ??
+        profile.is_dialysis ??
+        profile.on_dialysis ??
+        profile.onDialysis,
+    )
+  ) {
+    return true;
+  }
+  const status = normalizeText(
+    profile.dialysis_status ?? profile.dialysisStatus ?? profile.dialysisType,
+  );
+  return status.includes("dialysis") &&
+    !status.includes("not on") &&
+    !status.includes("no dialysis") &&
+    !status.includes("pre-dialysis") &&
+    !status.includes("pre dialysis");
+}
+
 function hasCKDStage3to5(profile = {}) {
   const stage = normalizeCkdStage(profile.ckd_stage ?? profile.ckdStage);
-  return ["3", "4", "5", "5D"].includes(stage);
+  return !isDialysisProfile(profile) && ["3", "4", "5"].includes(stage);
 }
 
 function weightKg(profile = {}) {
-  const dialysis = isTruthy(
-    profile.isDialysis ?? profile.is_dialysis ?? profile.on_dialysis ?? profile.onDialysis,
-  );
+  const dialysis = isDialysisProfile(profile);
   const dryWeight = toNumber(profile.dry_weight_kg ?? profile.dryWeightKg ?? profile.dryWeight);
   const currentWeight = toNumber(profile.weight_kg ?? profile.weightKg ?? profile.weight);
   return dialysis && dryWeight ? dryWeight : currentWeight;
@@ -77,7 +99,7 @@ function gramsPerKgRangeToTarget(range, weight) {
 }
 
 function kcalPerKgRangeToTarget(range, weight) {
-  if (!weight) return null;
+  if (!weight || !Array.isArray(range)) return null;
   return {
     min_kcal: Math.round(range[0] * weight),
     max_kcal: Math.round(range[1] * weight),
@@ -85,17 +107,16 @@ function kcalPerKgRangeToTarget(range, weight) {
 }
 
 function calculateProteinTarget(patientData = {}) {
-  const dialysis = isTruthy(
-    patientData.isDialysis ??
-      patientData.is_dialysis ??
-      patientData.on_dialysis ??
-      patientData.onDialysis,
-  );
+  const dialysis = isDialysisProfile(patientData);
   const proteinCategory = normalizeText(
     patientData.proteinCategory ?? patientData.protein_category,
   );
 
   if (dialysis) return { label: "1.0-1.2 g/kg BW/day", range: [1.0, 1.2] };
+  const age = toNumber(patientData.age_years ?? patientData.ageYears ?? patientData.age);
+  if (age !== null && age >= 13 && age <= 14) {
+    return { label: "0.8-0.9 g/kg BW/day", range: [0.8, 0.9] };
+  }
   if (hasHighProteinRequirement(patientData)) {
     return { label: "1.2-1.5 g/kg BW/day", range: [1.2, 1.5] };
   }
@@ -108,19 +129,26 @@ function calculateProteinTarget(patientData = {}) {
   if (proteinCategory === "low protein") {
     return { label: "0.55-0.66 g/kg BW/day", range: [0.55, 0.66] };
   }
+  if (hasCKDStage3to5(patientData)) {
+    return { label: "0.6-0.8 g/kg BW/day", range: [0.6, 0.8] };
+  }
   return { label: "0.8-1.0 g/kg BW/day", range: [0.8, 1.0] };
 }
 
 function calculateCalorieTarget(patientData = {}) {
+  const age = toNumber(patientData.age_years ?? patientData.ageYears ?? patientData.age);
+  if (age !== null && age < 18) {
+    return {
+      label: "Pediatric target required",
+      range: null,
+      note: "Use a growth-aware pediatric or clinician-provided energy target",
+      display: "Pediatric calorie target required before meal planning.",
+    };
+  }
   const appetite = normalizeText(patientData.appetite ?? patientData.appetiteStatus);
   const bmiStatus = normalizeText(patientData.BMIStatus ?? patientData.bmi_status);
   const muacStatus = normalizeText(patientData.MUACStatus ?? patientData.muac_status);
-  const dialysis = isTruthy(
-    patientData.isDialysis ??
-      patientData.is_dialysis ??
-      patientData.on_dialysis ??
-      patientData.onDialysis,
-  );
+  const dialysis = isDialysisProfile(patientData);
 
   let note = "Use general CKD calorie support range";
   if (appetite === "poor" || appetite === "very poor") {
@@ -139,19 +167,7 @@ function calculateCalorieTarget(patientData = {}) {
   };
 }
 
-function calculateSodiumTarget(patientData = {}) {
-  const ckdType = normalizeText(
-    patientData.CKDType ??
-      patientData.ckd_type ??
-      patientData.ckdType ??
-      patientData.kidneyDiseaseType ??
-      patientData.kidney_disease_type ??
-      patientData.kidneyType,
-  );
-  const stage = normalizeCkdStage(patientData.CKDStage ?? patientData.ckd_stage ?? patientData.ckdStage);
-
-  if (ckdType === "ckd dkd" || ckdType === "dkd") return { label: "<3000 mg/day", limit_mg: 3000 };
-  if (stage === "5D") return { label: "<2300 mg/day", limit_mg: 2300 };
+function calculateSodiumTarget() {
   return { label: "<2000 mg/day", limit_mg: 2000 };
 }
 
@@ -188,7 +204,7 @@ function generateProfileTargets(profile = {}) {
     sex: profile.sex,
     ckd_stage: profile.ckd_stage ?? profile.ckdStage,
     dialysis_status:
-      isTruthy(profile.on_dialysis ?? profile.onDialysis ?? profile.isDialysis)
+      isDialysisProfile(profile)
         ? "On dialysis"
         : "Not on dialysis",
     bmi: toNumber(profile.bmi),
@@ -200,8 +216,12 @@ function generateProfileTargets(profile = {}) {
     calorie_target: calories.display,
     calorie_target_kcal_per_kg: calories.label,
     calorie_target_note: calories.note,
-    energy_target_min_kcal: calorieDaily.min_kcal,
-    energy_target_kcal: calorieDaily.max_kcal,
+    energy_target_min_kcal: calorieDaily?.min_kcal ?? null,
+    energy_target_kcal: calorieDaily?.max_kcal ?? null,
+    pediatric_mode:
+      (toNumber(profile.age_years ?? profile.ageYears ?? profile.age) ?? 18) < 18,
+    requires_growth_assessment: false,
+    growth_assessment_source: "historical_anthropometrics",
     sodium_target: sodium.label,
     sodium_target_mg: sodium.limit_mg,
     potassium_target: potassium.label,
@@ -218,7 +238,7 @@ function generateProfileTargets(profile = {}) {
       "Nutrition Summary",
       `CKD Stage: ${profile.ckd_stage ?? profile.ckdStage ?? "Not specified"}`,
       `Dialysis Status: ${
-        isTruthy(profile.on_dialysis ?? profile.onDialysis ?? profile.isDialysis)
+        isDialysisProfile(profile)
           ? "On dialysis"
           : "Not on dialysis"
       }`,

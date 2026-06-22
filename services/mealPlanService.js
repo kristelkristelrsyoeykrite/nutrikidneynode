@@ -634,7 +634,54 @@ function normalizedLabStatus(value, numericValue, highThreshold) {
   return labStatus(numericValue, highThreshold);
 }
 
-function proteinPrescription({ weightKg, dialysisStatus, ckdType, prescribedProtein }) {
+function potassiumControlLevel(value, numericValue) {
+  const potassium = numberOrNull(numericValue);
+  if (potassium !== null) {
+    if (potassium > 6.0) return "Danger";
+    if (potassium >= 5.1) return "Caution";
+    return "Safe";
+  }
+  const normalized = normalizeTextToken(value);
+  if (normalized.includes("danger")) return "Danger";
+  if (["caution", "high", "elevated"].some((item) => normalized.includes(item))) {
+    return "Caution";
+  }
+  if (["safe", "normal", "within range"].some((item) => normalized.includes(item))) {
+    return "Safe";
+  }
+  return "Unknown";
+}
+
+function glycemicControlLevel({ glucose, hba1c, hasDiabetes }) {
+  if ((hba1c !== null && hba1c >= 9) || (glucose !== null && glucose >= 180)) {
+    return "High";
+  }
+  if (
+    isAffirmative(hasDiabetes) ||
+    (hba1c !== null && hba1c >= 6.5) ||
+    (glucose !== null && glucose > 126)
+  ) {
+    return "Elevated";
+  }
+  return "Normal";
+}
+
+function glucoseInMgDl(value, unit) {
+  const glucose = numberOrNull(value);
+  if (glucose === null) return null;
+  const normalizedUnit = normalizeTextToken(unit);
+  return normalizedUnit.includes("mmol")
+    ? Number((glucose * 18.0182).toFixed(1))
+    : glucose;
+}
+
+function proteinPrescription({
+  weightKg,
+  dialysisStatus,
+  ckdType,
+  prescribedProtein,
+  ageYears,
+}) {
   const prescribed = numberOrNull(prescribedProtein);
   if (prescribed !== null && prescribed > 0) {
     return { gramsPerDay: prescribed, factor: null, source: "clinician_target" };
@@ -646,6 +693,17 @@ function proteinPrescription({ weightKg, dialysisStatus, ckdType, prescribedProt
   }
 
   const dialysis = isDialysisStatus(dialysisStatus);
+  const age = numberOrNull(ageYears);
+  if (!dialysis && age !== null && age >= 13 && age <= 14) {
+    return {
+      gramsPerDay: Number((weight * 0.85).toFixed(1)),
+      minGramsPerDay: Number((weight * 0.8).toFixed(1)),
+      maxGramsPerDay: Number((weight * 0.9).toFixed(1)),
+      factor: 0.85,
+      factorRange: [0.8, 0.9],
+      source: "pediatric_sdi_age_13_14",
+    };
+  }
   const type = normalizeTextToken(ckdType);
   const status = normalizeTextToken(dialysisStatus);
   const preDialysis =
@@ -725,7 +783,13 @@ async function buildChildContext(userId, requestedChildProfileId) {
 
   return {
     child_profile_id: childProfileId,
-    age: numberOrNull(profileOwner?.age ?? medicalProfile?.age),
+    age: numberOrNull(
+      profileOwner?.ageYears ??
+        profileOwner?.age_years ??
+        profileOwner?.age ??
+        medicalProfile?.age,
+    ),
+    sex: profileOwner?.sex ?? profileOwner?.gender ?? medicalProfile?.sex ?? null,
     ckd_stage:
       medicalProfile?.ckdStage ||
       medicalProfile?.ckd_stage ||
@@ -751,6 +815,10 @@ async function buildChildContext(userId, requestedChildProfileId) {
     diet_pattern:
       medicalProfile?.dietPattern ||
       medicalProfile?.diet_pattern ||
+      "unknown",
+    physical_activity_level:
+      medicalProfile?.physicalActivityLevel ||
+      medicalProfile?.physical_activity_level ||
       "unknown",
     fluid_restriction_status: fluidRestrictionStatus,
     is_post_transplant: postTransplantStatus,
@@ -844,6 +912,44 @@ function bmiCategory(bmi) {
   return "Overweight";
 }
 
+function pediatricBmiCategory(percentile, sds) {
+  const parsedPercentile = numberOrNull(percentile);
+  if (parsedPercentile !== null) {
+    if (parsedPercentile < 5) return "Below healthy range for age";
+    if (parsedPercentile < 85) return "Healthy range for age";
+    if (parsedPercentile < 95) return "Elevated BMI-for-age";
+    return "High BMI-for-age";
+  }
+  const parsedSds = numberOrNull(sds);
+  if (parsedSds !== null) {
+    if (parsedSds < -2) return "Below healthy range for age";
+    if (parsedSds < 1) return "Healthy range for age";
+    if (parsedSds < 2) return "Elevated BMI-for-age";
+    return "High BMI-for-age";
+  }
+  return "Growth assessment not yet available";
+}
+
+function provisionalPediatricEnergyTarget({ ageYears, sex, weightKg, heightCm, activityLevel }) {
+  const age = numberOrNull(ageYears);
+  const weight = numberOrNull(weightKg);
+  const height = numberOrNull(heightCm);
+  if (age === null || weight === null || height === null || height <= 0) return null;
+  const normalizedSex = normalizeTextToken(sex);
+  const female = sex === 2 || normalizedSex === "2" || normalizedSex === "female";
+  const male = sex === 1 || normalizedSex === "1" || normalizedSex === "male";
+  if (!female && !male) return null;
+  const activity = normalizeTextToken(activityLevel);
+  const pa = female
+    ? activity.includes("very") ? 1.56 : activity.includes("moderate") || activity.includes("active") ? 1.31 : activity.includes("light") ? 1.16 : 1
+    : activity.includes("very") ? 1.42 : activity.includes("moderate") || activity.includes("active") ? 1.26 : activity.includes("light") ? 1.13 : 1;
+  const heightMeters = height / 100;
+  const estimate = female
+    ? 135.3 - 30.8 * age + pa * (10 * weight + 934 * heightMeters) + 25
+    : 88.5 - 61.9 * age + pa * (26.7 * weight + 903 * heightMeters) + 25;
+  return Math.max(1, Math.round(estimate));
+}
+
 function containsAny(text, words = []) {
   const normalized = normalizeTextToken(text);
   return words.some((word) => {
@@ -898,8 +1004,11 @@ function buildIngredientRules(profile = {}, childContext = {}) {
     addUnique(allowed, CKD_INGREDIENT_GUIDE[category]);
   }
 
-  if (profile.potassiumStatus === "High") {
+  if (profile.potassiumControlLevel === "Danger") {
     addUnique(blocked, CKD_INGREDIENT_GUIDE.highPotassium);
+  }
+  if (["Caution", "Danger"].includes(profile.potassiumControlLevel)) {
+    addUnique(blocked, ["potassium additive", "potassium chloride"]);
   }
   if (profile.phosphorusStatus === "High") {
     addUnique(blocked, CKD_INGREDIENT_GUIDE.highPhosphorus);
@@ -1059,7 +1168,7 @@ function buildNutritionProfile({
     firstPresent(labs, ["CKD_Stage_eGFR", "ckdStageEgfr", "ckd_stage"]) ||
       childContext.ckd_stage,
   );
-  const weightKg = numberOrNull(
+  const currentWeightKg = numberOrNull(
     firstPresent(anthropometrics, ["weight_kg", "weightKg", "weight"]) ||
       firstPresent(medicalProfile, ["weight_kg", "weightKg", "weight"]),
   );
@@ -1067,14 +1176,54 @@ function buildNutritionProfile({
     firstPresent(anthropometrics, ["bmi", "BMI"]) ||
       firstPresent(medicalProfile, ["bmi", "BMI"]),
   );
+  const heightCm = numberOrNull(
+    firstPresent(anthropometrics, ["height_cm", "heightCm", "height"]) ||
+      firstPresent(medicalProfile, ["height_cm", "heightCm", "height"]),
+  );
   const dialysisStatus = childContext.dialysis_status || "unknown";
+  const ageYears = numberOrNull(
+    childContext.age ?? firstPresent(medicalProfile, ["ageYears", "age_years", "age"]),
+  );
+  const pediatricMode = ageYears !== null && ageYears < 18;
+  const bmiForAgePercentile = numberOrNull(
+    firstPresent(anthropometrics, ["bmiForAgePercentile", "bmi_for_age_percentile"]),
+  );
+  const bmiForAgeSds = numberOrNull(
+    firstPresent(anthropometrics, ["bmiForAgeSds", "bmi_for_age_sds", "bmiForAgeZScore"]),
+  );
+  const growthTrend = firstPresent(anthropometrics, ["growthTrend", "growth_trend"]);
+  const growthAssessmentAvailable =
+    bmiForAgePercentile !== null || bmiForAgeSds !== null || Boolean(growthTrend);
+  const prescribedCalories = numberOrNull(childContext.targets?.calories);
+  const provisionalPediatricCalories = pediatricMode
+    ? provisionalPediatricEnergyTarget({
+        ageYears,
+        sex: childContext.sex,
+        weightKg: currentWeightKg,
+        heightCm,
+        activityLevel: childContext.physical_activity_level,
+      })
+    : null;
+  const dryWeightKg = numberOrNull(
+    firstPresent(anthropometrics, ["dry_weight_kg", "dryWeightKg", "dryWeight"]),
+  );
+  const weightKg = isDialysisStatus(dialysisStatus) && dryWeightKg !== null
+    ? dryWeightKg
+    : currentWeightKg;
   const protein = proteinPrescription({
     weightKg,
+    currentWeightKg,
+    dryWeightKg,
     dialysisStatus,
     ckdType: childContext.ckd_type,
     prescribedProtein: childContext.targets?.protein_max,
+    ageYears,
   });
-  const glucose = numberOrNull(firstPresent(labs, ["glucose", "fastingGlucose"]));
+  const glucoseUnit = firstPresent(labs, ["glucose_unit", "glucoseUnit"]) || "mg/dL";
+  const glucose = glucoseInMgDl(
+    firstPresent(labs, ["glucose", "fastingGlucose"]),
+    glucoseUnit,
+  );
   const hba1c = numberOrNull(firstPresent(labs, ["HbA1c", "hba1c", "hemoglobinA1c"]));
   const serumAlbumin = numberOrNull(
     firstPresent(labs, ["serum_albumin", "serumAlbumin", "albumin"]),
@@ -1082,15 +1231,50 @@ function buildNutritionProfile({
   const totalProtein = numberOrNull(
     firstPresent(labs, ["total_protein", "totalProtein"]),
   );
+  const potassiumValue = numberOrNull(firstPresent(labs, ["potassium", "K"]));
+  const potassiumLevel = potassiumControlLevel(
+    firstPresent(labs, ["potassium_status", "potassiumStatus"]),
+    potassiumValue,
+  );
+  const glycemicLevel = glycemicControlLevel({
+    glucose,
+    hba1c,
+    hasDiabetes: childContext.has_diabetes,
+  });
+  const appetite = normalizeTextToken(
+    firstPresent(medicalProfile, ["appetite", "appetiteStatus", "appetite_status"]),
+  );
+  const oralIntakePercent = numberOrNull(
+    firstPresent(medicalProfile, ["oralIntakePercent", "oral_intake_percent"]),
+  );
+  const weightChangeOneMonthPercent = numberOrNull(
+    firstPresent(anthropometrics, ["weightChangeOneMonthPercent", "weight_change_1_month_percent"]),
+  );
+  const weightChangeSixMonthsPercent = numberOrNull(
+    firstPresent(anthropometrics, ["weightChangeSixMonthsPercent", "weight_change_6_months_percent"]),
+  );
+  const poorAppetite = ["poor", "very poor"].includes(appetite);
+  const weightLossRisk =
+    (weightChangeOneMonthPercent !== null && weightChangeOneMonthPercent <= -5) ||
+    (weightChangeSixMonthsPercent !== null && weightChangeSixMonthsPercent <= -10);
+  const riskMalnutrition =
+    (serumAlbumin !== null && serumAlbumin < 3.5) ||
+    (totalProtein !== null && totalProtein < 6.0) ||
+    poorAppetite ||
+    (oralIntakePercent !== null && oralIntakePercent < 75) ||
+    weightLossRisk;
 
   return {
     stage,
     egfr,
-    potassiumStatus: normalizedLabStatus(
-      firstPresent(labs, ["potassium_status", "potassiumStatus"]),
-      firstPresent(labs, ["potassium", "K"]),
-      5.0,
-    ),
+    serumPotassium: potassiumValue,
+    potassiumControlLevel: potassiumLevel,
+    potassiumStatus:
+      potassiumLevel === "Safe"
+        ? "Normal"
+        : potassiumLevel === "Unknown"
+          ? "Unknown"
+          : "High",
     phosphorusStatus: normalizedLabStatus(
       firstPresent(labs, ["phosphorus_status", "phosphorusStatus"]),
       firstPresent(labs, ["phosphorus", "phosphate"]),
@@ -1101,21 +1285,63 @@ function buildNutritionProfile({
       firstPresent(labs, ["sodium", "Na"]),
       145,
     ),
-    diabetesRisk:
-      isAffirmative(childContext.has_diabetes) ||
-      (hba1c !== null && hba1c >= 6.5) ||
-      (glucose !== null && glucose > 126),
-    bmiCategory: bmiCategory(bmi),
+    glucose,
+    glucoseUnit: "mg/dL",
+    hba1c,
+    glycemicControlLevel: glycemicLevel,
+    carbohydratePortionScale:
+      glycemicLevel === "High" ? 0.5 : glycemicLevel === "Elevated" ? 0.75 : 1,
+    fruitPortionScale:
+      glycemicLevel === "High" ? 0.5 : glycemicLevel === "Elevated" ? 0.75 : 1,
+    snackFrequency: glycemicLevel === "High" ? 1 : 2,
+    diabetesRisk: glycemicLevel !== "Normal",
+    ageYears,
+    sex: childContext.sex || null,
+    pediatricMode,
+    planMode: pediatricMode ? "growth-aware" : "adult",
+    requireGrowthAssessment: false,
+    bmiForAgePercentile,
+    bmiForAgeSds,
+    growthTrend,
+    growthAssessmentComplete: !pediatricMode || growthAssessmentAvailable,
+    growthAssessmentStatus: pediatricMode && !growthAssessmentAvailable
+      ? "Not yet available"
+      : "Available",
+    growthAssessmentSource: "historical_anthropometrics",
+    growthInformation: pediatricMode && !growthAssessmentAvailable
+      ? [
+          "Growth assessment is not yet available.",
+          "Additional height and weight measurements are needed to evaluate growth trends.",
+          "Meal planning remains available using the current profile and laboratory results.",
+        ]
+      : [],
+    warnings: [],
+    mealPlanningAvailable: true,
+    bmiCategory: pediatricMode
+      ? pediatricBmiCategory(bmiForAgePercentile, bmiForAgeSds)
+      : bmiCategory(bmi),
     proteinTarget: protein.gramsPerDay,
+    proteinTargetMin: protein.minGramsPerDay || protein.gramsPerDay,
+    proteinTargetMax: protein.maxGramsPerDay || protein.gramsPerDay,
     proteinFactor: protein.factor,
     proteinTargetSource: protein.source,
-    calorieTarget:
-      numberOrNull(childContext.targets?.calories) ||
-      1800,
-    riskMalnutrition:
-      (serumAlbumin !== null && serumAlbumin < 3.5) ||
-      (totalProtein !== null && totalProtein < 6.0),
+    calorieTarget: prescribedCalories || provisionalPediatricCalories || (pediatricMode ? null : 1800),
+    calorieTargetSource: prescribedCalories
+      ? "profile_or_clinician_target"
+      : provisionalPediatricCalories
+        ? "provisional_pediatric_eer"
+        : pediatricMode
+          ? "pediatric_estimate_unavailable"
+          : "adult_application_fallback",
+    poorAppetite,
+    oralIntakePercent,
+    weightChangeOneMonthPercent,
+    weightChangeSixMonthsPercent,
+    weightLossRisk,
+    riskMalnutrition,
     weightKg,
+    currentWeightKg,
+    heightCm,
     bmi,
     ckdType: childContext.ckd_type,
     dialysisStatus,
@@ -1129,8 +1355,11 @@ function buildFoodRestrictions(profile) {
   const avoid = new Set(["soy sauce", "fish sauce", "bagoong", "processed", "fast food"]);
   const prefer = new Set(["apple", "grapes", "cabbage", "cauliflower", "lettuce", "radish"]);
 
-  if (profile.potassiumStatus === "High") {
+  if (profile.potassiumControlLevel === "Danger") {
     ["banana", "avocado", "orange", "melon", "potato", "sweet potato", "spinach", "tomato paste"].forEach((item) => avoid.add(item));
+  }
+  if (["Caution", "Danger"].includes(profile.potassiumControlLevel)) {
+    ["apple", "berries", "grapes", "cabbage", "cauliflower"].forEach((item) => prefer.add(item));
   }
   if (profile.phosphorusStatus === "High") {
     ["nuts", "beans", "cola", "cheese", "organ meat"].forEach((item) => avoid.add(item));
@@ -1146,8 +1375,11 @@ function buildFoodRestrictions(profile) {
 
   return {
     dailySodiumLimitMg: profile.sodiumLimitMg || 2000,
-    dailyPotassiumLimitMg: profile.potassiumLimitMg || null,
-    dailyPhosphorusLimitMg: profile.phosphorusLimitMg || null,
+    dailyPotassiumLimitMg:
+      ["Caution", "Danger"].includes(profile.potassiumControlLevel)
+        ? profile.potassiumLimitMg || 3000
+        : null,
+    dailyPhosphorusLimitMg: profile.phosphorusLimitMg || 1000,
     avoid: [...avoid],
     prefer: [...prefer],
   };
@@ -1356,7 +1588,7 @@ function buildGuideTags(profile) {
   if (profile.potassiumStatus === "High") tags.push("low potassium");
   if (profile.phosphorusStatus === "High") tags.push("low phosphorus");
   if (profile.diabetesRisk) tags.push("diabetic friendly");
-  if (profile.riskMalnutrition) tags.push("high protein");
+  if (profile.riskMalnutrition) tags.push("nutrition support");
   return tags;
 }
 
@@ -1405,8 +1637,7 @@ function scoreMealCandidate(food, mealType, profile, restrictions) {
   if (profile.potassiumStatus === "High" && potassium > 500) score -= 20;
   if (profile.phosphorusStatus === "High" && phosphorus > 250) score -= 20;
   if (profile.diabetesRisk && containsAny(foodText, ["sweet", "sugar", "syrup", "dessert"])) score -= 20;
-  if (profile.riskMalnutrition && protein >= 8) score += 15;
-  if (targets.protein && protein > targets.protein * 1.4 && !profile.riskMalnutrition) score -= 10;
+  if (targets.protein && protein > targets.protein * 1.4) score -= 10;
   if (knownNutrients >= 4) score += 10;
   if (knownNutrients <= 2) score -= 12;
   if (containsAny(foodText, restrictions.prefer)) score += 10;
@@ -2836,6 +3067,11 @@ async function computePortionedMeal(
       servings = targetProtein / proteinPerServing;
     } else {
       servings = guidelineServingMultiplier(role, food, mealType, servings);
+      if (role === "carb") {
+        servings *= numberOrNull(nutritionProfile?.carbohydratePortionScale) || 1;
+      } else if (role === "fruit") {
+        servings *= numberOrNull(nutritionProfile?.fruitPortionScale) || 1;
+      }
     }
 
     const roundedServings = Number(servings.toFixed(6));
@@ -3876,6 +4112,20 @@ async function generateMealPlan(body = {}) {
     labs: latestLabs,
     anthropometrics,
   });
+  const missingPediatricInputs = [
+    ["age", nutritionProfile.ageYears],
+    ["sex", nutritionProfile.sex],
+    ["weight", nutritionProfile.currentWeightKg],
+    ["height", nutritionProfile.heightCm],
+  ].filter(([, value]) => value === null || value === undefined || value === "");
+  if (missingPediatricInputs.length) {
+    const error = new Error(
+      `Missing required pediatric profile fields: ${missingPediatricInputs.map(([name]) => name).join(", ")}.`,
+    );
+    error.statusCode = 422;
+    error.code = "pediatric_profile_incomplete";
+    throw error;
+  }
   nutritionProfile.sodiumLimitMg = numberOrNull(childContext.targets?.sodium);
   nutritionProfile.potassiumLimitMg =
     nutritionProfile.potassiumStatus === "High"
@@ -3894,7 +4144,9 @@ async function generateMealPlan(body = {}) {
     buildFoodRestrictions(nutritionProfile),
     history,
   );
-  const mealTypes = ["Breakfast", "AM Snack", "Lunch", "PM Snack", "Dinner"];
+  const mealTypes = nutritionProfile.snackFrequency === 1
+    ? ["Breakfast", "AM Snack", "Lunch", "Dinner"]
+    : ["Breakfast", "AM Snack", "Lunch", "PM Snack", "Dinner"];
   mealPlanDebug("GENERATION_START", {
     planDate,
     planDays,
@@ -4054,7 +4306,7 @@ async function generateMealPlan(body = {}) {
       ingredientRelations: history.ingredientRelations,
       messages: history.messages,
     },
-    mealStructure: ["Breakfast", "AM Snack", "Lunch", "PM Snack", "Dinner"],
+    mealStructure: mealTypes,
     days,
     meals,
     totals,
@@ -4232,6 +4484,7 @@ module.exports = {
   resolvePortionedMealFromTemplates,
   buildNutritionProfile,
   buildIngredientRules,
+  buildFoodRestrictions,
   guideFoodPool,
   guideFoodTemplates,
   portionTemplateCandidates,

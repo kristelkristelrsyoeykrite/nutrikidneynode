@@ -74,6 +74,14 @@ function registerRecordRoutes(router, deps) {
     else if (metric === "egfr") {
       updates.egfr = null;
       updates.eGFR = null;
+    } else if ([
+      "rbc", "wbc", "glucose", "urine_creatinine", "urine_albumin",
+      "hba1c", "hemoglobin", "hematocrit", "platelets",
+    ].includes(metric)) {
+      updates[metric] = null;
+      if (metric === "urine_creatinine") updates.urineCreatinine = null;
+      if (metric === "urine_albumin") updates.urineAlbumin = null;
+      if (metric === "hba1c") updates.HbA1c = null;
     } else {
       throw new Error("Unsupported lab result type");
     }
@@ -89,6 +97,18 @@ function registerRecordRoutes(router, deps) {
       "calcium",
       "egfr",
       "eGFR",
+      "rbc",
+      "wbc",
+      "glucose",
+      "urine_creatinine",
+      "urineCreatinine",
+      "urine_albumin",
+      "urineAlbumin",
+      "hba1c",
+      "HbA1c",
+      "hemoglobin",
+      "hematocrit",
+      "platelets",
     ].some((field) => {
       const value = labResult[field];
       return value !== undefined && value !== null && value !== "";
@@ -399,6 +419,18 @@ function registerRecordRoutes(router, deps) {
       } else if (metric === "egfr") {
         labResultPayload.egfr = storedValue;
         labResultPayload.eGFR = storedValue;
+      } else if ([
+        "rbc", "wbc", "glucose", "urine_creatinine", "urine_albumin",
+        "hba1c", "hemoglobin", "hematocrit", "platelets",
+      ].includes(metric)) {
+        labResultPayload[metric] = storedValue;
+        if (metric === "urine_creatinine") {
+          labResultPayload.urineCreatinine = storedValue;
+        }
+        if (metric === "urine_albumin") {
+          labResultPayload.urineAlbumin = storedValue;
+        }
+        if (metric === "hba1c") labResultPayload.HbA1c = storedValue;
       } else {
         throw new Error("Unsupported lab result type");
       }

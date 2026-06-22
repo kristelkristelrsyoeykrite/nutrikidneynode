@@ -13,6 +13,7 @@ const {
   resolvePortionedMealFromTemplates,
   buildNutritionProfile,
   buildIngredientRules,
+  buildFoodRestrictions,
   guideFoodPool,
   guideFoodTemplates,
   portionTemplateCandidates,
@@ -23,12 +24,15 @@ const {
   buildMealTitle,
   buildIngredientList,
 } = require("../services/portionControlService");
+const {
+  calculateProteinTarget,
+} = require("../services/profileTargetGenerator");
 
-function food(name, nutrients = {}) {
+function food(name, nutrients = {}, servingDescription = "100 g") {
   const result = {
     foodId: name.toLowerCase().replace(/\s+/g, "-"),
     name,
-    servingDescription: "100 g",
+    servingDescription,
     calories: 100,
     protein: 2,
     carbohydrate: 10,
@@ -60,7 +64,18 @@ const foods = {
   rice: food("Rice", { calories: 130, protein: 2.5, carbohydrate: 28 }),
   cabbage: food("Cabbage", { calories: 25, protein: 1.3, carbohydrate: 6 }),
   apple: food("Apple", { calories: 52, protein: 0.3, carbohydrate: 14 }),
-  "olive oil": food("Olive Oil", { calories: 119, protein: 0, carbohydrate: 0, fat: 13.5 }),
+  grapes: food("Grapes", { calories: 69, protein: 0.7, carbohydrate: 18.1 }),
+  egg: food("Egg", { calories: 143, protein: 12.6, carbohydrate: 0.7, fat: 9.5 }),
+  tilapia: food("Tilapia", { calories: 128, protein: 26.2, carbohydrate: 0, fat: 2.7 }),
+  "olive oil": food("Olive Oil", {
+    calories: 119,
+    protein: 0,
+    carbohydrate: 0,
+    fat: 13.5,
+    sodium: 0,
+    potassium: 0,
+    phosphorus: 0,
+  }, "1 tbsp"),
 };
 
 function adapters(overrides = {}) {
@@ -157,6 +172,242 @@ async function testProfileTargetsTakePrecedence() {
   assert.strictEqual(profile.diabetesRisk, true);
   assert.strictEqual(profile.potassiumStatus, "High");
   assert.strictEqual(profile.dailyFluidLimitMl, 900);
+}
+
+async function testClinicalRiskClassification() {
+  const safe = buildNutritionProfile({
+    childContext: { dialysis_status: "Not on dialysis", ckd_type: "CKD" },
+    labs: { potassium: 5.0, glucose: 100, hba1c: 5.4 },
+    anthropometrics: { weight_kg: 50 },
+  });
+  assert.strictEqual(safe.potassiumControlLevel, "Safe");
+  assert.strictEqual(safe.potassiumStatus, "Normal");
+  assert.strictEqual(safe.glycemicControlLevel, "Normal");
+
+  const caution = buildNutritionProfile({
+    childContext: { dialysis_status: "Not on dialysis", ckd_type: "CKD" },
+    labs: { potassium: 5.5, glucose: 140, hba1c: 7.2 },
+    anthropometrics: { weight_kg: 50 },
+  });
+  assert.strictEqual(caution.potassiumControlLevel, "Caution");
+  assert.strictEqual(caution.carbohydratePortionScale, 0.75);
+  assert.strictEqual(guideFoodPool("fruits", buildIngredientRules(caution, {})).includes("banana"), true);
+  assert.strictEqual(buildFoodRestrictions(caution).prefer.includes("banana"), false);
+
+  const mmolGlucose = buildNutritionProfile({
+    childContext: { dialysis_status: "Not on dialysis", ckd_type: "CKD" },
+    labs: { glucose: 10, glucose_unit: "mmol/L" },
+    anthropometrics: { weight_kg: 50 },
+  });
+  assert.strictEqual(mmolGlucose.glucose, 180.2);
+  assert.strictEqual(mmolGlucose.glycemicControlLevel, "High");
+
+  const danger = buildNutritionProfile({
+    childContext: { dialysis_status: "On dialysis", ckd_type: "CKD" },
+    medicalProfile: { appetite: "Poor", oral_intake_percent: 60 },
+    labs: { potassium: 6.1, glucose: 190, hba1c: 9.1 },
+    anthropometrics: {
+      weight_kg: 55,
+      dry_weight_kg: 50,
+      weight_change_1_month_percent: -6,
+    },
+  });
+  assert.strictEqual(danger.potassiumControlLevel, "Danger");
+  assert.strictEqual(danger.weightKg, 50);
+  assert.strictEqual(danger.riskMalnutrition, true);
+  assert.strictEqual(danger.snackFrequency, 1);
+  assert.strictEqual(guideFoodPool("fruits", buildIngredientRules(danger, {})).includes("banana"), false);
+}
+
+async function testDialysisNeverUsesLowProteinBranch() {
+  assert.deepStrictEqual(
+    calculateProteinTarget({ ckdStage: "5D", onDialysis: true }).range,
+    [1.0, 1.2],
+  );
+  assert.deepStrictEqual(
+    calculateProteinTarget({ ckdStage: "5D" }).range,
+    [1.0, 1.2],
+  );
+  assert.deepStrictEqual(
+    calculateProteinTarget({ ckdStage: "5", dialysisStatus: "Hemodialysis" }).range,
+    [1.0, 1.2],
+  );
+  assert.deepStrictEqual(
+    calculateProteinTarget({ ckdStage: "5", onDialysis: true, hasDiabetes: true }).range,
+    [1.0, 1.2],
+  );
+  assert.deepStrictEqual(
+    calculateProteinTarget({ ckdStage: "5", onDialysis: false }).range,
+    [0.6, 0.8],
+  );
+}
+
+async function testPediatricRowUsesProvisionalGrowthAwarePlanning() {
+  const profile = buildNutritionProfile({
+    childContext: {
+      age: 14,
+      sex: 2,
+      race_ethnicity: 2,
+      dmdeduc: null,
+      indfmpir: 0.52,
+      dialysis_status: "Not on dialysis",
+      ckd_type: "unknown",
+      has_diabetes: false,
+      targets: {},
+    },
+    medicalProfile: { appetite: "Good" },
+    anthropometrics: {
+      weight_kg: 42.1,
+      height_cm: 150.2,
+      bmi: 18.7,
+      waist_cm: 73.5,
+    },
+    labs: {
+      eGFR_CKD_EPI: 140.22,
+      creatinine: 0.54,
+      bun: 10,
+      uric_acid: 3.2,
+      glucose: 86,
+      glucose_unit: "mg/dL",
+      serum_albumin: 4,
+      total_protein: 7.2,
+      phosphorus: 4.1,
+      sodium: 142,
+      potassium: 3.8,
+      bicarbonate: 24,
+      calcium: 9.5,
+      urine_albumin: 6.97,
+      urine_creatinine: 39,
+      acr: 17.87,
+      hba1c: 5.1,
+      hemoglobin: 11.7,
+      hematocrit: 34,
+      wbc: 8.5,
+      rbc: 4.25,
+      platelets: 344,
+      total_cholesterol: 133,
+    },
+  });
+
+  assert.strictEqual(profile.pediatricMode, true);
+  assert.strictEqual(profile.planMode, "growth-aware");
+  assert.strictEqual(profile.bmiCategory, "Growth assessment not yet available");
+  assert.strictEqual(profile.growthAssessmentComplete, false);
+  assert.strictEqual(profile.calorieTarget, 1553);
+  assert.strictEqual(profile.calorieTargetSource, "provisional_pediatric_eer");
+  assert.strictEqual(profile.warnings.length, 0);
+  assert.strictEqual(profile.growthInformation.length, 3);
+  assert.strictEqual(profile.growthAssessmentStatus, "Not yet available");
+  assert.strictEqual(profile.mealPlanningAvailable, true);
+  assert.strictEqual(profile.proteinTargetMin, 33.7);
+  assert.strictEqual(profile.proteinTarget, 35.8);
+  assert.strictEqual(profile.proteinTargetMax, 37.9);
+  assert.strictEqual(profile.potassiumControlLevel, "Safe");
+  assert.strictEqual(profile.glycemicControlLevel, "Normal");
+}
+
+async function testPediatricRowCanGenerateMealPlan() {
+  const profile = buildNutritionProfile({
+    childContext: {
+      age: 14,
+      sex: 2,
+      dialysis_status: "Not on dialysis",
+      ckd_type: "unknown",
+      has_diabetes: false,
+      physical_activity_level: "unknown",
+      targets: {},
+    },
+    medicalProfile: { appetite: "Good" },
+    anthropometrics: { weight_kg: 42.1, height_cm: 150.2, bmi: 18.7 },
+    labs: {
+      eGFR_CKD_EPI: 140.22,
+      glucose: 86,
+      glucose_unit: "mg/dL",
+      serum_albumin: 4,
+      total_protein: 7.2,
+      phosphorus: 4.1,
+      sodium: 142,
+      potassium: 3.8,
+      hba1c: 5.1,
+    },
+  });
+  const restrictions = buildFoodRestrictions(profile);
+  const templates = [
+    { mealType: "Breakfast", protein: "egg", carb: "rice", fruit: "apple" },
+    { mealType: "AM Snack", fruit: "apple" },
+    { mealType: "Lunch", protein: "chicken", carb: "rice", vegetable: "cabbage", fat: "olive oil" },
+    { mealType: "PM Snack", fruit: "grapes" },
+    { mealType: "Dinner", protein: "tilapia", carb: "rice", vegetable: "cabbage", fat: "olive oil" },
+  ];
+  const meals = [];
+  for (const template of templates) {
+    const meal = await resolvePortionedMealFromTemplates({
+      templates: [template],
+      nutritionProfile: profile,
+      restrictions,
+      nutrientBudgets: {
+        sodium: restrictions.dailySodiumLimitMg,
+        phosphorus: restrictions.dailyPhosphorusLimitMg,
+      },
+      existingMeals: meals,
+      date: "2026-06-22",
+      compute: (candidate, dailyTargets, nutritionProfile, mealRestrictions, options) =>
+        computePortionedMeal(candidate, dailyTargets, nutritionProfile, mealRestrictions, {
+          ...options,
+          adapters: adapters(),
+          maxVariants: 1,
+        }),
+    });
+    assert.ok(meal, `${template.mealType} should resolve`);
+    meals.push(meal);
+  }
+  const balanced = balanceDailyCalories(
+    meals,
+    profile.calorieTarget,
+    8,
+    profile,
+    restrictions,
+  );
+  const safety = enforceDailySafetyLimits(
+    balanced.meals,
+    profile,
+    restrictions,
+  );
+  if (process.env.PRINT_PEDIATRIC_PLAN === "true") {
+    console.log("PEDIATRIC_PLAN_RESULT", JSON.stringify({
+      profile: {
+        calorieTarget: profile.calorieTarget,
+        proteinTargetMin: profile.proteinTargetMin,
+        proteinTarget: profile.proteinTarget,
+        proteinTargetMax: profile.proteinTargetMax,
+        growthAssessmentStatus: profile.growthAssessmentStatus,
+        growthInformation: profile.growthInformation,
+      },
+      meals: safety.meals.map((meal) => ({
+        mealType: meal.mealType,
+        name: meal.name,
+        calories: meal.calories,
+        protein: meal.protein,
+        carbohydrate: meal.carbohydrate,
+        fat: meal.fat,
+        sodium: meal.sodium,
+        potassium: meal.potassium,
+        phosphorus: meal.phosphorus,
+        portions: (meal.componentBreakdown || []).map((component) => ({
+          role: component.role || component.component,
+          name: component.name || component.ingredient,
+          portion: component.portion,
+          servings: component.numberOfServings ?? component.servings,
+        })),
+      })),
+      totals: safety.totals,
+      validation: safety.validation,
+    }, null, 2));
+  }
+  assert.strictEqual(safety.meals.length, 5);
+  assert.strictEqual(safety.validation.allSafetyLimitsMet, true);
+  assert.ok(safety.totals.calories > 0);
+  assert.strictEqual(typeof safety.validation.caloriesWithinTarget, "boolean");
 }
 
 async function testManualPortionsAndProteinSplit() {
@@ -698,7 +949,7 @@ async function testPhilippineGuideFoodListAndVariety() {
   assert.ok(selectedFats.size > 3);
 
   const highPotassiumRules = buildIngredientRules(
-    { potassiumStatus: "High", phosphorusStatus: "Normal" },
+    { potassiumStatus: "High", potassiumControlLevel: "Danger", phosphorusStatus: "Normal" },
     {},
   );
   assert.strictEqual(guideFoodPool("fruits", highPotassiumRules).includes("banana"), false);
@@ -716,6 +967,10 @@ async function run() {
   await testLegacyPortionMetadataUsesManualServings();
   await testDisplayRulesUseCategoriesNotExampleFoodNames();
   await testProfileTargetsTakePrecedence();
+  await testClinicalRiskClassification();
+  await testDialysisNeverUsesLowProteinBranch();
+  await testPediatricRowUsesProvisionalGrowthAwarePlanning();
+  await testPediatricRowCanGenerateMealPlan();
   await testManualPortionsAndProteinSplit();
   await testVariantRetryAndFailure();
   await testUsesOneFixedReferenceServing();
