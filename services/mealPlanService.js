@@ -4171,22 +4171,125 @@ async function generateMealPlan(body = {}) {
   const rawUser = await getDocData("users", requestedProfileId);
   const user = rawUser ? decryptHealthProfile(rawUser) : {};
   const childContext = await buildChildContext(userId, requestedProfileId);
-  const medicalProfile = decryptHealthDocument(
-    (await getDocData("medicalProfile", user.medicalProfileId || user.medical_profile_id)) || {},
-  );
-  const latestLabs = decryptHealthDocument(
-    (await getDocData("labResults", user.labResultId || user.lab_result_id)) ||
-      (await getFirstUserDocument("labResults", requestedProfileId)) ||
-      {},
-  );
-  const anthropometrics = decryptHealthDocument(
-    (await getFirstUserDocument("anthropometrics", requestedProfileId)) || {},
-  );
+  const linkedMedicalProfileId = user.medicalProfileId || user.medical_profile_id;
+  const linkedLabResultId = user.labResultId || user.lab_result_id;
+  const rawMedicalProfile =
+    (await getDocData("medicalProfile", linkedMedicalProfileId)) || {};
+  const rawLatestLabs =
+    (await getDocData("labResults", linkedLabResultId)) ||
+    (await getFirstUserDocument("labResults", requestedProfileId)) ||
+    {};
+  const rawAnthropometrics =
+    (await getFirstUserDocument("anthropometrics", requestedProfileId)) || {};
+  const medicalProfile = decryptHealthDocument(rawMedicalProfile);
+  const latestLabs = decryptHealthDocument(rawLatestLabs);
+  const anthropometrics = decryptHealthDocument(rawAnthropometrics);
+
+  mealPlanDebug("PROFILE_SOURCE_RESOLUTION", {
+    requesterUserId: userId,
+    requestedProfileId,
+    generatingForSelf: requestedProfileId === userId,
+    requestedUserDocumentFound: Boolean(rawUser),
+    linkedDocumentIds: {
+      medicalProfileId: linkedMedicalProfileId || null,
+      labResultId: linkedLabResultId || null,
+      nutritionTargetId:
+        user.baselineNutritionTargetId || user.nutritionTargetId || null,
+    },
+    resolvedDocumentIds: {
+      medicalProfileId: rawMedicalProfile.id || null,
+      labResultId: rawLatestLabs.id || null,
+      anthropometricsId: rawAnthropometrics.id || null,
+    },
+    childContext,
+    profileInputs: {
+      user: {
+        ageYears: user.ageYears ?? user.age_years ?? user.age ?? null,
+        sex: user.sex ?? user.gender ?? null,
+        medicalProfileId: linkedMedicalProfileId || null,
+      },
+      medicalProfile: {
+        ageYears:
+          medicalProfile.ageYears ?? medicalProfile.age_years ?? medicalProfile.age ?? null,
+        sex: medicalProfile.sex ?? medicalProfile.gender ?? null,
+        weightKg:
+          medicalProfile.weight_kg ?? medicalProfile.weightKg ?? medicalProfile.weight ?? null,
+        heightCm:
+          medicalProfile.height_cm ?? medicalProfile.heightCm ?? medicalProfile.height ?? null,
+        ckdStage:
+          medicalProfile.ckdStage ?? medicalProfile.ckd_stage ?? medicalProfile.stage ?? null,
+        dialysisStatus:
+          medicalProfile.dialysisStatus ?? medicalProfile.dialysis_status ?? null,
+      },
+      latestLabs: {
+        egfr:
+          latestLabs.eGFR_CKD_EPI ?? latestLabs.egfrCkdEpi ??
+          latestLabs.egfr ?? latestLabs.eGFR ?? null,
+        potassium: latestLabs.potassium ?? latestLabs.K ?? null,
+        potassiumStatus:
+          latestLabs.potassium_status ?? latestLabs.potassiumStatus ?? null,
+        phosphorus: latestLabs.phosphorus ?? latestLabs.phosphate ?? null,
+        phosphorusStatus:
+          latestLabs.phosphorus_status ?? latestLabs.phosphorusStatus ?? null,
+        sodium: latestLabs.sodium ?? latestLabs.Na ?? null,
+        sodiumStatus: latestLabs.sodium_status ?? latestLabs.sodiumStatus ?? null,
+        glucose: latestLabs.glucose ?? latestLabs.fastingGlucose ?? null,
+        hba1c: latestLabs.HbA1c ?? latestLabs.hba1c ?? null,
+      },
+      anthropometrics: {
+        weightKg:
+          anthropometrics.weight_kg ?? anthropometrics.weightKg ??
+          anthropometrics.weight ?? null,
+        dryWeightKg:
+          anthropometrics.dry_weight_kg ?? anthropometrics.dryWeightKg ??
+          anthropometrics.dryWeight ?? null,
+        heightCm:
+          anthropometrics.height_cm ?? anthropometrics.heightCm ??
+          anthropometrics.height ?? null,
+        bmi: anthropometrics.bmi ?? anthropometrics.BMI ?? null,
+        bmiForAgePercentile:
+          anthropometrics.bmiForAgePercentile ??
+          anthropometrics.bmi_for_age_percentile ?? null,
+        growthTrend:
+          anthropometrics.growthTrend ?? anthropometrics.growth_trend ?? null,
+      },
+    },
+  });
   const nutritionProfile = buildNutritionProfile({
     childContext,
     medicalProfile,
     labs: latestLabs,
     anthropometrics,
+  });
+  mealPlanDebug("NUTRITION_PROFILE_DERIVED", {
+    requestedProfileId,
+    ageYears: nutritionProfile.ageYears,
+    sex: nutritionProfile.sex,
+    pediatricMode: nutritionProfile.pediatricMode,
+    stage: nutritionProfile.stage,
+    egfr: nutritionProfile.egfr,
+    ckdType: nutritionProfile.ckdType,
+    dialysisStatus: nutritionProfile.dialysisStatus,
+    currentWeightKg: nutritionProfile.currentWeightKg,
+    weightKgUsedForProtein: nutritionProfile.weightKg,
+    heightCm: nutritionProfile.heightCm,
+    bmi: nutritionProfile.bmi,
+    bmiCategory: nutritionProfile.bmiCategory,
+    growthTrend: nutritionProfile.growthTrend,
+    growthAssessmentStatus: nutritionProfile.growthAssessmentStatus,
+    calorieTarget: nutritionProfile.calorieTarget,
+    calorieTargetSource: nutritionProfile.calorieTargetSource,
+    proteinTarget: nutritionProfile.proteinTarget,
+    proteinTargetMin: nutritionProfile.proteinTargetMin,
+    proteinTargetMax: nutritionProfile.proteinTargetMax,
+    proteinFactor: nutritionProfile.proteinFactor,
+    proteinTargetSource: nutritionProfile.proteinTargetSource,
+    potassiumStatus: nutritionProfile.potassiumStatus,
+    potassiumControlLevel: nutritionProfile.potassiumControlLevel,
+    phosphorusStatus: nutritionProfile.phosphorusStatus,
+    sodiumStatus: nutritionProfile.sodiumStatus,
+    glycemicControlLevel: nutritionProfile.glycemicControlLevel,
+    snackFrequency: nutritionProfile.snackFrequency,
   });
   const missingPediatricInputs = [
     ["age", nutritionProfile.ageYears],
