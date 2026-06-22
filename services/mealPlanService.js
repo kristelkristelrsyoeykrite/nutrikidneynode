@@ -3465,7 +3465,6 @@ while (iter < maxIterations) {
 
 const validation = checkConstraints(totals, mealTargets);
 
-  let iter = 0;
 
   while (iter < maxIterations) {
     const status = checkConstraints(totals, mealTargets);
