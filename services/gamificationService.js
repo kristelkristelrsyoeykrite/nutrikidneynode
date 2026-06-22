@@ -1,4 +1,7 @@
-const { decryptHealthProfile } = require("../utils/encryption");
+const {
+  decryptHealthDocument,
+  decryptHealthProfile,
+} = require("../utils/encryption");
 
 const AWARDS = {
   seven_day_streak: {
@@ -16,6 +19,11 @@ const AWARDS = {
   balanced_week: {
     title: "Balanced Week",
     description: "Stayed within the app's recommended nutrition ranges for 7 days.",
+  },
+  meal_plan_ready: {
+    title: "Meal Plan Ready",
+    description: "Saved a personalized meal plan.",
+    adolescentOnly: true,
   },
 };
 
@@ -281,9 +289,9 @@ async function countActiveStreak(db, userId, date) {
 }
 
 async function unlockAward({ admin, db, userId, awardId, unlockedAwards }) {
-  if (unlockedAwards.includes(awardId)) return;
+  if (unlockedAwards.includes(awardId)) return false;
   const award = AWARDS[awardId];
-  if (!award) return;
+  if (!award) return false;
   unlockedAwards.push(awardId);
   await db
     .collection("users")
@@ -295,6 +303,60 @@ async function unlockAward({ admin, db, userId, awardId, unlockedAwards }) {
       ...award,
       unlockedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
+  return true;
+}
+
+function isAdolescentProfile(profile = {}) {
+  const role = String(profile.role || profile.userRole || "")
+    .trim()
+    .toLowerCase();
+  if (role === "adolescent") return true;
+
+  const ageGroup = String(profile.childAgeGroup || profile.ageGroup || "")
+    .trim()
+    .toLowerCase();
+  if (ageGroup === "13-18-direct" || ageGroup === "13-18") return true;
+
+  const age = Number(profile.ageYears ?? profile.age_years ?? profile.age);
+  return Number.isFinite(age) && age >= 13 && age <= 18;
+}
+
+async function unlockAdolescentMealPlanAward({ admin, db, userId }) {
+  const [userDoc, childProfileDoc] = await Promise.all([
+    db.collection("users").doc(userId).get(),
+    db.collection("childProfiles").doc(userId).get(),
+  ]);
+  const profile = userDoc.exists
+    ? decryptHealthProfile(userDoc.data() || {})
+    : childProfileDoc.exists
+      ? decryptHealthDocument(childProfileDoc.data() || {})
+      : {};
+  if (!isAdolescentProfile(profile)) return false;
+
+  const statusRef = db
+    .collection("users")
+    .doc(userId)
+    .collection("gamification")
+    .doc("status");
+  const statusDoc = await statusRef.get();
+  const status = statusDoc.exists ? statusDoc.data() || {} : {};
+  const unlockedAwards = Array.isArray(status.unlockedAwards)
+    ? [...status.unlockedAwards]
+    : [];
+  const unlocked = await unlockAward({
+    admin,
+    db,
+    userId,
+    awardId: "meal_plan_ready",
+    unlockedAwards,
+  });
+  if (!unlocked) return false;
+
+  await statusRef.set({
+    unlockedAwards,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  return true;
 }
 
 async function recomputeGamificationForDate({ admin, db, userId, date }) {
@@ -431,4 +493,5 @@ module.exports = {
   recomputeGamificationForDate,
   getGamificationSummary,
   getLeaderboard,
+  unlockAdolescentMealPlanAward,
 };

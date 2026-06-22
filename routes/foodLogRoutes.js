@@ -4,6 +4,7 @@ const { admin, db } = require("../firebase/admin");
 const fatSecretBridge = require("../services/fatSecretBridgeService");
 const {
   recomputeGamificationForDate,
+  unlockAdolescentMealPlanAward,
 } = require("../services/gamificationService");
 const { generatePhase2DecisionSupport } = require("../services/phase2DecisionSupport");
 const { generateMealPlan } = require("../services/mealPlanService");
@@ -1255,7 +1256,18 @@ router.post("/meal-plan/save", async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    const mealPlanRef = await db.collection("mealPlan").doc(documentId).set(mealPlanDoc);
+    await db.collection("mealPlan").doc(documentId).set(mealPlanDoc);
+
+    let awardUnlocked = false;
+    try {
+      awardUnlocked = await unlockAdolescentMealPlanAward({
+        admin,
+        db,
+        userId: requestedProfileId,
+      });
+    } catch (awardError) {
+      console.error("MEAL_PLAN_AWARD ERROR:", awardError.message);
+    }
 
     console.log("MEAL_PLAN_SAVED:", {
       mealPlanId: documentId,
@@ -1268,6 +1280,7 @@ router.post("/meal-plan/save", async (req, res) => {
     return res.status(200).json({
       success: true,
       mealPlanId: documentId,
+      awardUnlocked,
       message: "Meal plan saved successfully",
     });
   } catch (error) {
