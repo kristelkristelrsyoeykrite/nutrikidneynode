@@ -396,16 +396,6 @@ function registerRecordRoutes(router, deps) {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
 
-      if (!labResultId) {
-        labResultPayload.creatinine = null;
-        labResultPayload.potassium = null;
-        labResultPayload.phosphorus = null;
-        labResultPayload.phosphorus_status = null;
-        labResultPayload.sodium = null;
-        labResultPayload.sodium_status = null;
-        labResultPayload.calcium = null;
-      }
-
       if (metric === "creatinine") {
         labResultPayload.creatinine = storedValue;
       } else if (metric === "potassium") {
@@ -435,19 +425,35 @@ function registerRecordRoutes(router, deps) {
         throw new Error("Unsupported lab result type");
       }
 
+      const resultDateKey = String(resultDate).trim().slice(0, 10);
+      const currentResultDateKey = String(
+        currentLabResult?.date || currentLabResult?.resultDate || "",
+      ).trim().slice(0, 10);
+      const isSameDayEntry =
+        !labResultId &&
+        Boolean(currentLabResult?.id) &&
+        Boolean(resultDateKey) &&
+        resultDateKey === currentResultDateKey;
+
       let docRef;
       if (currentLabResult?.id) {
-        await archiveCurrentRecord(currentLabResult, "historicalLabResults");
-        await archiveAndDeleteExtraCurrentRecords({
-          records: labRecords,
-          keepId: currentLabResult.id,
-          currentCollectionName: "labResults",
-          historicalCollectionName: "historicalLabResults",
-        });
         docRef = db.collection("labResults").doc(currentLabResult.id);
-        if (labResultId) {
+        if (isSameDayEntry) {
+          // A lab panel is entered one metric at a time. Keep every metric
+          // already saved for this date instead of replacing the document.
           await docRef.set(encryptHealthDocument(labResultPayload), { merge: true });
         } else {
+          await archiveCurrentRecord(currentLabResult, "historicalLabResults");
+          await archiveAndDeleteExtraCurrentRecords({
+            records: labRecords,
+            keepId: currentLabResult.id,
+            currentCollectionName: "labResults",
+            historicalCollectionName: "historicalLabResults",
+          });
+        }
+        if (labResultId) {
+          await docRef.set(encryptHealthDocument(labResultPayload), { merge: true });
+        } else if (!isSameDayEntry) {
           labResultPayload.createdAt = admin.firestore.FieldValue.serverTimestamp();
           await docRef.set(encryptHealthDocument(labResultPayload));
         }

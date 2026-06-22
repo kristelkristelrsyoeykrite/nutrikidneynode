@@ -1068,9 +1068,12 @@ async function testPhilippineGuideFoodListAndVariety() {
   assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("cheese"), false);
   assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("beans"), false);
   assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("lean beef"), false);
-  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("egg"), false);
-  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("egg white"), true);
-  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("chicken"), true);
+  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("egg"), true);
+  assert.strictEqual(guideFoodPool("proteins", highPhosphorusRules).includes("salmon"), false);
+  assert.strictEqual(guideFoodPool("fruits", highPhosphorusRules).includes("berries"), false);
+  assert.strictEqual(guideFoodPool("fruits", highPhosphorusRules).includes("apple"), true);
+  assert.strictEqual(guideFoodPool("carbs", highPhosphorusRules).includes("white rice"), true);
+  assert.strictEqual(guideFoodPool("fats", highPhosphorusRules).includes("oil"), true);
   assert.ok(
     guideFoodTemplates("Breakfast", highPhosphorusRules).every((template) =>
       highPhosphorusRules.allowedProteinIngredients.includes(template.protein),

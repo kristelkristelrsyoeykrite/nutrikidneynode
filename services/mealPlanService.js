@@ -355,6 +355,64 @@ const CKD_INGREDIENT_GUIDE = {
     "turkey",
     "salmon",
   ],
+  // Search terms backed by phosphorus_guide_full_reference.csv. When serum
+  // phosphorus is high, templates are built only from these concrete foods so
+  // the Python normalizer can attach a measured or conservative guide value.
+  phosphorusGuideFoods: {
+    proteins: [
+      "chicken white meat",
+      "chicken dark meat",
+      "turkey white meat",
+      "turkey dark meat",
+      "shrimp",
+      "tuna light in water",
+      "egg",
+      "tofu firm",
+      "roast beef",
+    ],
+    carbs: [
+      "white rice",
+      "brown rice",
+      "white bread",
+      "oatmeal",
+      "egg noodles",
+      "spaghetti",
+      "graham crackers",
+      "saltines",
+    ],
+    vegetables: [
+      "asparagus",
+      "broccoli",
+      "cabbage",
+      "carrots",
+      "cauliflower",
+      "celery",
+      "cucumber",
+      "green beans",
+      "lettuce",
+      "mushrooms raw",
+      "okra",
+      "onions",
+      "green peas",
+      "red peppers",
+      "raw spinach",
+      "squash",
+    ],
+    fruits: [
+      "apple",
+      "apricot",
+      "blueberries",
+      "grapes",
+      "peach",
+      "pears",
+      "pineapple",
+      "plums",
+      "raspberries",
+      "strawberries",
+    ],
+    fats: ["oil", "butter", "margarine"],
+    snacks: ["apple", "grapes", "graham crackers", "saltines"],
+  },
   // High phosphorus - LIMIT or AVOID in CKD
   highPhosphorus: [
     "almonds",
@@ -1025,9 +1083,12 @@ function buildIngredientRules(profile = {}, childContext = {}) {
     allowedIngredients: [...allowed].sort(),
     blockedIngredients: [...blocked].sort(),
     lowerPhosphorusProteinsOnly: profile.phosphorusStatus === "High",
+    phosphorusGuideOnly: profile.phosphorusStatus === "High",
     allowedProteinIngredients:
       profile.phosphorusStatus === "High"
-        ? [...new Set(CKD_INGREDIENT_GUIDE.lowerPhosphorus.map(normalizeTextToken))]
+        ? [...new Set(
+            CKD_INGREDIENT_GUIDE.phosphorusGuideFoods.proteins.map(normalizeTextToken),
+          )]
         : null,
   };
 }
@@ -1713,7 +1774,10 @@ function recipeDrivenTemplates(mealType, history = {}, ingredientRules = {}) {
 
 function guideFoodPool(category, ingredientRules = {}) {
   const blocked = ingredientRules.blockedIngredients || [];
-  return [...new Set(CKD_INGREDIENT_GUIDE[category] || [])]
+  const source = ingredientRules.phosphorusGuideOnly
+    ? CKD_INGREDIENT_GUIDE.phosphorusGuideFoods[category] || []
+    : CKD_INGREDIENT_GUIDE[category] || [];
+  return [...new Set(source)]
     .filter((ingredient) => !containsAny(ingredient, blocked))
     .filter((ingredient) => {
       if (category !== "proteins" || !ingredientRules.lowerPhosphorusProteinsOnly) {
@@ -1888,14 +1952,23 @@ function safeMealTemplates(mealType, profile, restrictions, history, ingredientR
     ]
       .filter(Boolean)
       .join(" ");
-    const proteinAllowed =
-      !ingredientRules?.lowerPhosphorusProteinsOnly ||
-      !template.protein ||
-      (ingredientRules.allowedProteinIngredients || []).includes(
-        normalizeTextToken(template.protein),
-      );
+    const roleCategories = {
+      protein: "proteins",
+      carb: "carbs",
+      grain: "carbs",
+      vegetable: "vegetables",
+      fruit: "fruits",
+      fat: "fats",
+    };
+    const guideBacked = !ingredientRules?.phosphorusGuideOnly ||
+      Object.entries(roleCategories).every(([role, category]) => {
+        if (!template[role]) return true;
+        return guideFoodPool(category, ingredientRules)
+          .map(normalizeTextToken)
+          .includes(normalizeTextToken(template[role]));
+      });
     return (
-      proteinAllowed &&
+      guideBacked &&
       !containsAny(text, restrictions.avoid) &&
       !containsAny(text, ingredientRules?.blockedIngredients || [])
     );
