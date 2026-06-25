@@ -139,6 +139,133 @@ function normalizeFood(food = {}) {
   };
 }
 
+const COMMON_MEAL_LOG_FOOD_TERMS = [
+  "apple",
+  "banana",
+  "egg",
+  "rice",
+  "white rice",
+  "brown rice",
+  "bread",
+  "chicken",
+  "chicken breast",
+  "fish",
+  "tilapia",
+  "milkfish",
+  "shrimp",
+  "tofu",
+  "oatmeal",
+  "pasta",
+  "potato",
+  "sweet potato",
+  "cabbage",
+  "carrot",
+  "cucumber",
+  "broccoli",
+  "eggplant",
+  "okra",
+  "grapes",
+  "pear",
+  "pineapple",
+  "mango",
+  "papaya",
+  "watermelon",
+  "orange",
+  "calamansi",
+];
+
+function normalizeSearchText(value = "") {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactSearchText(value = "") {
+  return normalizeSearchText(value).replace(/\s+/g, "");
+}
+
+function choiceName(choice = {}) {
+  return String(
+    choice.name ||
+      choice.food_name ||
+      choice.display_food_name ||
+      choice.foodName ||
+      "",
+  );
+}
+
+function choiceKey(choice = {}) {
+  return String(
+    choice.foodId ||
+      choice.food_id ||
+      choice.id ||
+      `${choiceName(choice)}::${choice.brand_name || choice.brandName || ""}`,
+  );
+}
+
+function mealLoggingChoiceScore(choice, query, index) {
+  const normalizedQuery = normalizeSearchText(query);
+  const compactQuery = compactSearchText(query);
+  const normalizedName = normalizeSearchText(choiceName(choice));
+  const compactName = compactSearchText(choiceName(choice));
+  const words = normalizedName.split(" ").filter(Boolean);
+
+  let score = 0;
+  if (normalizedName === normalizedQuery) score += 1000;
+  if (compactName === compactQuery) score += 900;
+  if (normalizedName.startsWith(normalizedQuery)) score += 700;
+  if (compactName.startsWith(compactQuery)) score += 650;
+  if (words.some((word) => word === normalizedQuery)) score += 550;
+  if (words.some((word) => word.startsWith(normalizedQuery))) score += 500;
+  if (normalizedName.includes(` ${normalizedQuery}`)) score += 350;
+  if (compactName.includes(compactQuery)) score += 250;
+
+  const foodType = String(choice.food_type || choice.foodType || "").toLowerCase();
+  if (foodType === "generic") score += 40;
+  if (choice.brand_name || choice.brandName) score -= 10;
+
+  return score - index;
+}
+
+function mealLoggingCompletionTerms(query) {
+  const compactQuery = compactSearchText(query);
+  if (compactQuery.length < 2 || compactQuery.length > 12) return [];
+  return COMMON_MEAL_LOG_FOOD_TERMS
+    .filter((term) => {
+      const compactTerm = compactSearchText(term);
+      return compactTerm !== compactQuery && compactTerm.startsWith(compactQuery);
+    })
+    .slice(0, 3);
+}
+
+function mergeAndRankMealLoggingChoices(results, query) {
+  const merged = new Map();
+  let index = 0;
+
+  results.forEach((result) => {
+    const choices = Array.isArray(result?.choices)
+      ? result.choices
+      : Array.isArray(result?.foods)
+        ? result.foods
+        : [];
+    choices.forEach((choice) => {
+      const key = choiceKey(choice);
+      if (!key || merged.has(key)) return;
+      merged.set(key, {
+        choice,
+        score: mealLoggingChoiceScore(choice, query, index),
+      });
+      index += 1;
+    });
+  });
+
+  return [...merged.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.choice);
+}
+
 async function healthCheck() {
   return callPythonService("/api/health");
 }
@@ -311,11 +438,40 @@ async function getRecipeDetails(recipeId) {
 }
 
 async function mealLoggingSearch(query, page = 0) {
-  const response = await callPythonService("/meal-logging/search", {
-    method: "POST",
-    body: { query, page },
-  });
-  return unwrapResult(response);
+  const trimmedQuery = String(query || "").trim();
+  const searchTerms = page === 0
+    ? [trimmedQuery, ...mealLoggingCompletionTerms(trimmedQuery)]
+    : [trimmedQuery];
+
+  const responses = await Promise.all(
+    searchTerms.map(async (term) => {
+      try {
+        const response = await callPythonService("/meal-logging/search", {
+          method: "POST",
+          body: { query: term, page },
+        });
+        return unwrapResult(response);
+      } catch (error) {
+        if (term === trimmedQuery) throw error;
+        console.warn("MEAL_LOGGING_COMPLETION_SEARCH_FAILED:", {
+          query: trimmedQuery,
+          completion: term,
+          error: error.message,
+        });
+        return null;
+      }
+    }),
+  );
+
+  const primary = responses[0] || {};
+  const rankedChoices = mergeAndRankMealLoggingChoices(responses, trimmedQuery);
+  return {
+    ...primary,
+    query: trimmedQuery,
+    choices: rankedChoices,
+    foods: rankedChoices,
+    completionQueries: searchTerms.slice(1),
+  };
 }
 
 async function mealLoggingFoodDetails(foodId) {
