@@ -267,9 +267,13 @@ async function backfillPhosphorusFromUsda(food = {}) {
   if (numberOrNull(food.phosphorus) !== null) return food;
   const usda = await lookupUsdaPhosphorusMg(food);
   if (!usda || numberOrNull(usda.phosphorus) === null) return food;
+  const missingNutrients = Array.isArray(food.missingNutrients)
+    ? food.missingNutrients.filter((nutrient) => nutrient !== "phosphorus")
+    : food.missingNutrients;
   return {
     ...food,
     phosphorus: usda.phosphorus,
+    missingNutrients,
     estimatedNutrients: [
       ...new Set([...(food.estimatedNutrients || []), "phosphorus"]),
     ],
@@ -293,6 +297,10 @@ async function backfillPhosphorusFromUsda(food = {}) {
       ...(food.raw || {}),
       usdaPhosphorus: usda,
     },
+    needsManualReview:
+      Array.isArray(missingNutrients) && missingNutrients.length === 0
+        ? false
+        : food.needsManualReview,
   };
 }
 
@@ -2739,7 +2747,12 @@ async function resolveFoodDetails(food, options = {}) {
   }
   const cacheKey = String(food.foodId);
   const cached = foodDetailCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  if (cached && cached.expiresAt > Date.now()) {
+    if (requiredNutrients.includes("phosphorus")) {
+      return cached.promise.then((cachedFood) => backfillPhosphorusFromUsda(cachedFood));
+    }
+    return cached.promise;
+  }
 
   const promise = (async () => {
     try {

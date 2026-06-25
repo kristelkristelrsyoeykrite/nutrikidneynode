@@ -706,6 +706,8 @@ async function testUsdaBackfillsMissingPhosphorus() {
   const chickenMissingPhosphorus = food("Chicken", {
     protein: 20,
     phosphorus: null,
+    missingNutrients: ["phosphorus"],
+    needsManualReview: true,
   });
   chickenMissingPhosphorus.servings[0] = {
     ...chickenMissingPhosphorus.servings[0],
@@ -759,6 +761,11 @@ async function testUsdaBackfillsMissingPhosphorus() {
       "usda_fooddata_central",
     );
     assert.ok(meal.components[0].nutrients.phosphorus > 0);
+    assert.strictEqual(
+      (meal.components[0].missingNutrients || []).includes("phosphorus"),
+      false,
+    );
+    assert.notStrictEqual(meal.components[0].needsManualReview, true);
   } finally {
     global.fetch = originalFetch;
   }
@@ -769,6 +776,8 @@ async function testUsdaPhosphorusLookupFallsBackAfterBadRequest() {
   const turkeyMissingPhosphorus = food("Turkey", {
     protein: 20,
     phosphorus: null,
+    missingNutrients: ["phosphorus"],
+    needsManualReview: true,
   });
   turkeyMissingPhosphorus.servings[0] = {
     ...turkeyMissingPhosphorus.servings[0],
@@ -826,6 +835,11 @@ async function testUsdaPhosphorusLookupFallsBackAfterBadRequest() {
       "usda_fooddata_central",
     );
     assert.ok(meal.components[0].nutrients.phosphorus > 0);
+    assert.strictEqual(
+      (meal.components[0].missingNutrients || []).includes("phosphorus"),
+      false,
+    );
+    assert.notStrictEqual(meal.components[0].needsManualReview, true);
   } finally {
     global.fetch = originalFetch;
   }
