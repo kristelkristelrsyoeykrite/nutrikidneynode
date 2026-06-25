@@ -4321,19 +4321,12 @@ async function resolveComponentNutrition(plannedMeal, nutritionProfile, restrict
 }
 
 async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, seed, ingredientRules) {
-  // FAST PATH: try to find a single FatSecret serving that already matches
-  // the meal protein target (search-first). Falls back to ingredient-based
-  // or component resolution if no good single-serving match is found.
-  try {
-    const singleMatch = await findSingleServingProteinMatch(plannedMeal, nutritionProfile, restrictions, ingredientRules);
-    if (singleMatch) return singleMatch;
-  } catch (err) {
-    console.warn("SINGLE_MATCH_FAILED", { name: plannedMeal?.name, error: err?.message });
-  }
-
   // PREFERRED: Use ingredient expansion if template has protein/carb/vegetable fields
   const hasIngredientFields = plannedMeal.protein || plannedMeal.carb || plannedMeal.grain ||
     plannedMeal.vegetable || plannedMeal.vegetables;
+  const hasComboStructure =
+    hasIngredientFields ||
+    (Array.isArray(plannedMeal.components) && plannedMeal.components.length > 1);
   
   if (hasIngredientFields) {
     const ingredientBased = await resolveIngredientBasedMeal(
@@ -4354,6 +4347,17 @@ async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, s
     restrictions,
   );
   if (components) return components;
+
+  // Use a single FatSecret serving only for meals that were not explicitly
+  // planned as ingredient combinations.
+  if (!hasComboStructure) {
+    try {
+      const singleMatch = await findSingleServingProteinMatch(plannedMeal, nutritionProfile, restrictions, ingredientRules);
+      if (singleMatch) return singleMatch;
+    } catch (err) {
+      console.warn("SINGLE_MATCH_FAILED", { name: plannedMeal?.name, error: err?.message });
+    }
+  }
 
   // Last resort: whole meal nutrition search (not recommended)
   const wholeMeal = await resolveWholeMealNutrition(
