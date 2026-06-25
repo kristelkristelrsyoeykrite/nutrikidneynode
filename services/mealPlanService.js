@@ -2262,6 +2262,24 @@ function mealTemplateAttemptLimit(mealType, templateCount) {
   return Math.min(count, 14);
 }
 
+function mealTemplateDisplayName(template = {}) {
+  if (template.name) return template.name;
+  const foods = Object.entries(mealTemplateIngredientMap(template))
+    .map(([role, ingredient]) => ({
+      category: baseIngredientRole(role),
+      name: ingredient,
+    }));
+  return buildMealTitle({ foods }) || `${template.mealType || "Meal"} guide meal`;
+}
+
+function plannedMealTemplate(template = {}, mealType = "Meal") {
+  return {
+    mealType,
+    ...template,
+    name: mealTemplateDisplayName({ mealType, ...template }),
+  };
+}
+
 function usefulNutrition(food = {}) {
   const values = [
     numberOrNull(food.calories),
@@ -4134,7 +4152,7 @@ async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, s
       name: plannedMeal.name,
       nutrientPreview: preview,
       componentBreakdown: [],
-      matchConfidence: confidence,
+      matchConfidence: "partial",
       source:
         wholeMeal.sourceType === "food"
           ? "fatsecret_partial_food_meal_plan"
@@ -4839,7 +4857,7 @@ async function generateMealPlan(body = {}) {
         nutrientBudgets,
         templates,
       });
-      const mealObject = await resolvePortionedMealFromTemplates({
+      let mealObject = await resolvePortionedMealFromTemplates({
         templates,
         nutritionProfile,
         restrictions,
@@ -4858,12 +4876,68 @@ async function generateMealPlan(body = {}) {
           nutrientBudgets,
           templates,
         });
-        const error = new Error(
-          `Unable to resolve a complete, profile-safe ${mealType.toLowerCase()} after trying replacement meals.`,
+        const fallbackTemplate = plannedMealTemplate(
+          templates[0] ||
+            plannedMealFor(
+              mealType,
+              nutritionProfile,
+              restrictions,
+              daySeed,
+              mealIndex + dayIndex,
+              history,
+              ingredientRules,
+            ),
+          mealType,
         );
-        error.statusCode = 503;
-        error.code = "meal_plan_resolution_failed";
-        throw error;
+        try {
+          mealObject = await resolvePlannedMeal(
+            fallbackTemplate,
+            nutritionProfile,
+            restrictions,
+            daySeed + mealIndex,
+            ingredientRules,
+          );
+        } catch (fallbackError) {
+          mealPlanDebug("MEAL_FALLBACK_RESOLUTION_FAILED", {
+            date: currentDate,
+            dayIndex,
+            mealIndex,
+            mealType,
+            fallbackTemplate,
+            error: fallbackError.message,
+          });
+          mealObject = null;
+        }
+        mealObject = {
+          date: currentDate,
+          mealType,
+          calories: 0,
+          protein: 0,
+          carbohydrate: 0,
+          fat: 0,
+          sodium: 0,
+          potassium: 0,
+          phosphorus: 0,
+          calcium: 0,
+          ...(mealObject || {}),
+          name: mealObject?.name || fallbackTemplate.name,
+          source: mealObject?.source || "unresolved_guide_meal_plan",
+          needsManualReview: true,
+          matchConfidence: mealObject?.matchConfidence || "fallback",
+          reason:
+            mealObject?.reason ||
+            "Meal idea selected by CKD guide rules. Nutrition could not be fully resolved, so review before logging.",
+          raw: {
+            ...(mealObject?.raw || {}),
+            fallbackAfterPortionedResolutionFailure: true,
+            fallbackTemplate,
+          },
+        };
+        mealPlanDebug("MEAL_FALLBACK_ACCEPTED", {
+          date: currentDate,
+          mealType,
+          meal: mealObject,
+        });
       }
       meals.push(mealObject);
     }
