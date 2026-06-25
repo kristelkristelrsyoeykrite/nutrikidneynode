@@ -61,7 +61,11 @@ const MAX_CACHED_RECIPE_RESULTS = 50;
 const FOOD_DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FOOD_DETAIL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_DETAIL_CANDIDATES_PER_VARIANT = 5;
+const USDA_FDC_BASE_URL =
+  process.env.USDA_FDC_BASE_URL || "https://api.nal.usda.gov/fdc/v1";
+const USDA_API_KEY = process.env.USDA_API_KEY || process.env.FDC_API_KEY || "DEMO_KEY";
 const foodDetailCache = new Map();
+const usdaPhosphorusCache = new Map();
 const SIMPLE_FAT_FOOD_NAMES = [
   "oil",
   "olive oil",
@@ -113,6 +117,141 @@ function mealPlanFoodDiagnostic(food = {}) {
     estimatedNutrients: food.estimatedNutrients,
     nutrientSources: food.nutrientSources,
     needsManualReview: food.needsManualReview,
+  };
+}
+
+function foodSearchName(food = {}) {
+  return String(
+    food.name ||
+      food.foodName ||
+      food.food_name ||
+      food.description ||
+      food.servingDescription ||
+      "",
+  ).trim();
+}
+
+function usdaNutrientValue(food = {}, nutrientIds = [], nutrientNames = []) {
+  const nutrients = Array.isArray(food.foodNutrients) ? food.foodNutrients : [];
+  const ids = new Set(nutrientIds.map((id) => String(id)));
+  const names = nutrientNames.map((name) => normalizeTextToken(name));
+  for (const nutrient of nutrients) {
+    const nutrientId = String(
+      nutrient.nutrientId ??
+        nutrient.nutrient?.id ??
+        nutrient.nutrientNumber ??
+        "",
+    );
+    const nutrientName = normalizeTextToken(
+      nutrient.nutrientName ?? nutrient.nutrient?.name ?? nutrient.name ?? "",
+    );
+    if (
+      ids.has(nutrientId) ||
+      names.some((name) => nutrientName === name || nutrientName.includes(name))
+    ) {
+      const value = numberOrNull(nutrient.value ?? nutrient.amount);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+}
+
+function usdaFoodScore(food = {}, query = "") {
+  const description = normalizeTextToken(food.description || food.lowercaseDescription);
+  const normalizedQuery = normalizeTextToken(query);
+  if (!description || !normalizedQuery) return 0;
+  if (description === normalizedQuery) return 100;
+  if (description.includes(normalizedQuery)) return 80;
+  const queryWords = normalizedQuery.split(" ").filter(Boolean);
+  const matchedWords = queryWords.filter((word) => description.includes(word)).length;
+  return matchedWords * 10;
+}
+
+async function lookupUsdaPhosphorusMg(food = {}) {
+  const query = foodSearchName(food);
+  if (!query) return null;
+  const cacheKey = normalizeTextToken(query);
+  const cached = usdaPhosphorusCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  const promise = (async () => {
+    const url = new URL(`${USDA_FDC_BASE_URL.replace(/\/+$/, "")}/foods/search`);
+    url.searchParams.set("api_key", USDA_API_KEY);
+    url.searchParams.set("query", query);
+    url.searchParams.set("pageSize", "5");
+    url.searchParams.set("dataType", "Foundation,SR Legacy,Survey (FNDDS)");
+    url.searchParams.set("nutrients", "305");
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`USDA FoodData Central request failed: ${response.status}`);
+      }
+      const payload = await response.json();
+      const foods = Array.isArray(payload.foods) ? payload.foods : [];
+      const ranked = foods
+        .map((item) => ({
+          item,
+          phosphorus: usdaNutrientValue(item, [305], ["Phosphorus, P", "Phosphorus"]),
+          score: usdaFoodScore(item, query),
+        }))
+        .filter((entry) => entry.phosphorus !== null)
+        .sort((left, right) => right.score - left.score);
+      const match = ranked[0];
+      if (!match) return null;
+      return {
+        phosphorus: match.phosphorus,
+        fdcId: match.item.fdcId,
+        description: match.item.description,
+        dataType: match.item.dataType,
+      };
+    } catch (error) {
+      console.warn("USDA_PHOSPHORUS_LOOKUP_FAILED:", {
+        query,
+        error: error.message,
+      });
+      return null;
+    }
+  })();
+
+  usdaPhosphorusCache.set(cacheKey, {
+    promise,
+    expiresAt: Date.now() + FOOD_DETAIL_CACHE_TTL_MS,
+  });
+  return promise;
+}
+
+async function backfillPhosphorusFromUsda(food = {}) {
+  if (!food) return food;
+  if (numberOrNull(food.phosphorus) !== null) return food;
+  const usda = await lookupUsdaPhosphorusMg(food);
+  if (!usda || numberOrNull(usda.phosphorus) === null) return food;
+  return {
+    ...food,
+    phosphorus: usda.phosphorus,
+    estimatedNutrients: [
+      ...new Set([...(food.estimatedNutrients || []), "phosphorus"]),
+    ],
+    nutrientSources: {
+      ...(food.nutrientSources || {}),
+      phosphorus: "usda_fooddata_central",
+    },
+    nutrientEstimateNotes: {
+      ...(food.nutrientEstimateNotes || {}),
+      phosphorus:
+        "Phosphorus was backfilled from USDA FoodData Central because FatSecret did not provide it.",
+    },
+    phosphorusReference: {
+      source: "USDA FoodData Central",
+      fdcId: usda.fdcId,
+      description: usda.description,
+      dataType: usda.dataType,
+    },
+    isEstimated: true,
+    raw: {
+      ...(food.raw || {}),
+      usdaPhosphorus: usda,
+    },
   };
 }
 
@@ -2543,6 +2682,20 @@ async function resolveFoodDetails(food, options = {}) {
     food.needsManualReview !== true &&
     hasRequiredNutrients
   ) return food;
+  if (
+    requiredNutrients.includes("phosphorus") &&
+    numberOrNull(food.phosphorus) === null
+  ) {
+    const usdaBackfilled = await backfillPhosphorusFromUsda(food);
+    const backfilledHasRequired = requiredNutrients.every(
+      (nutrient) => numberOrNull(usdaBackfilled[nutrient]) !== null,
+    );
+    if (
+      usefulNutrition(usdaBackfilled) &&
+      usdaBackfilled.needsManualReview !== true &&
+      backfilledHasRequired
+    ) return usdaBackfilled;
+  }
   const cacheKey = String(food.foodId);
   const cached = foodDetailCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
@@ -2567,10 +2720,16 @@ async function resolveFoodDetails(food, options = {}) {
           foodDetails: details.raw || details.food,
         },
       };
+      const enriched = requiredNutrients.includes("phosphorus")
+        ? await backfillPhosphorusFromUsda(merged)
+        : merged;
       const entry = foodDetailCache.get(cacheKey);
       const remainsIncomplete =
-        detailedFood.needsManualReview === true ||
-        (Array.isArray(detailedFood.missingNutrients) && detailedFood.missingNutrients.length > 0);
+        enriched.needsManualReview === true ||
+        (requiredNutrients.includes("phosphorus") &&
+          numberOrNull(enriched.phosphorus) === null) ||
+        (Array.isArray(enriched.missingNutrients) &&
+          enriched.missingNutrients.length > 0);
       if (entry) {
         entry.expiresAt = Date.now() + (
           remainsIncomplete
@@ -2578,7 +2737,7 @@ async function resolveFoodDetails(food, options = {}) {
             : FOOD_DETAIL_CACHE_TTL_MS
         );
       }
-      return merged;
+      return enriched;
     } catch (error) {
       console.error("MEAL_PLAN_FOOD_DETAILS_ERROR:", {
         foodId: food.foodId,
@@ -2656,16 +2815,18 @@ function foodFromFirstServing(food, details = {}, role = null) {
       firstServing.display_text ||
       firstServing.displayText ||
       "1 serving",
-    calories: numberOrNull(nutrients.calories),
-    protein: numberOrNull(nutrients.protein),
-    carbohydrate: numberOrNull(
-      nutrients.carbohydrate ?? nutrients.carbohydrates ?? nutrients.carbs,
-    ),
-    fat: numberOrNull(nutrients.fat),
-    sodium: numberOrNull(nutrients.sodium),
-    potassium: numberOrNull(nutrients.potassium),
-    phosphorus: numberOrNull(nutrients.phosphorus ?? nutrients.phosphorous),
-    calcium: numberOrNull(nutrients.calcium),
+    calories: numberOrNull(nutrients.calories) ?? numberOrNull(food.calories),
+    protein: numberOrNull(nutrients.protein) ?? numberOrNull(food.protein),
+    carbohydrate:
+      numberOrNull(nutrients.carbohydrate ?? nutrients.carbohydrates ?? nutrients.carbs) ??
+      numberOrNull(food.carbohydrate ?? food.carbohydrates ?? food.carbs),
+    fat: numberOrNull(nutrients.fat) ?? numberOrNull(food.fat),
+    sodium: numberOrNull(nutrients.sodium) ?? numberOrNull(food.sodium),
+    potassium: numberOrNull(nutrients.potassium) ?? numberOrNull(food.potassium),
+    phosphorus:
+      numberOrNull(nutrients.phosphorus ?? nutrients.phosphorous) ??
+      numberOrNull(food.phosphorus ?? food.phosphorous),
+    calcium: numberOrNull(nutrients.calcium) ?? numberOrNull(food.calcium),
     firstServing,
   };
 }
@@ -2673,17 +2834,20 @@ function foodFromFirstServing(food, details = {}, role = null) {
 async function resolveMealPlanFirstServing(food, role = null) {
   const embedded = foodFromFirstServing(food, {}, role);
   if (embedded) {
+    const selected = await backfillPhosphorusFromUsda(embedded);
     mealPlanDebug("FIRST_SERVING_FROM_EMBEDDED_DATA", {
       food: mealPlanFoodDiagnostic(food),
-      selected: mealPlanFoodDiagnostic(embedded),
+      selected: mealPlanFoodDiagnostic(selected),
       firstServing: embedded.firstServing,
     });
-    return embedded;
+    return selected;
   }
   if (!food?.foodId) return null;
   try {
     const details = await fatSecretBridge.mealLoggingFoodDetails(food.foodId);
-    const resolved = foodFromFirstServing(food, details, role);
+    const resolved = await backfillPhosphorusFromUsda(
+      foodFromFirstServing(food, details, role),
+    );
     mealPlanDebug("FIRST_SERVING_FROM_FATSECRET", {
       food: mealPlanFoodDiagnostic(food),
       servingCount: Array.isArray(details.servings) ? details.servings.length : 0,

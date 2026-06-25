@@ -701,6 +701,65 @@ async function testRiskBasedMissingNutrients() {
   );
 }
 
+async function testUsdaBackfillsMissingPhosphorus() {
+  const originalFetch = global.fetch;
+  const chickenMissingPhosphorus = food("Chicken", {
+    protein: 20,
+    phosphorus: null,
+  });
+  chickenMissingPhosphorus.servings[0] = {
+    ...chickenMissingPhosphorus.servings[0],
+    nutrients: {
+      ...chickenMissingPhosphorus.servings[0].nutrients,
+      phosphorus: null,
+    },
+  };
+  let usdaCalls = 0;
+  global.fetch = async (url) => {
+    usdaCalls += 1;
+    assert.ok(String(url).includes("/foods/search"));
+    return {
+      ok: true,
+      json: async () => ({
+        foods: [{
+          fdcId: 12345,
+          description: "Chicken, cooked",
+          dataType: "SR Legacy",
+          foodNutrients: [{
+            nutrientId: 305,
+            nutrientName: "Phosphorus, P",
+            value: 190,
+          }],
+        }],
+      }),
+    };
+  };
+
+  try {
+    const meal = await computePortionedMeal(
+      { mealType: "Lunch", protein: "chicken" },
+      { protein: 48, sodium: 2000, phosphorus: 1000 },
+      null,
+      {},
+      {
+        adapters: {
+          expandIngredient: async (ingredient) => [ingredient],
+          searchFoods: async () => ({ foods: [chickenMissingPhosphorus] }),
+        },
+      },
+    );
+    assert.ok(meal);
+    assert.ok(usdaCalls >= 1);
+    assert.strictEqual(
+      meal.components[0].nutrientSources.phosphorus,
+      "usda_fooddata_central",
+    );
+    assert.ok(meal.components[0].nutrients.phosphorus > 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
 async function testNonProteinUsesOneFirstServing() {
   const tablespoonOil = food("Olive Oil", {
     servingDescription: "1 tbsp",
@@ -1134,6 +1193,7 @@ async function run() {
   await testVariantRetryAndFailure();
   await testUsesOneFixedReferenceServing();
   await testRiskBasedMissingNutrients();
+  await testUsdaBackfillsMissingPhosphorus();
   await testNonProteinUsesOneFirstServing();
   await testVegetableAndFruitGuidelineConversions();
   await testMealPlanUsesFoodLogWaterPreview();
