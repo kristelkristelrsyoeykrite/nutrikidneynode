@@ -2254,6 +2254,14 @@ function portionTemplateCandidates(
   });
 }
 
+function mealTemplateAttemptLimit(mealType, templateCount) {
+  const count = Number(templateCount);
+  if (!Number.isFinite(count) || count <= 0) return 0;
+  if (mealType === "Breakfast") return Math.min(count, 16);
+  if (String(mealType || "").includes("Snack")) return Math.min(count, 10);
+  return Math.min(count, 14);
+}
+
 function usefulNutrition(food = {}) {
   const values = [
     numberOrNull(food.calories),
@@ -4407,6 +4415,7 @@ function scaleComponentNutrients(component, ratio) {
     "sodium",
     "potassium",
     "phosphorus",
+    "calcium",
   ]) {
     scaled[nutrient] = (numberOrNull(component.nutrients?.[nutrient]) || 0) * ratio;
   }
@@ -4810,7 +4819,16 @@ async function generateMealPlan(body = {}) {
         mealIndex + dayIndex,
         history,
         ingredientRules,
-        5,
+        mealTemplateAttemptLimit(
+          mealType,
+          safeMealTemplates(
+            mealType,
+            nutritionProfile,
+            restrictions,
+            history,
+            ingredientRules,
+          ).length,
+        ),
       );
       mealPlanDebug("MEAL_RESOLUTION_START", {
         date: currentDate,
@@ -5113,6 +5131,7 @@ module.exports = {
   guideFoodPool,
   guideFoodTemplates,
   portionTemplateCandidates,
+  mealTemplateAttemptLimit,
   enrichMealsWithFluidContributions,
   reservedNutrientBudget,
 };

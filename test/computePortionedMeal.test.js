@@ -17,6 +17,7 @@ const {
   guideFoodPool,
   guideFoodTemplates,
   portionTemplateCandidates,
+  mealTemplateAttemptLimit,
   enrichMealsWithFluidContributions,
   reservedNutrientBudget,
 } = require("../services/mealPlanService");
@@ -1053,6 +1054,13 @@ function testRemainingMealBudgetReservation() {
   );
 }
 
+function testMealTemplateAttemptLimitBroadensBreakfastRecovery() {
+  assert.strictEqual(mealTemplateAttemptLimit("Breakfast", 21), 16);
+  assert.strictEqual(mealTemplateAttemptLimit("AM Snack", 21), 10);
+  assert.strictEqual(mealTemplateAttemptLimit("Lunch", 21), 14);
+  assert.strictEqual(mealTemplateAttemptLimit("Breakfast", 4), 4);
+}
+
 async function testPhilippineGuideFoodListAndVariety() {
   const rules = buildIngredientRules(
     { potassiumStatus: "Normal", phosphorusStatus: "Normal" },
@@ -1134,6 +1142,7 @@ async function run() {
   await testDailyBalancingPreservesSafetyLimits();
   await testTemplateReplacement();
   testRemainingMealBudgetReservation();
+  testMealTemplateAttemptLimitBroadensBreakfastRecovery();
   await testPhilippineGuideFoodListAndVariety();
   console.log("computePortionedMeal tests passed");
 }

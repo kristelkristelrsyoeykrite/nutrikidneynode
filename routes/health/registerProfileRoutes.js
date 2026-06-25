@@ -306,12 +306,16 @@ function registerProfileRoutes(router, deps) {
         const childId = child?.userId || child?.uid || child?.id;
         return String(childId || "") === String(requestedProfileUserId);
       });
+      const isActiveDirectChild =
+        actingUser.activeDirectChildProfileId &&
+        String(actingUser.activeDirectChildProfileId) ===
+          String(requestedProfileUserId);
       const isLinkedCaregiverEditingChild =
         requestedProfileUserId !== actingUserId &&
         isCaregiverRole(actingUser.role) &&
-        actingUser.linkedChildAccount === true &&
         (actingUser.linkedChildUserId === requestedProfileUserId ||
-          isManagedLinkedChild);
+          isManagedLinkedChild ||
+          isActiveDirectChild);
 
       if (requestedProfileUserId !== actingUserId && !isLinkedCaregiverEditingChild) {
         return res.status(403).json({
