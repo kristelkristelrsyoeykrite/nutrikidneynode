@@ -845,6 +845,57 @@ async function testUsdaPhosphorusLookupFallsBackAfterBadRequest() {
   }
 }
 
+async function testNormalPediatricPhosphorusTargetDoesNotRequirePhosphorusData() {
+  const chickenMissingPhosphorus = food("Chicken", {
+    protein: 20,
+    phosphorus: null,
+    missingNutrients: ["phosphorus"],
+    needsManualReview: true,
+  });
+  chickenMissingPhosphorus.servings[0] = {
+    ...chickenMissingPhosphorus.servings[0],
+    nutrients: {
+      ...chickenMissingPhosphorus.servings[0].nutrients,
+      phosphorus: null,
+    },
+  };
+
+  const meal = await computePortionedMeal(
+    { mealType: "Lunch", protein: "chicken" },
+    { protein: 48, sodium: 2000, phosphorus: 1250 },
+    {
+      calorieTarget: 1700,
+      proteinTarget: 48,
+      phosphorusStatus: "Normal",
+      potassiumStatus: "Normal",
+    },
+    {
+      dailySodiumLimitMg: 2000,
+      dailyPhosphorusLimitMg: 1250,
+    },
+    {
+      nutrientBudgets: {
+        sodium: 600,
+        phosphorus: 300,
+      },
+      adapters: {
+        expandIngredient: async (ingredient) => [ingredient],
+        searchFoods: async () => ({ foods: [chickenMissingPhosphorus] }),
+        resolveFirstServing: async (candidate) => ({
+          ...candidate,
+          servingId: candidate.servings[0].serving_id,
+          servingDescription: candidate.servings[0].serving_description,
+          firstServing: candidate.servings[0],
+        }),
+      },
+    },
+  );
+
+  assert.ok(meal);
+  assert.strictEqual(meal.mealTargets.phosphorus, null);
+  assert.ok(meal.components[0].nutrients.protein > 0);
+}
+
 async function testNonProteinUsesOneFirstServing() {
   const tablespoonOil = food("Olive Oil", {
     servingDescription: "1 tbsp",
@@ -1280,6 +1331,7 @@ async function run() {
   await testRiskBasedMissingNutrients();
   await testUsdaBackfillsMissingPhosphorus();
   await testUsdaPhosphorusLookupFallsBackAfterBadRequest();
+  await testNormalPediatricPhosphorusTargetDoesNotRequirePhosphorusData();
   await testNonProteinUsesOneFirstServing();
   await testVegetableAndFruitGuidelineConversions();
   await testMealPlanUsesFoodLogWaterPreview();

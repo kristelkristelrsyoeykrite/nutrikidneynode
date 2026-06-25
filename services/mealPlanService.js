@@ -3638,6 +3638,9 @@ async function computePortionedMeal(
     };
   }
   for (const nutrient of ["sodium", "potassium", "phosphorus"]) {
+    if (nutrient === "phosphorus" && nutritionProfile?.phosphorusStatus !== "High") {
+      continue;
+    }
     const budget = numberOrNull(options.nutrientBudgets?.[nutrient]);
     if (budget !== null) mealTargets[nutrient] = Math.max(0, Math.round(budget));
   }
@@ -4670,7 +4673,9 @@ function dailySafetyUpperLimits(nutritionProfile = {}, restrictions = {}) {
       : null,
     sodium: numberOrNull(restrictions.dailySodiumLimitMg),
     potassium: numberOrNull(restrictions.dailyPotassiumLimitMg),
-    phosphorus: numberOrNull(restrictions.dailyPhosphorusLimitMg),
+    phosphorus: nutritionProfile.phosphorusStatus === "High"
+      ? numberOrNull(restrictions.dailyPhosphorusLimitMg)
+      : null,
     calcium: numberOrNull(restrictions.dailyCalciumTargetMg),
   };
 }
@@ -5038,7 +5043,12 @@ async function generateMealPlan(body = {}) {
       for (const [nutrient, dailyLimit] of [
         ["sodium", restrictions.dailySodiumLimitMg],
         ["potassium", restrictions.dailyPotassiumLimitMg],
-        ["phosphorus", restrictions.dailyPhosphorusLimitMg],
+        [
+          "phosphorus",
+          nutritionProfile.phosphorusStatus === "High"
+            ? restrictions.dailyPhosphorusLimitMg
+            : null,
+        ],
       ]) {
         const limit = numberOrNull(dailyLimit);
         if (limit !== null) {
