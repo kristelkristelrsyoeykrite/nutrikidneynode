@@ -30,7 +30,8 @@ function registerSummaryRoutes(router, deps) {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     return {
       userId: body.userId,
-      profileUserId: body.profileUserId,
+      profileUserId: body.profileUserId || body.userId,
+      profileScope: body.profileUserId ? "managed" : "self",
       keys: Object.keys(body).length,
       ...extra,
     };

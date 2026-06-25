@@ -116,11 +116,76 @@ function ingredientVariants() {
   return require("./ingredientVariantService");
 }
 
+const uniqueFoods = (foods) => [...new Set(foods)];
+
+const FILIPINO_FOOD_OPTIONS_ENGLISH = {
+  protein: [
+    "chicken breast", "chicken thigh", "chicken drumstick",
+    "lean beef", "ground beef", "beef sirloin",
+    "lean pork", "pork loin", "pork tenderloin",
+    "egg", "egg white", "tofu",
+    "tilapia", "milkfish", "round scad", "mackerel",
+    "skipjack tuna", "yellowfin tuna", "sardine",
+    "cream dory", "red snapper", "grouper", "catfish",
+    "threadfin bream", "rabbitfish", "anchovy",
+    "shrimp", "prawns", "crab", "squid",
+    "mussels", "clams", "oysters",
+    "mung beans", "green peas", "soybeans",
+  ],
+  carbohydrates: [
+    "white rice", "brown rice", "red rice", "black rice",
+    "rice noodles", "rice vermicelli", "glass noodles", "egg noodles",
+    "bread", "whole wheat bread", "bread roll",
+    "oatmeal", "rolled oats",
+    "corn", "sweet corn",
+    "potato", "sweet potato", "cassava", "taro", "purple yam",
+    "rice flour", "rice cake",
+    "pasta", "spaghetti", "macaroni",
+    "barley", "quinoa",
+  ],
+  vegetables: [
+    "cabbage", "Chinese cabbage", "bok choy", "mustard greens",
+    "lettuce", "watercress", "water spinach", "spinach",
+    "broccoli", "cauliflower",
+    "carrot", "radish",
+    "cucumber", "zucchini",
+    "green beans", "yardlong beans", "winged beans",
+    "bitter melon", "chayote", "bottle gourd", "sponge gourd",
+    "winter melon", "eggplant", "okra", "bell pepper",
+    "onion", "garlic", "ginger", "celery",
+    "mushrooms", "shiitake mushroom", "oyster mushroom", "button mushroom",
+    "pumpkin", "squash", "bamboo shoots", "bean sprouts",
+    "banana blossom", "taro leaves",
+  ],
+  fruits: [
+    "apple", "pear", "grapes",
+    "pineapple", "papaya", "mango", "watermelon", "melon",
+    "orange", "mandarin", "pomelo", "lemon", "lime", "calamansi",
+    "peach", "plum", "dragon fruit", "kiwi",
+    "banana", "avocado", "raisins", "prunes",
+    "star apple", "java apple", "wax apple", "sugar apple",
+    "soursop", "jackfruit", "lanzones", "longan",
+    "lychee", "mangosteen", "rambutan",
+  ],
+  fats: [
+    "olive oil", "canola oil", "corn oil", "sunflower oil",
+    "vegetable oil", "coconut oil", "sesame oil",
+    "butter", "margarine", "mayonnaise",
+  ],
+  seasonings: [
+    "garlic", "onion", "ginger",
+    "black pepper", "white pepper",
+    "calamansi juice", "lemon juice", "vinegar",
+    "bay leaf", "parsley", "oregano", "thyme", "basil",
+    "turmeric", "paprika", "rosemary", "chives",
+  ],
+};
+
 const CKD_INGREDIENT_GUIDE = {
   // Food pools combine the existing choices with foods explicitly listed in
   // the Philippine CKD nutrition manual. Profile restrictions are applied
   // before any of these foods can become a meal component.
-  proteins: [
+  proteins: uniqueFoods([
     "beans",
     "cheese",
     "chicken",
@@ -134,20 +199,19 @@ const CKD_INGREDIENT_GUIDE = {
     "lean beef sirloin",
     "milkfish",
     "salmon",
-    "seafood",
     "shrimp",
     "tilapia",
     "tofu",
     "tuna",
     "turkey",
-  ],
-  carbs: [
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.protein,
+  ]),
+  carbs: uniqueFoods([
     "barley",
     "bread",
     "cassava",
     "cereals",
     "corn",
-    "couscous",
     "crackers",
     "noodles",
     "oatmeal",
@@ -161,8 +225,9 @@ const CKD_INGREDIENT_GUIDE = {
     "white bread",
     "whole wheat bread",
     "wild rice",
-  ],
-  vegetables: [
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.carbohydrates,
+  ]),
+  vegetables: uniqueFoods([
     "ampalaya",
     "asparagus",
     "bamboo shoots",
@@ -191,15 +256,14 @@ const CKD_INGREDIENT_GUIDE = {
     "squash",
     "watercress",
     "zucchini",
-  ],
-  fruits: [
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.vegetables,
+  ]),
+  fruits: uniqueFoods([
     "apple",
     "apricot",
     "avocado",
     "banana",
     "banana saba",
-    "berries",
-    "blueberries",
     "calamansi",
     "chico",
     "grapes",
@@ -210,12 +274,11 @@ const CKD_INGREDIENT_GUIDE = {
     "peach",
     "pineapple",
     "plum",
-    "raspberries",
     "star apple",
-    "strawberries",
     "watermelon",
-  ],
-  fats: [
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.fruits,
+  ]),
+  fats: uniqueFoods([
     "oil",
     "olive oil",
     "canola oil",
@@ -227,7 +290,9 @@ const CKD_INGREDIENT_GUIDE = {
     "margarine",
     "mayonnaise",
     "light mayonnaise",
-  ],
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.fats,
+  ]),
+  seasonings: FILIPINO_FOOD_OPTIONS_ENGLISH.seasonings,
   snacks: [
     "banana saba",
     "unsweetened suman",
@@ -243,8 +308,6 @@ const CKD_INGREDIENT_GUIDE = {
     "asparagus",
     "bamboo shoots",
     "bell pepper",
-    "berries",
-    "blueberries",
     "broccoli",
     "cabbage",
     "carrot",
@@ -270,14 +333,12 @@ const CKD_INGREDIENT_GUIDE = {
     "peach",
     "plum",
     "radish",
-    "raspberries",
     "raw spinach",
     "rice",
     "brown rice",
     "white rice",
     "jasmine rice",
     "basmati rice",
-    "strawberries",
     "squash",
     "watercress",
     "zucchini",
@@ -401,14 +462,11 @@ const CKD_INGREDIENT_GUIDE = {
     fruits: [
       "apple",
       "apricot",
-      "blueberries",
       "grapes",
       "peach",
       "pears",
       "pineapple",
       "plums",
-      "raspberries",
-      "strawberries",
     ],
     fats: ["oil", "butter", "margarine"],
     snacks: ["apple", "grapes", "graham crackers", "saltines"],
@@ -453,7 +511,7 @@ const CKD_INGREDIENT_GUIDE = {
     "sardines",
   ],
   // Base allowed - safe generic ingredients for meal building
-  baseAllowed: [
+  baseAllowed: uniqueFoods([
     // Proteins (lower phosphorus)
     "chicken",
     "chicken breast",
@@ -481,7 +539,6 @@ const CKD_INGREDIENT_GUIDE = {
     "corn",
     "cereals",
     "crackers",
-    "couscous",
     "jasmine rice",
     "noodles",
     "oatmeal",
@@ -525,8 +582,6 @@ const CKD_INGREDIENT_GUIDE = {
     // Fruits (low potassium)
     "apple",
     "apricot",
-    "berries",
-    "blueberries",
     "grapes",
     "lemon",
     "lime",
@@ -534,8 +589,6 @@ const CKD_INGREDIENT_GUIDE = {
     "peach",
     "pineapple",
     "plum",
-    "raspberries",
-    "strawberries",
     "star apple",
     "chico",
     // Oils & Fats
@@ -554,7 +607,13 @@ const CKD_INGREDIENT_GUIDE = {
     "low fat milk",
     "skim milk",
     "yogurt",
-  ],
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.protein,
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.carbohydrates,
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.vegetables,
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.fruits,
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.fats,
+    ...FILIPINO_FOOD_OPTIONS_ENGLISH.seasonings,
+  ]),
   kidneyStoneHighPurine: [
     "alcohol",
     "nuts",
@@ -1426,7 +1485,7 @@ function buildFoodRestrictions(profile) {
     ["banana", "avocado", "orange", "melon", "potato", "sweet potato", "spinach", "tomato paste"].forEach((item) => avoid.add(item));
   }
   if (["Caution", "Danger"].includes(profile.potassiumControlLevel)) {
-    ["apple", "berries", "grapes", "cabbage", "cauliflower"].forEach((item) => prefer.add(item));
+    ["apple", "grapes", "cabbage", "cauliflower"].forEach((item) => prefer.add(item));
   }
   if (profile.phosphorusStatus === "High") {
     ["nuts", "beans", "cola", "cheese", "organ meat"].forEach((item) => avoid.add(item));
@@ -1837,69 +1896,169 @@ function mealTemplateBank(profile, history = {}, ingredientRules = {}) {
   const bank = {
     Breakfast: [
       { protein: "egg", carb: "bread", fruit: "apple", target: 280, mealType: "Breakfast" },
-      { protein: "chicken", carb: "rice", fruit: "berries", target: 300, mealType: "Breakfast" },
+      { protein: "chicken", carb: "rice", fruit: "grapes", target: 300, mealType: "Breakfast" },
       { protein: "tofu", carb: "oatmeal", fruit: "pear", target: 290, mealType: "Breakfast" },
       { protein: "egg", carb: "pandesal", fruit: "grapes", target: 270, mealType: "Breakfast" },
-      { protein: "fish", carb: "rice", fruit: "strawberries", target: 300, mealType: "Breakfast" },
+      { protein: "fish", carb: "rice", fruit: "apple", target: 300, mealType: "Breakfast" },
       { protein: "turkey", carb: "noodles", fruit: "apple", target: 310, mealType: "Breakfast" },
       { protein: "egg", carb: "toast", fruit: "peach", target: 260, mealType: "Breakfast" },
-      { protein: "tofu", carb: "bread", fruit: "berries", target: 280, mealType: "Breakfast" },
+      { protein: "tofu", carb: "bread", fruit: "pear", target: 280, mealType: "Breakfast" },
+      { protein: "egg white", carb: "rolled oats", fruit: "papaya", target: 280, mealType: "Breakfast" },
+      { protein: "milkfish", carb: "white rice", fruit: "calamansi", target: 300, mealType: "Breakfast" },
+      { protein: "chicken breast", carb: "brown rice", fruit: "mango", target: 310, mealType: "Breakfast" },
+      { protein: "tofu", carb: "rice noodles", fruit: "orange", target: 290, mealType: "Breakfast" },
+      { protein: "egg", carb: "bread roll", fruit: "java apple", target: 270, mealType: "Breakfast" },
+      { protein: "egg white", carb: "white rice", fruit: "pomelo", target: 280, mealType: "Breakfast" },
+      { protein: "tilapia", carb: "red rice", fruit: "apple", target: 300, mealType: "Breakfast" },
+      { protein: "lean beef", carb: "bread", fruit: "pear", target: 310, mealType: "Breakfast" },
+      { protein: "mung beans", carb: "rice cake", fruit: "calamansi", target: 290, mealType: "Breakfast" },
+      { protein: "chicken drumstick", carb: "sweet potato", fruit: "melon", target: 320, mealType: "Breakfast" },
+      { protein: "cream dory", carb: "egg noodles", fruit: "pineapple", target: 300, mealType: "Breakfast" },
+      { protein: "soybeans", carb: "rolled oats", fruit: "dragon fruit", target: 290, mealType: "Breakfast" },
+      { protein: "ground beef", carb: "macaroni", fruit: "peach", target: 320, mealType: "Breakfast" },
     ],
     "AM Snack": [
       { fruit: "apple", target: 150, mealType: "AM Snack" },
       { fruit: "grapes", target: 150, mealType: "AM Snack" },
       { fruit: "pear", target: 140, mealType: "AM Snack" },
-      { fruit: "strawberries", target: 120, mealType: "AM Snack" },
+      { fruit: "pineapple", target: 120, mealType: "AM Snack" },
       { fruit: "peach", target: 140, mealType: "AM Snack" },
+      { fruit: "pomelo", target: 130, mealType: "AM Snack" },
+      { fruit: "dragon fruit", target: 130, mealType: "AM Snack" },
+      { fruit: "java apple", target: 120, mealType: "AM Snack" },
+      { fruit: "lanzones", target: 140, mealType: "AM Snack" },
       { vegetable: "cucumber", carb: "bread", target: 150, mealType: "AM Snack" },
       { vegetable: "carrot", carb: "crackers", target: 140, mealType: "AM Snack" },
       { vegetable: "bell pepper", target: 120, mealType: "AM Snack" },
+      { vegetable: "chayote", carb: "rice cake", target: 150, mealType: "AM Snack" },
+      { fruit: "wax apple", target: 120, mealType: "AM Snack" },
+      { fruit: "sugar apple", target: 140, mealType: "AM Snack" },
+      { fruit: "longan", target: 130, mealType: "AM Snack" },
+      { fruit: "lychee", target: 130, mealType: "AM Snack" },
+      { fruit: "jackfruit", target: 150, mealType: "AM Snack" },
+      { vegetable: "lettuce", carb: "bread roll", target: 140, mealType: "AM Snack" },
+      { vegetable: "radish", carb: "rice cake", target: 130, mealType: "AM Snack" },
+      { vegetable: "bean sprouts", carb: "crackers", target: 130, mealType: "AM Snack" },
     ],
     Lunch: [
       { protein: "chicken", carb: "rice", vegetable: "cabbage", target: 420, mealType: "Lunch" },
-      { protein: "fish", carb: "pasta", vegetable: "asparagus", target: 420, mealType: "Lunch" },
+      { protein: "fish", carb: "pasta", vegetables: ["asparagus", "bell pepper"], target: 420, mealType: "Lunch" },
       { protein: "turkey", carb: "barley", vegetable: "cauliflower", target: 420, mealType: "Lunch" },
       { protein: "beef", carb: "noodles", vegetable: "broccoli", target: 430, mealType: "Lunch" },
       { protein: "tilapia", carb: "corn", vegetable: "bell pepper", target: 410, mealType: "Lunch" },
-      { protein: "tofu", carb: "rice", vegetable: "mushrooms", target: 410, mealType: "Lunch" },
-      { protein: "seafood", carb: "noodles", vegetable: "cucumber", target: 420, mealType: "Lunch" },
-      { protein: "chicken", carb: "couscous", vegetable: "eggplant", target: 410, mealType: "Lunch" },
+      { protein: "tofu", carb: "rice", vegetables: ["mushrooms", "bean sprouts"], target: 410, mealType: "Lunch" },
+      { protein: "shrimp", carb: "noodles", vegetable: "cucumber", target: 420, mealType: "Lunch" },
+      { protein: "chicken", carb: "rice", vegetable: "eggplant", target: 410, mealType: "Lunch" },
       { protein: "fish", carb: "bread", vegetable: "tomato", target: 400, mealType: "Lunch" },
       { protein: "turkey", carb: "rice", vegetable: "chinese cabbage", target: 420, mealType: "Lunch" },
       { protein: "beef", carb: "pasta", vegetable: "bell pepper", target: 430, mealType: "Lunch" },
       { protein: "tilapia", carb: "barley", vegetable: "onion", target: 410, mealType: "Lunch" },
       { protein: "tofu", carb: "noodles", vegetable: "carrot", target: 410, mealType: "Lunch" },
-      { protein: "seafood", carb: "couscous", vegetable: "okra", target: 410, mealType: "Lunch" },
+      { protein: "shrimp", carb: "barley", vegetable: "okra", target: 410, mealType: "Lunch" },
+      { protein: "chicken thigh", carb: "brown rice", vegetable: "bok choy", target: 420, mealType: "Lunch" },
+      { protein: "lean pork", carb: "red rice", vegetable: "chayote", target: 430, mealType: "Lunch" },
+      { protein: "milkfish", carb: "white rice", vegetables: ["mustard greens", "eggplant"], target: 420, mealType: "Lunch" },
+      { protein: "round scad", carb: "rice noodles", vegetables: ["water spinach", "bean sprouts"], target: 420, mealType: "Lunch" },
+      { protein: "mung beans", carb: "black rice", vegetables: ["squash", "green beans"], target: 410, mealType: "Lunch" },
+      { protein: "prawns", carb: "glass noodles", vegetables: ["bean sprouts", "cabbage", "carrot"], target: 420, mealType: "Lunch" },
+      { protein: "red snapper", carb: "sweet potato", vegetable: "bitter melon", target: 420, mealType: "Lunch" },
+      { protein: "grouper", carb: "taro", vegetable: "banana blossom", target: 430, mealType: "Lunch" },
+      { protein: "chicken breast", carb: "black rice", vegetable: "cauliflower", target: 420, mealType: "Lunch" },
+      { protein: "chicken drumstick", carb: "potato", vegetable: "cabbage", target: 430, mealType: "Lunch" },
+      { protein: "beef sirloin", carb: "rice vermicelli", vegetable: "bell pepper", target: 430, mealType: "Lunch" },
+      { protein: "pork loin", carb: "brown rice", vegetables: ["winged beans", "bottle gourd"], target: 430, mealType: "Lunch" },
+      { protein: "pork tenderloin", carb: "spaghetti", vegetable: "zucchini", target: 430, mealType: "Lunch" },
+      { protein: "skipjack tuna", carb: "quinoa", vegetable: "broccoli", target: 420, mealType: "Lunch" },
+      { protein: "yellowfin tuna", carb: "macaroni", vegetable: "lettuce", target: 420, mealType: "Lunch" },
+      { protein: "mackerel", carb: "white rice", vegetables: ["bottle gourd", "chayote"], target: 420, mealType: "Lunch" },
+      { protein: "sardine", carb: "rice flour", vegetable: "mustard greens", target: 410, mealType: "Lunch" },
+      { protein: "catfish", carb: "purple yam", vegetable: "sponge gourd", target: 420, mealType: "Lunch" },
+      { protein: "threadfin bream", carb: "egg noodles", vegetable: "button mushroom", target: 420, mealType: "Lunch" },
+      { protein: "rabbitfish", carb: "sweet corn", vegetable: "okra", target: 420, mealType: "Lunch" },
+      { protein: "crab", carb: "rice", vegetable: "chayote", target: 420, mealType: "Lunch" },
+      { protein: "squid", carb: "pasta", vegetables: ["oyster mushroom", "bell pepper"], target: 420, mealType: "Lunch" },
+      { protein: "clams", carb: "glass noodles", vegetable: "watercress", target: 410, mealType: "Lunch" },
+      { protein: "oysters", carb: "barley", vegetable: "celery", target: 410, mealType: "Lunch" },
+      { protein: "chicken breast", carb: "white rice", vegetables: ["cabbage", "carrot", "green beans"], target: 420, mealType: "Lunch" },
+      { protein: "tilapia", carb: "brown rice", vegetables: ["bok choy", "chayote"], target: 410, mealType: "Lunch" },
+      { protein: "lean beef", carb: "egg noodles", vegetables: ["broccoli", "button mushroom"], target: 430, mealType: "Lunch" },
+      { protein: "tofu", carb: "rice vermicelli", vegetables: ["lettuce", "cucumber", "bean sprouts"], target: 400, mealType: "Lunch" },
+      { protein: "shrimp", carb: "red rice", vegetables: ["okra", "squash"], target: 420, mealType: "Lunch" },
     ],
     "PM Snack": [
       { fruit: "grapes", carb: "bread", target: 160, mealType: "PM Snack" },
       { fruit: "apple", carb: "crackers", target: 150, mealType: "PM Snack" },
       { vegetable: "cucumber", target: 100, mealType: "PM Snack" },
-      { fruit: "berries", target: 120, mealType: "PM Snack" },
+      { fruit: "grapes", target: 120, mealType: "PM Snack" },
       { fruit: "pear", carb: "crackers", target: 150, mealType: "PM Snack" },
       { vegetable: "carrot", target: 130, mealType: "PM Snack" },
       { vegetable: "bell pepper", target: 120, mealType: "PM Snack" },
       { vegetable: "radish", target: 110, mealType: "PM Snack" },
-      { fruit: "strawberries", carb: "bread", target: 150, mealType: "PM Snack" },
+      { fruit: "pineapple", carb: "bread", target: 150, mealType: "PM Snack" },
       { fruit: "peach", target: 140, mealType: "PM Snack" },
+      { fruit: "mandarin", target: 130, mealType: "PM Snack" },
+      { fruit: "pomelo", target: 130, mealType: "PM Snack" },
+      { fruit: "soursop", target: 140, mealType: "PM Snack" },
+      { fruit: "rambutan", target: 140, mealType: "PM Snack" },
+      { fruit: "mangosteen", target: 140, mealType: "PM Snack" },
+      { vegetable: "cucumber", carb: "rice cake", target: 140, mealType: "PM Snack" },
+      { fruit: "dragon fruit", carb: "bread roll", target: 150, mealType: "PM Snack" },
+      { fruit: "kiwi", target: 130, mealType: "PM Snack" },
+      { fruit: "java apple", target: 120, mealType: "PM Snack" },
+      { fruit: "wax apple", target: 120, mealType: "PM Snack" },
+      { fruit: "lanzones", target: 140, mealType: "PM Snack" },
+      { fruit: "longan", target: 130, mealType: "PM Snack" },
+      { vegetable: "celery", carb: "crackers", target: 130, mealType: "PM Snack" },
+      { vegetable: "lettuce", carb: "bread", target: 140, mealType: "PM Snack" },
+      { vegetable: "bean sprouts", target: 110, mealType: "PM Snack" },
+      { vegetable: "chayote", carb: "rice cake", target: 140, mealType: "PM Snack" },
     ],
     Dinner: [
       { protein: "fish", carb: "rice", vegetable: "cauliflower", target: 420, mealType: "Dinner" },
-      { protein: "chicken", carb: "pasta", vegetable: "cabbage", target: 430, mealType: "Dinner" },
-      { protein: "turkey", carb: "couscous", vegetable: "broccoli", target: 420, mealType: "Dinner" },
+      { protein: "chicken", carb: "pasta", vegetables: ["cabbage", "carrot"], target: 430, mealType: "Dinner" },
+      { protein: "turkey", carb: "barley", vegetable: "broccoli", target: 420, mealType: "Dinner" },
       { protein: "beef", carb: "rice", vegetable: "mushrooms", target: 430, mealType: "Dinner" },
       { protein: "tilapia", carb: "barley", vegetable: "asparagus", target: 410, mealType: "Dinner" },
-      { protein: "tofu", carb: "noodles", vegetable: "chinese cabbage", target: 410, mealType: "Dinner" },
-      { protein: "seafood", carb: "rice", vegetable: "bell pepper", target: 420, mealType: "Dinner" },
+      { protein: "tofu", carb: "noodles", vegetables: ["chinese cabbage", "shiitake mushroom"], target: 410, mealType: "Dinner" },
+      { protein: "shrimp", carb: "rice", vegetable: "bell pepper", target: 420, mealType: "Dinner" },
       { protein: "chicken", carb: "corn", vegetable: "carrot", target: 410, mealType: "Dinner" },
       { protein: "beef", carb: "pasta", vegetable: "cucumber", target: 430, mealType: "Dinner" },
-      { protein: "fish", carb: "couscous", vegetable: "okra", target: 400, mealType: "Dinner" },
+      { protein: "fish", carb: "rice", vegetable: "okra", target: 400, mealType: "Dinner" },
       { protein: "turkey", carb: "noodles", vegetable: "mushrooms", target: 420, mealType: "Dinner" },
       { protein: "tilapia", carb: "rice", vegetable: "eggplant", target: 410, mealType: "Dinner" },
       { protein: "tofu", carb: "bread", vegetable: "lettuce", target: 380, mealType: "Dinner" },
-      { protein: "beef", carb: "couscous", vegetable: "bamboo shoots", target: 420, mealType: "Dinner" },
+      { protein: "beef", carb: "barley", vegetable: "bamboo shoots", target: 420, mealType: "Dinner" },
       { protein: "chicken", carb: "pandesal", vegetable: "green peas", target: 400, mealType: "Dinner" },
-      { protein: "seafood", carb: "rice", vegetable: "watercress", target: 410, mealType: "Dinner" },
+      { protein: "shrimp", carb: "rice", vegetable: "watercress", target: 410, mealType: "Dinner" },
+      { protein: "chicken drumstick", carb: "red rice", vegetables: ["yardlong beans", "squash"], target: 430, mealType: "Dinner" },
+      { protein: "beef sirloin", carb: "brown rice", vegetables: ["bottle gourd", "button mushroom"], target: 430, mealType: "Dinner" },
+      { protein: "pork tenderloin", carb: "white rice", vegetables: ["sponge gourd", "green beans"], target: 430, mealType: "Dinner" },
+      { protein: "yellowfin tuna", carb: "rice vermicelli", vegetables: ["winged beans", "cucumber"], target: 420, mealType: "Dinner" },
+      { protein: "cream dory", carb: "macaroni", vegetable: "winter melon", target: 420, mealType: "Dinner" },
+      { protein: "catfish", carb: "purple yam", vegetable: "taro leaves", target: 430, mealType: "Dinner" },
+      { protein: "crab", carb: "spaghetti", vegetable: "zucchini", target: 420, mealType: "Dinner" },
+      { protein: "squid", carb: "quinoa", vegetables: ["oyster mushroom", "bell pepper"], target: 420, mealType: "Dinner" },
+      { protein: "egg white", carb: "brown rice", vegetable: "broccoli", target: 390, mealType: "Dinner" },
+      { protein: "lean pork", carb: "rice noodles", vegetable: "cabbage", target: 420, mealType: "Dinner" },
+      { protein: "pork loin", carb: "barley", vegetable: "mustard greens", target: 430, mealType: "Dinner" },
+      { protein: "ground beef", carb: "potato", vegetable: "green beans", target: 430, mealType: "Dinner" },
+      { protein: "round scad", carb: "white rice", vegetables: ["bitter melon", "eggplant"], target: 420, mealType: "Dinner" },
+      { protein: "mackerel", carb: "black rice", vegetables: ["bok choy", "chayote"], target: 420, mealType: "Dinner" },
+      { protein: "skipjack tuna", carb: "sweet corn", vegetable: "cauliflower", target: 420, mealType: "Dinner" },
+      { protein: "red snapper", carb: "taro", vegetable: "water spinach", target: 420, mealType: "Dinner" },
+      { protein: "grouper", carb: "rice cake", vegetable: "banana blossom", target: 410, mealType: "Dinner" },
+      { protein: "threadfin bream", carb: "egg noodles", vegetable: "shiitake mushroom", target: 420, mealType: "Dinner" },
+      { protein: "rabbitfish", carb: "cassava", vegetable: "pumpkin", target: 420, mealType: "Dinner" },
+      { protein: "prawns", carb: "glass noodles", vegetables: ["bean sprouts", "cabbage", "carrot"], target: 420, mealType: "Dinner" },
+      { protein: "mussels", carb: "rice", vegetable: "chayote", target: 410, mealType: "Dinner" },
+      { protein: "clams", carb: "red rice", vegetable: "celery", target: 410, mealType: "Dinner" },
+      { protein: "oysters", carb: "bread roll", vegetable: "lettuce", target: 400, mealType: "Dinner" },
+      { protein: "soybeans", carb: "quinoa", vegetable: "squash", target: 410, mealType: "Dinner" },
+      { protein: "milkfish", carb: "white rice", vegetables: ["mustard greens", "eggplant"], target: 420, mealType: "Dinner" },
+      { protein: "cream dory", carb: "rice noodles", vegetables: ["water spinach", "mushrooms"], target: 420, mealType: "Dinner" },
+      { protein: "lean pork", carb: "cassava", vegetables: ["chayote", "green beans"], target: 430, mealType: "Dinner" },
+      { protein: "mung beans", carb: "brown rice", vegetables: ["pumpkin", "taro leaves"], target: 410, mealType: "Dinner" },
+      { protein: "crab", carb: "spaghetti", vegetables: ["zucchini", "bell pepper"], target: 420, mealType: "Dinner" },
     ],
   };
 
@@ -1948,6 +2107,7 @@ function safeMealTemplates(mealType, profile, restrictions, history, ingredientR
       template.carb,
       template.grain,
       template.vegetable,
+      ...(Array.isArray(template.vegetables) ? template.vegetables : [template.vegetables]),
       ...(template.components || []),
     ]
       .filter(Boolean)
@@ -2563,6 +2723,57 @@ function calculatedServingText(food, servings) {
   return `${Number(quantity.toFixed(6))} × ${description}`;
 }
 
+function baseIngredientRole(role) {
+  if (/^vegetable\d*$/i.test(role)) return "vegetable";
+  if (/^carb\d*$/i.test(role)) return "carb";
+  if (/^fruit\d*$/i.test(role)) return "fruit";
+  return role;
+}
+
+function mealTemplateIngredientMap(mealTemplate = {}) {
+  const ingredients = {};
+  const addIngredient = (role, ingredient) => {
+    if (!ingredient || typeof ingredient !== "string") return;
+    ingredients[role] = ingredient;
+  };
+
+  addIngredient("protein", mealTemplate.protein || mealTemplate.proteins);
+  addIngredient("carb", mealTemplate.carb || mealTemplate.carbohydrate || mealTemplate.grain);
+  addIngredient("vegetable", mealTemplate.vegetable);
+  addIngredient("fruit", mealTemplate.fruit);
+  addIngredient("fat", mealTemplate.fat);
+
+  const vegetables = Array.isArray(mealTemplate.vegetables)
+    ? mealTemplate.vegetables
+    : [mealTemplate.vegetables].filter(Boolean);
+  vegetables.forEach((vegetable) => {
+    const nextIndex = Object.keys(ingredients)
+      .filter((role) => baseIngredientRole(role) === "vegetable")
+      .length + 1;
+    addIngredient(nextIndex === 1 ? "vegetable" : `vegetable${nextIndex}`, vegetable);
+  });
+
+  Object.keys(mealTemplate)
+    .filter((key) => ![
+      "name",
+      "target",
+      "mealType",
+      "source",
+      "components",
+      "proteins",
+      "carbohydrate",
+      "grain",
+      "vegetables",
+    ].includes(key))
+    .forEach((key) => {
+      if (!ingredients[key] && typeof mealTemplate[key] === "string" && mealTemplate[key].length > 2) {
+        ingredients[key] = mealTemplate[key];
+      }
+    });
+
+  return ingredients;
+}
+
 function nutrientTotals(items = []) {
   return items.reduce(
     (sum, item) => ({
@@ -2903,22 +3114,11 @@ async function resolveIngredientBasedMeal(
     protein: mealTemplate.protein,
     carb: mealTemplate.carb,
     vegetable: mealTemplate.vegetable,
+    vegetables: mealTemplate.vegetables,
     mealType: mealTemplate.mealType
   });
 
-  const ingredients = {
-    protein: mealTemplate.protein,
-    carb: mealTemplate.carb || mealTemplate.grain,
-    vegetable: mealTemplate.vegetable || mealTemplate.vegetables,
-    ...Object.keys(mealTemplate)
-      .filter((k) => !["name", "target", "mealType", "source", "components"].includes(k))
-      .reduce((acc, k) => {
-        if (typeof mealTemplate[k] === "string" && mealTemplate[k].length > 2) {
-          acc[k] = mealTemplate[k];
-        }
-        return acc;
-      }, {}),
-  };
+  const ingredients = mealTemplateIngredientMap(mealTemplate);
 
   const selectedFoods = {};
   const foodDetails = [];
@@ -3034,7 +3234,10 @@ async function resolveIngredientBasedMeal(
 
   // Build meal name from actual selected variants
   const mealName = buildMealTitle({
-    foods: Object.entries(ingredients).map(([category, name]) => ({ category, name })),
+    foods: Object.entries(ingredients).map(([category, name]) => ({
+      category: baseIngredientRole(category),
+      name,
+    })),
   });
 
   const result = {
@@ -3134,13 +3337,7 @@ async function computePortionedMeal(
   }
 
   const plate = { vegetables: 0.5, protein: 0.25, carbs: 0.25 };
-  const components = {
-    protein: mealTemplate.protein || mealTemplate.proteins || null,
-    carb: mealTemplate.carb || mealTemplate.carbohydrate || mealTemplate.grain || null,
-    vegetable: mealTemplate.vegetable || mealTemplate.vegetables || null,
-    fruit: mealTemplate.fruit || null,
-    fat: mealTemplate.fat || null,
-  };
+  const components = mealTemplateIngredientMap(mealTemplate);
   const portionControlPlan = generateMealPortions({
     weightKg: nutritionProfile?.weightKg || nutritionProfile?.weight_kg,
     calorieTarget: nutritionProfile?.calorieTarget || dailyTargets.calories,
@@ -3156,7 +3353,7 @@ async function computePortionedMeal(
       .filter(([, ingredient]) => ingredient)
       .map(([role, ingredient]) => ({
         name: ingredient,
-        category: role,
+        category: baseIngredientRole(role),
       })),
     restrictions,
   });
@@ -3183,10 +3380,12 @@ async function computePortionedMeal(
     maxVariants,
   });
 
-  function initialServingPortion(role, food, portionRule) {
+  function initialServingPortion(role, food, portionRule, portionShare = 1) {
     const description = food.servingDescription || food.servingSize || "";
     let servings = numberOrNull(portionRule?.fatSecretServingMultiplier);
     if (servings === null || servings <= 0) servings = 1;
+    const share = numberOrNull(portionShare);
+    const servingShare = share !== null && share > 0 ? share : 1;
 
     if (role === "protein") {
       const proteinPerServing = numberOrNull(food.protein) || 0;
@@ -3199,6 +3398,7 @@ async function computePortionedMeal(
       servings = targetProtein / proteinPerServing;
     } else {
       servings = guidelineServingMultiplier(role, food, mealType, servings);
+      servings *= servingShare;
       if (role === "carb") {
         servings *= numberOrNull(nutritionProfile?.carbohydratePortionScale) || 1;
       } else if (role === "fruit") {
@@ -3313,6 +3513,7 @@ async function computePortionedMeal(
   for (const [role, ingredient] of Object.entries(components)) {
     if (!ingredient) continue;
       try {
+      const baseRole = baseIngredientRole(role);
       let variants = [ingredient];
       let selected = null;
       const requiredNutrients = [
@@ -3337,7 +3538,7 @@ async function computePortionedMeal(
             snack: "snacks",
             snacks: "snacks",
           };
-          const category = roleToCategory[role] || `${role}s`;
+          const category = roleToCategory[baseRole] || `${baseRole}s`;
           const guideList =
             CKD_INGREDIENT_GUIDE.phosphorusGuideFoods &&
             CKD_INGREDIENT_GUIDE.phosphorusGuideFoods[category]
@@ -3357,7 +3558,7 @@ async function computePortionedMeal(
       }
 
       async function usableServing(candidate, sourceEvent) {
-        const servingFood = await adapters.resolveFirstServing(candidate, role);
+        const servingFood = await adapters.resolveFirstServing(candidate, baseRole);
         if (!servingFood) {
           mealPlanDebug("CANDIDATE_SERVING_MISSING", {
             mealType,
@@ -3369,11 +3570,11 @@ async function computePortionedMeal(
           return null;
         }
         const resolvedServing = applyRiskBasedNutrientFallbacks(
-          role,
+          baseRole,
           ingredient,
           servingFood,
         );
-        const issues = requiredNutritionIssues(role, resolvedServing);
+        const issues = requiredNutritionIssues(baseRole, resolvedServing);
         if (issues.length) {
           mealPlanDebug("CANDIDATE_SERVING_REJECTED", {
             mealType,
@@ -3396,7 +3597,7 @@ async function computePortionedMeal(
           const text = componentFoodText(candidate);
           return containsAny(text, [ingredient, variant]) &&
             !containsAny(text, restrictions.avoid || []);
-        }).map((candidate) => applyRiskBasedNutrientFallbacks(role, ingredient, candidate));
+        }).map((candidate) => applyRiskBasedNutrientFallbacks(baseRole, ingredient, candidate));
         mealPlanDebug("CANDIDATE_SEARCH", {
           mealType,
           role,
@@ -3411,14 +3612,14 @@ async function computePortionedMeal(
               restrictions.avoid || [],
             ),
             requiredNutritionIssues: requiredNutritionIssues(
-              role,
-              applyRiskBasedNutrientFallbacks(role, ingredient, candidate),
+              baseRole,
+              applyRiskBasedNutrientFallbacks(baseRole, ingredient, candidate),
             ),
           })),
         });
 
         for (const candidate of candidates.slice(0, MAX_DETAIL_CANDIDATES_PER_VARIANT)) {
-          if (!requiredNutritionPresent(role, candidate)) continue;
+          if (!requiredNutritionPresent(baseRole, candidate)) continue;
           const fixedServing = await usableServing(candidate, "search");
           if (!fixedServing) continue;
           mealPlanDebug("CANDIDATE_ACCEPTED_FROM_SEARCH", {
@@ -3435,11 +3636,11 @@ async function computePortionedMeal(
           ? []
           : candidates.slice(0, MAX_DETAIL_CANDIDATES_PER_VARIANT)) {
           const detailed = applyRiskBasedNutrientFallbacks(
-            role,
+            baseRole,
             ingredient,
             await adapters.resolveFood(candidate, { requiredNutrients }),
           );
-          if (requiredNutritionPresent(role, detailed)) {
+          if (requiredNutritionPresent(baseRole, detailed)) {
             const detailedServing = await usableServing(detailed, "detail");
             if (!detailedServing) continue;
             mealPlanDebug("CANDIDATE_ACCEPTED_AFTER_DETAIL_LOOKUP", {
@@ -3456,7 +3657,7 @@ async function computePortionedMeal(
               ingredient,
               variant,
               food: mealPlanFoodDiagnostic(detailed),
-              issues: requiredNutritionIssues(role, detailed),
+              issues: requiredNutritionIssues(baseRole, detailed),
             });
           }
         }
@@ -3478,7 +3679,7 @@ async function computePortionedMeal(
         variant: selected.variant,
         food: mealPlanFoodDiagnostic(selected.food),
       });
-      picked.push(selected);
+      picked.push({ ...selected, baseRole });
     } catch (err) {
       console.error("COMPUTE_PORTIONED_MEAL_FETCH_ERROR:", { role, ingredient, error: err.message });
       return null;
@@ -3486,6 +3687,11 @@ async function computePortionedMeal(
   }
 
   if (picked.length === 0) return null;
+  const pickedRoleCounts = picked.reduce((counts, entry) => {
+    const role = entry.baseRole || baseIngredientRole(entry.role);
+    counts[role] = (counts[role] || 0) + 1;
+    return counts;
+  }, {});
 
   function scaleNutrients(food, scale) {
     return {
@@ -3500,10 +3706,15 @@ async function computePortionedMeal(
   }
 
   const componentsPortions = picked.map((entry) => {
+    const portionRole = entry.baseRole || baseIngredientRole(entry.role);
+    const portionShare = portionRole === "vegetable"
+      ? 1 / Math.max(1, pickedRoleCounts.vegetable || 1)
+      : 1;
     const portion = initialServingPortion(
-      entry.role,
+      portionRole,
       entry.food,
-      portionRulesByRole.get(entry.role),
+      portionRulesByRole.get(portionRole),
+      portionShare,
     );
     if (!portion) return null;
     const nutrients = scaleNutrients(entry.food, portion.servings);
@@ -3514,6 +3725,7 @@ async function computePortionedMeal(
       variant: entry.variant,
       food: entry.food || null,
       portion,
+      portionShare,
       nutrients,
     };
   });
@@ -3521,7 +3733,7 @@ async function computePortionedMeal(
     mealPlanDebug("PORTION_INITIALIZATION_FAILED", {
       mealType,
       picked: picked.map((entry) => ({
-        role: entry.role,
+        role: baseIngredientRole(entry.role),
         ingredient: entry.ingredient,
         food: mealPlanFoodDiagnostic(entry.food),
       })),
@@ -3537,6 +3749,7 @@ async function computePortionedMeal(
       servingId: part.food?.servingId,
       servingDescription: part.food?.servingDescription,
       numberOfServings: part.portion.servings,
+      portionShare: part.portionShare,
       nutrients: part.nutrients,
     })),
   });
@@ -3602,6 +3815,7 @@ async function computePortionedMeal(
         role: part.role,
         ingredient: part.ingredient,
         numberOfServings: part.portion.servings,
+        portionShare: part.portionShare,
         nutrients: part.nutrients,
       })),
     });
@@ -3692,6 +3906,7 @@ async function computePortionedMeal(
       servingMetadata: referenceServingMetadata(p.food || {}),
       portion: p.portion.text,
       numberOfServings: p.portion.servings,
+      portionShare: p.portionShare,
       servings: p.portion.servings,
       servingNutrients: {
         calories: numberOrNull(p.food?.calories) || 0,
@@ -3807,7 +4022,8 @@ async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, s
   }
 
   // PREFERRED: Use ingredient expansion if template has protein/carb/vegetable fields
-  const hasIngredientFields = plannedMeal.protein || plannedMeal.carb || plannedMeal.grain || plannedMeal.vegetable;
+  const hasIngredientFields = plannedMeal.protein || plannedMeal.carb || plannedMeal.grain ||
+    plannedMeal.vegetable || plannedMeal.vegetables;
   
   if (hasIngredientFields) {
     const ingredientBased = await resolveIngredientBasedMeal(
@@ -4783,16 +4999,17 @@ async function getRecipeReplacements(selectedRecipe, nutritionProfile, restricti
  */
 async function prewarmMealPlanCache() {
   const allIngredients = [...new Set([
-    "chicken", "fish", "turkey", "beef", "tilapia", "egg", "tofu", "shrimp", "seafood",
-    "rice", "pasta", "bread", "noodles", "corn", "oatmeal", "barley", "couscous",
+    "chicken", "fish", "turkey", "beef", "tilapia", "egg", "tofu", "shrimp",
+    "rice", "pasta", "bread", "noodles", "corn", "oatmeal", "barley",
     "cabbage", "carrot", "cauliflower", "broccoli", "asparagus", "green beans",
     "cucumber", "lettuce", "bell pepper", "onion",
-    "apple", "pear", "berries", "grapes", "peach", "strawberries",
+    "apple", "pear", "grapes", "peach",
     ...CKD_INGREDIENT_GUIDE.proteins,
     ...CKD_INGREDIENT_GUIDE.carbs,
     ...CKD_INGREDIENT_GUIDE.vegetables,
     ...CKD_INGREDIENT_GUIDE.fruits,
     ...CKD_INGREDIENT_GUIDE.fats,
+    ...CKD_INGREDIENT_GUIDE.seasonings,
     ...CKD_INGREDIENT_GUIDE.snacks,
   ])];
 
