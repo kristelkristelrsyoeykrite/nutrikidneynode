@@ -715,9 +715,13 @@ async function testUsdaBackfillsMissingPhosphorus() {
     },
   };
   let usdaCalls = 0;
-  global.fetch = async (url) => {
+  global.fetch = async (url, options = {}) => {
     usdaCalls += 1;
     assert.ok(String(url).includes("/foods/search"));
+    assert.strictEqual(options.method, "POST");
+    const body = JSON.parse(options.body);
+    assert.deepStrictEqual(body.nutrients, [305]);
+    assert.deepStrictEqual(body.dataType, ["Foundation", "SR Legacy", "Survey (FNDDS)"]);
     return {
       ok: true,
       json: async () => ({
@@ -750,6 +754,73 @@ async function testUsdaBackfillsMissingPhosphorus() {
     );
     assert.ok(meal);
     assert.ok(usdaCalls >= 1);
+    assert.strictEqual(
+      meal.components[0].nutrientSources.phosphorus,
+      "usda_fooddata_central",
+    );
+    assert.ok(meal.components[0].nutrients.phosphorus > 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+async function testUsdaPhosphorusLookupFallsBackAfterBadRequest() {
+  const originalFetch = global.fetch;
+  const turkeyMissingPhosphorus = food("Turkey", {
+    protein: 20,
+    phosphorus: null,
+  });
+  turkeyMissingPhosphorus.servings[0] = {
+    ...turkeyMissingPhosphorus.servings[0],
+    nutrients: {
+      ...turkeyMissingPhosphorus.servings[0].nutrients,
+      phosphorus: null,
+    },
+  };
+  let usdaCalls = 0;
+  global.fetch = async (url, options = {}) => {
+    usdaCalls += 1;
+    assert.ok(String(url).includes("/foods/search"));
+    if (options.method === "POST") {
+      return {
+        ok: false,
+        status: 400,
+        text: async () => "Invalid search request",
+      };
+    }
+    assert.ok(String(url).includes("nutrients=305"));
+    return {
+      ok: true,
+      json: async () => ({
+        foods: [{
+          fdcId: 67890,
+          description: "Turkey, cooked",
+          dataType: "SR Legacy",
+          foodNutrients: [{
+            nutrientId: 305,
+            nutrientName: "Phosphorus, P",
+            value: 175,
+          }],
+        }],
+      }),
+    };
+  };
+
+  try {
+    const meal = await computePortionedMeal(
+      { mealType: "Lunch", protein: "turkey" },
+      { protein: 48, sodium: 2000, phosphorus: 1000 },
+      null,
+      {},
+      {
+        adapters: {
+          expandIngredient: async (ingredient) => [ingredient],
+          searchFoods: async () => ({ foods: [turkeyMissingPhosphorus] }),
+        },
+      },
+    );
+    assert.ok(meal);
+    assert.strictEqual(usdaCalls, 2);
     assert.strictEqual(
       meal.components[0].nutrientSources.phosphorus,
       "usda_fooddata_central",
@@ -1194,6 +1265,7 @@ async function run() {
   await testUsesOneFixedReferenceServing();
   await testRiskBasedMissingNutrients();
   await testUsdaBackfillsMissingPhosphorus();
+  await testUsdaPhosphorusLookupFallsBackAfterBadRequest();
   await testNonProteinUsesOneFirstServing();
   await testVegetableAndFruitGuidelineConversions();
   await testMealPlanUsesFoodLogWaterPreview();

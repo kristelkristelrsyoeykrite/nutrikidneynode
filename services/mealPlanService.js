@@ -167,6 +167,58 @@ function usdaFoodScore(food = {}, query = "") {
   return matchedWords * 10;
 }
 
+async function parseUsdaSearchResponse(response, context = {}) {
+  if (response.ok) return response.json();
+  let details = "";
+  try {
+    details = await response.text();
+  } catch (_) {
+    details = "";
+  }
+  const suffix = details ? `: ${details.slice(0, 200)}` : "";
+  throw new Error(
+    `USDA FoodData Central ${context.method || "request"} failed: ${response.status}${suffix}`,
+  );
+}
+
+async function searchUsdaFoods(query) {
+  const baseUrl = USDA_FDC_BASE_URL.replace(/\/+$/, "");
+  const postUrl = new URL(`${baseUrl}/foods/search`);
+  postUrl.searchParams.set("api_key", USDA_API_KEY);
+
+  const postResponse = await fetch(postUrl, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      pageSize: 5,
+      dataType: ["Foundation", "SR Legacy", "Survey (FNDDS)"],
+      nutrients: [305],
+    }),
+  });
+
+  try {
+    return await parseUsdaSearchResponse(postResponse, { method: "POST" });
+  } catch (postError) {
+    const fallbackUrl = new URL(`${baseUrl}/foods/search`);
+    fallbackUrl.searchParams.set("api_key", USDA_API_KEY);
+    fallbackUrl.searchParams.set("query", query);
+    fallbackUrl.searchParams.set("pageSize", "5");
+    fallbackUrl.searchParams.set("nutrients", "305");
+
+    const fallbackResponse = await fetch(fallbackUrl);
+    try {
+      return await parseUsdaSearchResponse(fallbackResponse, { method: "GET fallback" });
+    } catch (fallbackError) {
+      fallbackError.message = `${postError.message}; fallback ${fallbackError.message}`;
+      throw fallbackError;
+    }
+  }
+}
+
 async function lookupUsdaPhosphorusMg(food = {}) {
   const query = foodSearchName(food);
   if (!query) return null;
@@ -175,19 +227,8 @@ async function lookupUsdaPhosphorusMg(food = {}) {
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
 
   const promise = (async () => {
-    const url = new URL(`${USDA_FDC_BASE_URL.replace(/\/+$/, "")}/foods/search`);
-    url.searchParams.set("api_key", USDA_API_KEY);
-    url.searchParams.set("query", query);
-    url.searchParams.set("pageSize", "5");
-    url.searchParams.set("dataType", "Foundation,SR Legacy,Survey (FNDDS)");
-    url.searchParams.set("nutrients", "305");
-
     try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`USDA FoodData Central request failed: ${response.status}`);
-      }
-      const payload = await response.json();
+      const payload = await searchUsdaFoods(query);
       const foods = Array.isArray(payload.foods) ? payload.foods : [];
       const ranked = foods
         .map((item) => ({
