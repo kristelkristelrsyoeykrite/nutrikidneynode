@@ -27,6 +27,7 @@ const {
 } = require("../services/portionControlService");
 const {
   calculateProteinTarget,
+  generatePediatricCkdNutrientLimits,
 } = require("../services/profileTargetGenerator");
 
 function food(name, nutrients = {}, servingDescription = "100 g") {
@@ -164,7 +165,7 @@ async function testProfileTargetsTakePrecedence() {
         dailyFluidLimitMl: 900,
       },
     },
-    labs: { potassium_status: "high", phosphorus_status: "normal" },
+    labs: { potassium: 5.6, phosphorus: 4.1 },
     anthropometrics: { weight_kg: 50 },
   });
   assert.strictEqual(profile.proteinTarget, 42);
@@ -218,6 +219,33 @@ async function testClinicalRiskClassification() {
   assert.strictEqual(danger.riskMalnutrition, true);
   assert.strictEqual(danger.snackFrequency, 1);
   assert.strictEqual(guideFoodPool("fruits", buildIngredientRules(danger, {})).includes("banana"), false);
+}
+
+async function testPediatricLabBasedNutrientLimits() {
+  const limits = generatePediatricCkdNutrientLimits({
+    age_years: 14,
+    weight_kg: 30,
+    potassium: 5.1,
+    phosphorus: 4.6,
+  });
+  assert.deepStrictEqual(limits, {
+    dailyPotassiumLimitMg: 1050,
+    dailyPhosphateLimitMg: 640,
+    dailyCalciumTargetMg: 1300,
+    dailyCalciumUpperLimitMg: 2600,
+  });
+
+  const normalPotassium = buildNutritionProfile({
+    childContext: { age: 8, dialysis_status: "Not on dialysis", ckd_type: "CKD" },
+    labs: { potassium: 5.0, phosphorus: 4.4 },
+    anthropometrics: { weight_kg: 20 },
+  });
+  const restrictions = buildFoodRestrictions(normalPotassium);
+  assert.strictEqual(normalPotassium.potassiumStatus, "Normal");
+  assert.strictEqual(restrictions.dailyPotassiumLimitMg, null);
+  assert.strictEqual(restrictions.dailyPhosphorusLimitMg, 800);
+  assert.strictEqual(restrictions.dailyCalciumTargetMg, 1000);
+  assert.strictEqual(restrictions.dailyCalciumUpperLimitMg, 2000);
 }
 
 async function testDialysisNeverUsesLowProteinBranch() {
@@ -1087,6 +1115,7 @@ async function run() {
   await testDisplayRulesUseCategoriesNotExampleFoodNames();
   await testProfileTargetsTakePrecedence();
   await testClinicalRiskClassification();
+  await testPediatricLabBasedNutrientLimits();
   await testDialysisNeverUsesLowProteinBranch();
   await testPediatricRowUsesProvisionalGrowthAwarePlanning();
   await testPediatricRowCanGenerateMealPlan();

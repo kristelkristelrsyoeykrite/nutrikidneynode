@@ -2205,6 +2205,23 @@ async function recalculateNutritionArtifacts(userId) {
     has_calcium_phosphorus_imbalance:
       medicalProfile?.has_calcium_phosphorus_imbalance ??
       medicalProfile?.hasCalciumPhosphorusImbalance,
+    potassium: labResults.potassium ?? labResults.K,
+    potassium_unit: labResults.potassium_unit ?? labResults.potassiumUnit,
+    phosphorus: labResults.phosphorus ?? labResults.phosphate,
+    phosphorus_unit:
+      labResults.phosphorus_unit ??
+      labResults.phosphorusUnit ??
+      labResults.phosphate_unit ??
+      labResults.phosphateUnit,
+    phosphorus_reference_high:
+      labResults.phosphorus_reference_high ??
+      labResults.phosphorusReferenceHigh ??
+      labResults.phosphate_reference_high ??
+      labResults.phosphateReferenceHigh ??
+      labResults.serum_phosphate_reference_high ??
+      labResults.serumPhosphateReferenceHigh,
+    calcium: labResults.calcium,
+    calcium_unit: labResults.calcium_unit ?? labResults.calciumUnit,
   };
 
   const baselineTargets = generateProfileTargets(profile);

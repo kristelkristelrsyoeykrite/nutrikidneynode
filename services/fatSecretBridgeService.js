@@ -211,6 +211,7 @@ function mealLoggingChoiceScore(choice, query, index) {
   const normalizedName = normalizeSearchText(choiceName(choice));
   const compactName = compactSearchText(choiceName(choice));
   const words = normalizedName.split(" ").filter(Boolean);
+  const firstWord = words[0] || "";
 
   let score = 0;
   if (normalizedName === normalizedQuery) score += 1000;
@@ -221,6 +222,15 @@ function mealLoggingChoiceScore(choice, query, index) {
   if (words.some((word) => word.startsWith(normalizedQuery))) score += 500;
   if (normalizedName.includes(` ${normalizedQuery}`)) score += 350;
   if (compactName.includes(compactQuery)) score += 250;
+  if (firstWord.startsWith(normalizedQuery)) {
+    const extraLetters = Math.max(0, firstWord.length - normalizedQuery.length);
+    score += Math.max(0, 180 - extraLetters * 20);
+  }
+  if (words.length === 1 && compactName.startsWith(compactQuery)) score += 120;
+  if (words.length > 2) score -= Math.min(80, (words.length - 2) * 20);
+  if (/\b(sauce|juice|pie|cake|bar|snack|flavored|with)\b/.test(normalizedName)) {
+    score -= 45;
+  }
 
   const foodType = String(choice.food_type || choice.foodType || "").toLowerCase();
   if (foodType === "generic") score += 40;

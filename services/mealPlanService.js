@@ -47,6 +47,9 @@ const { db } = require("../firebase/admin");
 const fatSecretBridge = require("./fatSecretBridgeService");
 const ingredientExpansionService = require("./ingredientExpansionService");
 const {
+  generatePediatricCkdNutrientLimits,
+} = require("./profileTargetGenerator");
+const {
   decryptHealthDocument,
   decryptHealthProfile,
 } = require("../utils/encryption");
@@ -1358,10 +1361,46 @@ function buildNutritionProfile({
     firstPresent(labs, ["total_protein", "totalProtein"]),
   );
   const potassiumValue = numberOrNull(firstPresent(labs, ["potassium", "K"]));
-  const potassiumLevel = potassiumControlLevel(
-    firstPresent(labs, ["potassium_status", "potassiumStatus"]),
-    potassiumValue,
-  );
+  const pediatricNutrientLimits = generatePediatricCkdNutrientLimits({
+    age_years: ageYears,
+    weight_kg: weightKg ?? currentWeightKg,
+    dry_weight_kg: dryWeightKg,
+    dialysis_status: dialysisStatus,
+    potassium: potassiumValue,
+    potassium_unit: firstPresent(labs, ["potassium_unit", "potassiumUnit"]),
+    phosphorus: firstPresent(labs, ["phosphorus", "phosphate"]),
+    phosphorus_unit: firstPresent(labs, [
+      "phosphorus_unit",
+      "phosphorusUnit",
+      "phosphate_unit",
+      "phosphateUnit",
+    ]),
+    phosphorus_reference_high: firstPresent(labs, [
+      "phosphorus_reference_high",
+      "phosphorusReferenceHigh",
+      "phosphate_reference_high",
+      "phosphateReferenceHigh",
+      "serum_phosphate_reference_high",
+      "serumPhosphateReferenceHigh",
+    ]),
+  });
+  const potassiumLevel =
+    pediatricMode && pediatricNutrientLimits.dailyPotassiumLimitMg === null
+      ? (potassiumValue === null ? "Unknown" : "Safe")
+      : potassiumControlLevel(null, potassiumValue);
+  const phosphorusStatus =
+    pediatricMode
+      ? (() => {
+          const phosphorusLimit = pediatricNutrientLimits.dailyPhosphateLimitMg;
+          if (phosphorusLimit === null) return "Unknown";
+          const ageBandUpperLimits = { 250: true, 440: true, 640: true };
+          return ageBandUpperLimits[phosphorusLimit] ? "High" : "Normal";
+        })()
+      : normalizedLabStatus(
+          firstPresent(labs, ["phosphorus_status", "phosphorusStatus"]),
+          firstPresent(labs, ["phosphorus", "phosphate"]),
+          4.5,
+        );
   const glycemicLevel = glycemicControlLevel({
     glucose,
     hba1c,
@@ -1401,11 +1440,7 @@ function buildNutritionProfile({
         : potassiumLevel === "Unknown"
           ? "Unknown"
           : "High",
-    phosphorusStatus: normalizedLabStatus(
-      firstPresent(labs, ["phosphorus_status", "phosphorusStatus"]),
-      firstPresent(labs, ["phosphorus", "phosphate"]),
-      4.5,
-    ),
+    phosphorusStatus,
     sodiumStatus: normalizedLabStatus(
       firstPresent(labs, ["sodium_status", "sodiumStatus"]),
       firstPresent(labs, ["sodium", "Na"]),
@@ -1474,6 +1509,10 @@ function buildNutritionProfile({
     diabetes: isAffirmative(childContext.has_diabetes),
     fluidRestrictionStatus: childContext.fluid_restriction_status,
     dailyFluidLimitMl: childContext.targets?.dailyFluidLimitMl || null,
+    dailyPotassiumLimitMg: pediatricNutrientLimits.dailyPotassiumLimitMg,
+    dailyPhosphateLimitMg: pediatricNutrientLimits.dailyPhosphateLimitMg,
+    dailyCalciumTargetMg: pediatricNutrientLimits.dailyCalciumTargetMg,
+    dailyCalciumUpperLimitMg: pediatricNutrientLimits.dailyCalciumUpperLimitMg,
   };
 }
 
@@ -1502,12 +1541,24 @@ function buildFoodRestrictions(profile) {
   return {
     dailySodiumLimitMg: profile.sodiumLimitMg || 2000,
     dailyPotassiumLimitMg:
-      ["Caution", "Danger"].includes(profile.potassiumControlLevel)
-        ? profile.potassiumLimitMg || 3000
-        : null,
+      profile.dailyPotassiumLimitMg !== undefined
+        ? profile.dailyPotassiumLimitMg
+        : ["Caution", "Danger"].includes(profile.potassiumControlLevel)
+          ? profile.potassiumLimitMg || 3000
+          : null,
     dailyPhosphorusLimitMg:
-      profile.phosphorusStatus === "High"
-        ? profile.phosphorusLimitMg || 1000
+      profile.dailyPhosphateLimitMg !== undefined
+        ? profile.dailyPhosphateLimitMg
+        : profile.phosphorusStatus === "High"
+          ? profile.phosphorusLimitMg || 1000
+          : null,
+    dailyCalciumTargetMg:
+      profile.dailyCalciumTargetMg !== undefined
+        ? profile.dailyCalciumTargetMg
+        : null,
+    dailyCalciumUpperLimitMg:
+      profile.dailyCalciumUpperLimitMg !== undefined
+        ? profile.dailyCalciumUpperLimitMg
         : null,
     avoid: [...avoid],
     prefer: [...prefer],
@@ -4679,13 +4730,15 @@ async function generateMealPlan(body = {}) {
   }
   nutritionProfile.sodiumLimitMg = numberOrNull(childContext.targets?.sodium);
   nutritionProfile.potassiumLimitMg =
-    nutritionProfile.potassiumStatus === "High"
+    nutritionProfile.dailyPotassiumLimitMg ??
+    (nutritionProfile.potassiumStatus === "High"
       ? numberOrNull(childContext.targets?.potassium)
-      : null;
+      : null);
   nutritionProfile.phosphorusLimitMg =
-    nutritionProfile.phosphorusStatus === "High"
+    nutritionProfile.dailyPhosphateLimitMg ??
+    (nutritionProfile.phosphorusStatus === "High"
       ? numberOrNull(childContext.targets?.phosphorus)
-      : null;
+      : null);
   const ingredientRules = buildIngredientRules(nutritionProfile, childContext);
   const history = analyzeFoodHistory(
     await getRecentFoodLogs(userId, requestedProfileId),

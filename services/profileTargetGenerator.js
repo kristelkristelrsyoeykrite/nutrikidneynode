@@ -171,15 +171,138 @@ function calculateSodiumTarget() {
   return { label: "<2000 mg/day", limit_mg: 2000 };
 }
 
-function calculatePotassiumTarget() {
+function ageBandForSdi(ageYears) {
+  const age = toNumber(ageYears);
+  if (age === null) return null;
+  if (age >= 1 && age <= 3) return "1-3";
+  if (age >= 4 && age <= 10) return "4-10";
+  if (age >= 11 && age <= 17) return "11-17";
+  return null;
+}
+
+const PHOSPHATE_SDI_MG = {
+  "1-3": { lower: 250, upper: 500 },
+  "4-10": { lower: 440, upper: 800 },
+  "11-17": { lower: 640, upper: 1250 },
+};
+
+const CALCIUM_SDI_MG = {
+  "1-3": { target: 700, upper: 1400 },
+  "4-10": { target: 1000, upper: 2000 },
+  "11-17": { target: 1300, upper: 2600 },
+};
+
+const SERUM_PHOSPHATE_UPPER_MG_DL = {
+  "1-3": 6.5,
+  "4-10": 5.8,
+  "11-17": 4.5,
+};
+
+function phosphateReferenceUpper(profile = {}, ageBand) {
+  return toNumber(
+    profile.phosphorusReferenceHigh ??
+      profile.phosphorus_reference_high ??
+      profile.phosphateReferenceHigh ??
+      profile.phosphate_reference_high ??
+      profile.serumPhosphateReferenceHigh ??
+      profile.serum_phosphate_reference_high,
+  ) ?? SERUM_PHOSPHATE_UPPER_MG_DL[ageBand] ?? null;
+}
+
+function phosphateValueMgDl(profile = {}) {
+  const value = toNumber(
+    profile.phosphorus ??
+      profile.phosphate ??
+      profile.serumPhosphorus ??
+      profile.serum_phosphorus ??
+      profile.serumPhosphate ??
+      profile.serum_phosphate,
+  );
+  if (value === null) return null;
+
+  const unit = normalizeText(
+    profile.phosphorus_unit ??
+      profile.phosphate_unit ??
+      profile.serum_phosphate_unit ??
+      profile.serumPhosphorusUnit,
+  );
+  if (unit.includes("mmol")) return value * 3.097;
+  return value;
+}
+
+function generatePediatricCkdNutrientLimits(profile = {}) {
+  const age = toNumber(profile.age_years ?? profile.ageYears ?? profile.age);
+  const weight = weightKg(profile);
+  const ageBand = ageBandForSdi(age);
+  const potassium = toNumber(
+    profile.potassium ?? profile.serumPotassium ?? profile.serum_potassium ?? profile.K,
+  );
+  const potassiumUnit = normalizeText(
+    profile.potassium_unit ?? profile.serum_potassium_unit,
+  );
+  const potassiumMmolL =
+    potassium !== null && potassiumUnit.includes("mg/dl")
+      ? potassium / 3.91
+      : potassium;
+  const phosphate = phosphateValueMgDl(profile);
+  const phosphateUpper = phosphateReferenceUpper(profile, ageBand);
+  const phosphateRestricted =
+    phosphate !== null && phosphateUpper !== null && phosphate > phosphateUpper;
+  const phosphateSdi = PHOSPHATE_SDI_MG[ageBand] || null;
+  const calciumSdi = CALCIUM_SDI_MG[ageBand] || null;
+  const potassiumRestricted =
+    potassiumMmolL !== null && potassiumMmolL > 5.0 && weight && weight > 0;
+
+  return {
+    dailyPotassiumLimitMg: potassiumRestricted
+      ? Math.round(weight * (age !== null && age < 1 ? 80 : 35))
+      : null,
+    dailyPhosphateLimitMg: phosphateSdi
+      ? (phosphateRestricted ? phosphateSdi.lower : phosphateSdi.upper)
+      : null,
+    dailyCalciumTargetMg: calciumSdi ? calciumSdi.target : null,
+    dailyCalciumUpperLimitMg: calciumSdi ? calciumSdi.upper : null,
+  };
+}
+
+function calculatePotassiumTarget(profile = {}) {
+  const pediatricLimits = generatePediatricCkdNutrientLimits(profile);
+  if ((toNumber(profile.age_years ?? profile.ageYears ?? profile.age) ?? 18) < 18) {
+    return {
+      label: pediatricLimits.dailyPotassiumLimitMg
+        ? `<${pediatricLimits.dailyPotassiumLimitMg} mg/day`
+        : "No potassium restriction from current serum potassium",
+      limit_mg: pediatricLimits.dailyPotassiumLimitMg,
+    };
+  }
   return { label: "<3000 mg/day", limit_mg: 3000 };
 }
 
-function calculatePhosphorusTarget() {
+function calculatePhosphorusTarget(profile = {}) {
+  const pediatricLimits = generatePediatricCkdNutrientLimits(profile);
+  if ((toNumber(profile.age_years ?? profile.ageYears ?? profile.age) ?? 18) < 18) {
+    return {
+      label: pediatricLimits.dailyPhosphateLimitMg !== null
+        ? `${pediatricLimits.dailyPhosphateLimitMg} mg/day`
+        : "Pediatric phosphorus target unavailable",
+      min_mg: pediatricLimits.dailyPhosphateLimitMg,
+      max_mg: pediatricLimits.dailyPhosphateLimitMg,
+    };
+  }
   return { label: "800-1000 mg/day", min_mg: 800, max_mg: 1000 };
 }
 
-function calculateCalciumTarget() {
+function calculateCalciumTarget(profile = {}) {
+  const pediatricLimits = generatePediatricCkdNutrientLimits(profile);
+  if ((toNumber(profile.age_years ?? profile.ageYears ?? profile.age) ?? 18) < 18) {
+    return {
+      label: pediatricLimits.dailyCalciumTargetMg !== null
+        ? `${pediatricLimits.dailyCalciumTargetMg} mg/day`
+        : "Pediatric calcium target unavailable",
+      target_mg: pediatricLimits.dailyCalciumTargetMg,
+      limit_mg: pediatricLimits.dailyCalciumUpperLimitMg,
+    };
+  }
   return { label: "<2000 mg/day", limit_mg: 2000 };
 }
 
@@ -195,6 +318,7 @@ function generateProfileTargets(profile = {}) {
   const potassium = calculatePotassiumTarget(profile);
   const phosphorus = calculatePhosphorusTarget(profile);
   const calcium = calculateCalciumTarget(profile);
+  const pediatricNutrientLimits = generatePediatricCkdNutrientLimits(profile);
   const proteinDaily = gramsPerKgRangeToTarget(protein.range, weight);
   const calorieDaily = kcalPerKgRangeToTarget(calories.range, weight);
 
@@ -226,12 +350,17 @@ function generateProfileTargets(profile = {}) {
     sodium_target_mg: sodium.limit_mg,
     potassium_target: potassium.label,
     potassium_target_mg: potassium.limit_mg,
+    dailyPotassiumLimitMg: pediatricNutrientLimits.dailyPotassiumLimitMg,
     phosphorus_target: phosphorus.label,
     phosphorus_target_min_mg: phosphorus.min_mg,
     phosphorus_target_mg: phosphorus.max_mg,
     phosphate_target_mg: phosphorus.max_mg,
+    dailyPhosphateLimitMg: pediatricNutrientLimits.dailyPhosphateLimitMg,
     calcium_target: calcium.label,
-    calcium_target_mg: calcium.limit_mg,
+    calcium_target_mg: calcium.target_mg ?? calcium.limit_mg,
+    calcium_upper_limit_mg: calcium.limit_mg,
+    dailyCalciumTargetMg: pediatricNutrientLimits.dailyCalciumTargetMg,
+    dailyCalciumUpperLimitMg: pediatricNutrientLimits.dailyCalciumUpperLimitMg,
     professional_reminder: PROFESSIONAL_REMINDER,
     system_notes: SYSTEM_NOTES,
     summary_text: [
@@ -266,4 +395,5 @@ module.exports = {
   calculatePotassiumTarget,
   calculatePhosphorusTarget,
   calculateCalciumTarget,
+  generatePediatricCkdNutrientLimits,
 };
