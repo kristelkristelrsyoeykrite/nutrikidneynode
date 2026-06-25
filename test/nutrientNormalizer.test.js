@@ -15,6 +15,7 @@ const aliases = normalizeNutrients({
     carbs: "31.5 g",
     sodium_mg: "440 mg",
     phosphorous: "90 mg",
+    calcium_mg: "120 mg",
   },
 });
 assert.deepStrictEqual(aliases.nutrients, {
@@ -25,6 +26,7 @@ assert.deepStrictEqual(aliases.nutrients, {
   sodium: 440,
   potassium: 0,
   phosphorus: 90,
+  calcium: 120,
 });
 
 const selectedServing = normalizeNutrients({

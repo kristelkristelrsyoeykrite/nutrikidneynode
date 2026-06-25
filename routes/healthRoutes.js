@@ -1759,6 +1759,7 @@ async function getDailyIntakeData(userId, requestedDate, user = {}) {
         sodium: 0,
         potassium: 0,
         phosphorus: 0,
+        calcium: 0,
       };
       foodLogs.forEach((log) => {
         for (const nutrient of Object.keys(totals)) {
@@ -1809,6 +1810,7 @@ async function getDailyIntakeData(userId, requestedDate, user = {}) {
     sodium: 0,
     potassium: 0,
     phosphorus: 0,
+    calcium: 0,
   };
   let mealCount = 0;
   let waterMl = 0;
@@ -1929,6 +1931,7 @@ async function getDailyIntakeSummariesForRange(userId, user, startDate, endDate)
         sodium: 0,
         potassium: 0,
         phosphorus: 0,
+        calcium: 0,
       };
       let foodWaterMl = 0;
       for (const log of logs) {
@@ -1988,6 +1991,7 @@ function aggregateDailySummaries(dailySummaries, startDate, endDate) {
     sodium: 0,
     potassium: 0,
     phosphorus: 0,
+    calcium: 0,
     waterMl: 0,
     mealCount: 0,
   };
@@ -2013,6 +2017,7 @@ function aggregateDailySummaries(dailySummaries, startDate, endDate) {
         sodium: numberOrZero(dayTotals.sodium),
         potassium: numberOrZero(dayTotals.potassium),
         phosphorus: numberOrZero(dayTotals.phosphorus),
+        calcium: numberOrZero(dayTotals.calcium),
       },
       hasData: Boolean(summary),
     };
@@ -2025,6 +2030,7 @@ function aggregateDailySummaries(dailySummaries, startDate, endDate) {
     totals.sodium += normalized.totals.sodium;
     totals.potassium += normalized.totals.potassium;
     totals.phosphorus += normalized.totals.phosphorus;
+    totals.calcium += normalized.totals.calcium;
     totals.waterMl += normalized.waterMl;
     totals.mealCount += normalized.mealCount;
   }
@@ -2043,6 +2049,7 @@ function aggregateDailySummaries(dailySummaries, startDate, endDate) {
       sodium: totals.sodium / divisor,
       potassium: totals.potassium / divisor,
       phosphorus: totals.phosphorus / divisor,
+      calcium: totals.calcium / divisor,
       waterMl: totals.waterMl / divisor,
       mealCount: totals.mealCount / divisor,
     },
@@ -2403,3 +2410,4 @@ registerProfileRoutes(router, {
 });
 
 module.exports = router;
+

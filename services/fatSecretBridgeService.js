@@ -122,6 +122,7 @@ function normalizeFood(food = {}) {
     sodium: toNullableNumber(food.sodium),
     potassium: toNullableNumber(food.potassium),
     phosphorus: toNullableNumber(food.phosphorus),
+    calcium: toNullableNumber(food.calcium),
     source: food.source || "fatsecret",
     needsManualReview: Boolean(
       food.needs_manual_review ?? food.needsManualReview,
@@ -301,6 +302,7 @@ async function searchFoods(query, page = 0) {
       sodium: foods[0].sodium,
       potassium: foods[0].potassium,
       phosphorus: foods[0].phosphorus,
+      calcium: foods[0].calcium,
     } : null,
   });
 
@@ -317,6 +319,7 @@ async function searchFoods(query, page = 0) {
       sodium: normalized[0].sodium,
       potassium: normalized[0].potassium,
       phosphorus: normalized[0].phosphorus,
+      calcium: normalized[0].calcium,
     } : null,
   });
 
@@ -345,6 +348,7 @@ async function getFoodDetails(foodId) {
       sodium: food.sodium,
       potassium: food.potassium,
       phosphorus: food.phosphorus,
+      calcium: food.calcium,
     } : null,
   });
   
@@ -357,6 +361,7 @@ async function getFoodDetails(foodId) {
       sodium: normalized.sodium,
       potassium: normalized.potassium,
       phosphorus: normalized.phosphorus,
+      calcium: normalized.calcium,
     }
   });
   
@@ -405,6 +410,7 @@ function normalizeRecipe(recipe = {}) {
     sodium: toNumber(recipe.sodium),
     potassium: toNumber(recipe.potassium),
     phosphorus: toNumber(recipe.phosphorus),
+    calcium: toNumber(recipe.calcium),
     fiber: toNumber(recipe.fiber),
     sugar: toNumber(recipe.sugar),
     source: recipe.source || "fatsecret_recipe",

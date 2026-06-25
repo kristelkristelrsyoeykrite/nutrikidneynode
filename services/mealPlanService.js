@@ -108,6 +108,7 @@ function mealPlanFoodDiagnostic(food = {}) {
     sodium: food.sodium,
     potassium: food.potassium,
     phosphorus: food.phosphorus,
+    calcium: food.calcium,
     missingNutrients: food.missingNutrients,
     estimatedNutrients: food.estimatedNutrients,
     nutrientSources: food.nutrientSources,
@@ -1236,6 +1237,7 @@ function normalizeCachedRecipe(recipe = {}, query = "") {
     sodium: numberOrNull(recipe.sodium),
     potassium: numberOrNull(recipe.potassium),
     phosphorus: numberOrNull(recipe.phosphorus),
+    calcium: numberOrNull(recipe.calcium),
     source: recipe.source || "fatsecret_recipe",
     sourceQuery: query,
     cachedAt: new Date().toISOString(),
@@ -1575,6 +1577,7 @@ function nutrientsFromLog(log = {}) {
     sodium: positiveNumber(nutrients.sodium),
     potassium: positiveNumber(nutrients.potassium),
     phosphorus: positiveNumber(nutrients.phosphorus),
+    calcium: positiveNumber(nutrients.calcium),
   };
 }
 
@@ -1675,6 +1678,7 @@ function analyzeFoodHistory(logs = [], restrictions = {}) {
           sodium: 0,
           potassium: 0,
           phosphorus: 0,
+          calcium: 0,
         },
         portions: new Map(),
       };
@@ -1784,6 +1788,7 @@ function perMealTargets(profile, restrictions, mealType) {
       profile.potassiumStatus === "High" ? restrictions.dailyPotassiumLimitMg || null : null,
     phosphorus:
       profile.phosphorusStatus === "High" ? restrictions.dailyPhosphorusLimitMg || null : null,
+    calcium: restrictions.dailyCalciumTargetMg || null,
     protein: proteinTarget,
   };
 }
@@ -2530,6 +2535,7 @@ async function resolveFoodDetails(food, options = {}) {
         sodium: detailedFood.sodium ?? food.sodium ?? null,
         potassium: detailedFood.potassium ?? food.potassium ?? null,
         phosphorus: detailedFood.phosphorus ?? food.phosphorus ?? null,
+        calcium: detailedFood.calcium ?? food.calcium ?? null,
         raw: {
           ...(food.raw || {}),
           foodDetails: details.raw || details.food,
@@ -2633,6 +2639,7 @@ function foodFromFirstServing(food, details = {}, role = null) {
     sodium: numberOrNull(nutrients.sodium),
     potassium: numberOrNull(nutrients.potassium),
     phosphorus: numberOrNull(nutrients.phosphorus ?? nutrients.phosphorous),
+    calcium: numberOrNull(nutrients.calcium),
     firstServing,
   };
 }
@@ -2835,8 +2842,9 @@ function nutrientTotals(items = []) {
       sodium: sum.sodium + (numberOrNull(item.sodium) || 0),
       potassium: sum.potassium + (numberOrNull(item.potassium) || 0),
       phosphorus: sum.phosphorus + (numberOrNull(item.phosphorus) || 0),
+      calcium: sum.calcium + (numberOrNull(item.calcium) || 0),
     }),
-    { calories: 0, protein: 0, carbohydrate: 0, fat: 0, sodium: 0, potassium: 0, phosphorus: 0 },
+    { calories: 0, protein: 0, carbohydrate: 0, fat: 0, sodium: 0, potassium: 0, phosphorus: 0, calcium: 0 },
   );
 }
 
@@ -2874,6 +2882,7 @@ function roundNutrients(nutrients = {}) {
     sodium: Math.round(positiveNumber(nutrients.sodium)),
     potassium: Math.round(positiveNumber(nutrients.potassium)),
     phosphorus: Math.round(positiveNumber(nutrients.phosphorus)),
+    calcium: Math.round(positiveNumber(nutrients.calcium)),
   };
 }
 
@@ -3123,6 +3132,7 @@ async function findSingleServingProteinMatch(plannedMeal, nutritionProfile, rest
         sodium: numberOrNull(candidate.sodium),
         potassium: numberOrNull(candidate.potassium),
         phosphorus: numberOrNull(candidate.phosphorus),
+        calcium: numberOrNull(candidate.calcium),
         componentBreakdown: componentBreakdownFromFoods([candidate]),
         nutrientPreview: roundNutrients(candidate),
         score,
@@ -3373,6 +3383,7 @@ async function computePortionedMeal(
       sodium: Number(dailyTargets.sodium || 2000),
       potassium: Number(dailyTargets.potassium || 0),
       phosphorus: Number(dailyTargets.phosphorus || 0),
+      calcium: Number(dailyTargets.calcium || 0),
     };
     mealTargets = {
       calories: null,
@@ -3753,6 +3764,7 @@ async function computePortionedMeal(
       sodium: Math.round((numberOrNull(food.sodium) || 0) * scale),
       potassium: Math.round((numberOrNull(food.potassium) || 0) * scale),
       phosphorus: Math.round((numberOrNull(food.phosphorus) || 0) * scale),
+      calcium: Math.round((numberOrNull(food.calcium) || 0) * scale),
     };
   }
 
@@ -3815,7 +3827,8 @@ async function computePortionedMeal(
       sodium: sum.sodium + (numberOrNull(part.nutrients.sodium) || 0),
       potassium: sum.potassium + (numberOrNull(part.nutrients.potassium) || 0),
       phosphorus: sum.phosphorus + (numberOrNull(part.nutrients.phosphorus) || 0),
-    }), { calories: 0, protein: 0, carbs: 0, fat: 0, sodium: 0, potassium: 0, phosphorus: 0 });
+      calcium: sum.calcium + (numberOrNull(part.nutrients.calcium) || 0),
+    }), { calories: 0, protein: 0, carbs: 0, fat: 0, sodium: 0, potassium: 0, phosphorus: 0, calcium: 0 });
   }
 
   let parts = componentsPortions;
@@ -3967,6 +3980,7 @@ async function computePortionedMeal(
         sodium: numberOrNull(p.food?.sodium) || 0,
         potassium: numberOrNull(p.food?.potassium) || 0,
         phosphorus: numberOrNull(p.food?.phosphorus) || 0,
+        calcium: numberOrNull(p.food?.calcium) || 0,
       },
       manualServing: p.portion.manualServing,
       portionControl: p.portion.portionControl,
@@ -3986,6 +4000,7 @@ async function computePortionedMeal(
       sodium: totals.sodium,
       potassium: totals.potassium,
       phosphorus: totals.phosphorus,
+      calcium: totals.calcium,
     }),
     iterations: iter,
     satisfied: checkConstraints(totals, mealTargets).allOk,
@@ -4138,6 +4153,7 @@ async function resolvePlannedMeal(plannedMeal, nutritionProfile, restrictions, s
     sodium: 0,
     potassium: 0,
     phosphorus: 0,
+    calcium: 0,
     score: 0,
     source: "unresolved_guide_meal_plan",
     needsManualReview: true,
@@ -4406,6 +4422,7 @@ function dailySafetyUpperLimits(nutritionProfile = {}, restrictions = {}) {
     sodium: numberOrNull(restrictions.dailySodiumLimitMg),
     potassium: numberOrNull(restrictions.dailyPotassiumLimitMg),
     phosphorus: numberOrNull(restrictions.dailyPhosphorusLimitMg),
+    calcium: numberOrNull(restrictions.dailyCalciumTargetMg),
   };
 }
 

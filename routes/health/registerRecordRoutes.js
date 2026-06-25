@@ -471,10 +471,13 @@ function registerRecordRoutes(router, deps) {
         { merge: true },
       );
 
+      const recalculation = await recalculateNutritionArtifacts(labUserId);
+
       return res.status(200).json({
         success: true,
         labResultId: docRef.id,
         labResult: labResultPayload,
+        recalculation,
       });
     } catch (error) {
       console.error("SAVE_LAB_RESULT ERROR:", error.message);

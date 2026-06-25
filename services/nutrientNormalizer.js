@@ -6,6 +6,7 @@ const CORE_NUTRIENTS = Object.freeze([
   "sodium",
   "potassium",
   "phosphorus",
+  "calcium",
 ]);
 
 const NUTRIENT_ALIASES = Object.freeze({
@@ -28,6 +29,7 @@ const NUTRIENT_ALIASES = Object.freeze({
     "phosphorus_mg",
     "phosphorusMg",
   ],
+  calcium: ["calcium", "calcium_mg", "calciumMg"],
 });
 
 function parseNutrientNumber(value) {

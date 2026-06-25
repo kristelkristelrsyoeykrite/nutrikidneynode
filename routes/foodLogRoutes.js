@@ -414,6 +414,7 @@ function nutrientTotalsFromPreview(preview = {}) {
     sodium: numberOrNull(nutrients.sodium),
     potassium: numberOrNull(nutrients.potassium),
     phosphorus: numberOrNull(nutrients.phosphorus),
+    calcium: numberOrNull(nutrients.calcium),
   };
 }
 
@@ -611,6 +612,12 @@ async function buildChildContext(userId, requestedChildProfileId) {
           targets.phosphorus_target_mg ??
           targets.phosphate_target_mg,
       ),
+      calcium: numberOrNull(
+        targets.calcium ??
+          targets.calciumTargetMg ??
+          targets.calcium_target_mg ??
+          targets.dailyCalciumTargetMg,
+      ),
       protein_min: numberOrNull(
           targets.proteinMin ??
           targets.protein_min ??
@@ -719,6 +726,7 @@ function ckdSafetyAssessment(preview = {}, childContext = {}, body = {}) {
       sodium: numberOrNull(childContext.targets?.sodium) || 2000,
       potassium: numberOrNull(childContext.targets?.potassium),
       phosphorus: numberOrNull(childContext.targets?.phosphorus),
+      calcium: numberOrNull(childContext.targets?.calcium),
       protein:
         numberOrNull(childContext.targets?.protein_max) ||
         numberOrNull(childContext.targets?.protein_min),
@@ -741,6 +749,7 @@ async function recomputeDailySummary(childProfileId, date) {
     sodium: 0,
     potassium: 0,
     phosphorus: 0,
+    calcium: 0,
   };
   let count = 0;
   let waterMl = 0;
@@ -900,6 +909,12 @@ function exceededNutrients(summary = {}, childContext = {}) {
       label: "Phosphorus",
       total: totals.phosphorus,
       limit: targets.phosphorus,
+    },
+    {
+      key: "calcium",
+      label: "Calcium",
+      total: totals.calcium,
+      limit: targets.calcium,
     },
   ].filter((item) => {
     const total = numberOrNull(item.total);
@@ -1517,6 +1532,7 @@ router.post("/logs/add", async (req, res) => {
         sodium,
         potassium,
         phosphorus,
+        calcium,
         source,
         needsManualReview,
         raw,
@@ -1594,6 +1610,7 @@ router.post("/logs/add", async (req, res) => {
         sodium: finalNutrients.sodium,
         potassium: finalNutrients.potassium,
         phosphorus: finalNutrients.phosphorus,
+        calcium: finalNutrients.calcium,
         finalNutrients,
         phosphorusGuide,
         source: source || "manual_entry",
@@ -1681,6 +1698,7 @@ router.post("/logs/add", async (req, res) => {
       sodium,
       potassium,
       phosphorus,
+      calcium,
       quantity,
       numberOfServings,
       source,
@@ -1779,6 +1797,7 @@ router.post("/logs/add", async (req, res) => {
       sodium: finalNutrients.sodium,
       potassium: finalNutrients.potassium,
       phosphorus: finalNutrients.phosphorus,
+      calcium: finalNutrients.calcium,
       finalNutrients,
       phosphorusGuide,
       potassiumReliabilityNote:
@@ -1882,6 +1901,7 @@ router.post("/logs/update", async (req, res) => {
       sodium,
       potassium,
       phosphorus,
+      calcium,
       raw,
     } = req.body;
 
@@ -1968,6 +1988,7 @@ router.post("/logs/update", async (req, res) => {
       sodium: finalNutrients.sodium,
       potassium: finalNutrients.potassium,
       phosphorus: finalNutrients.phosphorus,
+      calcium: finalNutrients.calcium,
       finalNutrients,
       needsManualReview:
         req.body.needsManualReview === true || requiresNutrientReview,

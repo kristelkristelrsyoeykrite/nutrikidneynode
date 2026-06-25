@@ -42,6 +42,7 @@ function food(name, nutrients = {}, servingDescription = "100 g") {
     sodium: 10,
     potassium: 40,
     phosphorus: 20,
+    calcium: 15,
     source: "fatsecret_test",
     ...nutrients,
   };
@@ -56,6 +57,7 @@ function food(name, nutrients = {}, servingDescription = "100 g") {
       sodium: result.sodium,
       potassium: result.potassium,
       phosphorus: result.phosphorus,
+      calcium: result.calcium,
     },
   }];
   return result;
@@ -77,6 +79,7 @@ const foods = {
     sodium: 0,
     potassium: 0,
     phosphorus: 0,
+    calcium: 0,
   }, "1 tbsp"),
 };
 
